@@ -4576,11 +4576,7 @@ impl Window {
             padding: 0,
             bounds,
             content_mask: self.snapped_content_mask(),
-            color: style
-                .color
-                .unwrap_or_default()
-                .opacity(element_opacity)
-                .into(),
+            color: style.color.unwrap_or_default().opacity(element_opacity),
             thickness,
             wavy: style.wavy.into(),
         });
@@ -4611,7 +4607,7 @@ impl Window {
             bounds,
             content_mask: self.snapped_content_mask(),
             thickness: self.snap_stroke(style.thickness),
-            color: style.color.unwrap_or_default().opacity(opacity).into(),
+            color: style.color.unwrap_or_default().opacity(opacity),
             wavy: false.into(),
         });
     }
@@ -4683,7 +4679,7 @@ impl Window {
                     padding: 0,
                     bounds,
                     content_mask,
-                    color: color.opacity(element_opacity).into(),
+                    color: color.opacity(element_opacity),
                     tile,
                     transformation: TransformationMatrix::unit(),
                 });
@@ -4693,7 +4689,7 @@ impl Window {
                     padding: 0,
                     bounds,
                     content_mask,
-                    color: color.opacity(element_opacity).into(),
+                    color: color.opacity(element_opacity),
                     tile,
                     transformation: TransformationMatrix::unit(),
                 });
@@ -4840,7 +4836,7 @@ impl Window {
             padding: 0,
             bounds: final_bounds,
             content_mask,
-            color: color.opacity(element_opacity).into(),
+            color: color.opacity(element_opacity),
             tile,
             transformation,
         });
