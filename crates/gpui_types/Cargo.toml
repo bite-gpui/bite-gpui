@@ -27,4 +27,9 @@ serde.workspace = true
 taffy = "=0.13.0"
 
 [dev-dependencies]
+# The doc examples on the types in this crate are written against the public
+# `gpui` API (they are re-exported there). Depend on the facade so doctests are
+# compiled against `gpui::…` rather than this crate's internal name. Cargo
+# permits this dev-dependency cycle (see rust-lang/cargo#6765).
+gpui = { path = "../gpui", package = "gpui-ce", default-features = false }
 serde_json.workspace = true

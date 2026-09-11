@@ -2780,6 +2780,7 @@ dependencies = [
  "anyhow",
  "derive_more",
  "etagere",
+ "gpui-ce",
  "gpui_ce_refineable",
  "lyon",
  "schemars",
