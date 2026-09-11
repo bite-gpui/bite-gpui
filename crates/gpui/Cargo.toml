@@ -250,6 +250,10 @@ path = "examples/learn/corner_smoothing.rs"
 name = "keyring"
 path = "examples/learn/keyring.rs"
 
+[[example]]
+name = "palette_colors"
+path = "examples/learn/palette_colors.rs"
+
 # ============================================================================
 # Bench Examples - Performance benchmarks
 # ============================================================================
