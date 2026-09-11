@@ -26,7 +26,7 @@
 
 use crate::{
     AnyWindowHandle, App, AppCell, AppContext, AssetRegistry, AsyncApp, BackgroundExecutor,
-    BorrowAppContext, Bounds, ClipboardItem, Context, Entity, ForegroundExecutor, Global,
+    BorrowAppContext, Bounds, BoundsExt, ClipboardItem, Context, Entity, ForegroundExecutor, Global,
     InputEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     Platform, PlatformTextSystem, Point, Render, Size, Task, TestDispatcher, TestPlatform,
     TextSystem, Window, WindowBounds, WindowHandle, WindowOptions, app::GpuiMode,
