@@ -1,12 +1,13 @@
 use crate::{
-    AbsoluteLength, App, Background, BorderStyle, Bounds, ColorExt, ContentMask, Corners,
+    AbsoluteLength, App, Background, BackgroundTag, BorderStyle, Bounds, ColorExt, ContentMask,
+    Corners,
     CornersRefinement, CursorStyle, DefiniteLength, DevicePixels, Edges, EdgesRefinement, Font,
     FontFallbacks, FontFeatures, FontStyle, FontWeight, GridLocation, Length, Pixels, Point,
     PointRefinement, ScaledPixels, SharedString, Size, SizeRefinement, Styled, TextRun, Window,
     black, phi, point, px, quad, rems, size, transparent_black,
 };
+use crate::{Hsla, Rgba};
 use collections::HashSet;
-use palette::{Hsla, IntoColor, rgb::Rgba};
 use refineable::Refineable;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -176,8 +177,8 @@ pub enum RingColor {
     /// Use the element's effective text color, matching CSS `currentColor`.
     #[default]
     CurrentColor,
-    /// Use an explicit color or gradient.
-    Color(Background),
+    /// Use an explicit color.
+    Color(Hsla),
 }
 
 impl RingColor {
@@ -677,7 +678,7 @@ impl TextStyle {
         }
 
         if let Some(color) = style.color {
-            self.color = self.color.blend(&color);
+            self.color = self.color.blend(color);
         }
 
         if let Some(factor) = style.fade_out {
@@ -799,10 +800,7 @@ impl Style {
                 let mut min = bounds.origin;
                 let mut max = bounds.bottom_right();
 
-                if self
-                    .border_color
-                    .is_some_and(|background| !background.is_transparent())
-                {
+                if self.border_color.is_some_and(|color| color.a > 0.) {
                     min.x += self.border_widths.left.to_pixels(rem_size);
                     max.x -= self.border_widths.right.to_pixels(rem_size);
                     min.y += self.border_widths.top.to_pixels(rem_size);
@@ -888,18 +886,29 @@ impl Style {
         let paint_box = |window: &mut Window, cx: &mut App| {
             let background_color = self.background.as_ref().and_then(Fill::color);
             if background_color.is_some_and(|color| !color.is_transparent()) {
-                let background_color = background_color.unwrap_or_default();
-                window.paint_quad_with_corner_smoothing(
-                    quad(
-                        bounds,
-                        corner_radii,
-                        background_color,
-                        Edges::default(),
-                        background_color.opacity(0.),
-                        self.border_style,
-                    ),
-                    corner_smoothing,
-                );
+                let mut border_color = match background_color {
+                    Some(color) => match color.tag {
+                        BackgroundTag::Solid
+                        | BackgroundTag::PatternSlash
+                        | BackgroundTag::Checkerboard => color.solid,
+
+                        BackgroundTag::LinearGradient => color
+                            .colors
+                            .first()
+                            .map(|stop| stop.color)
+                            .unwrap_or_default(),
+                    },
+                    None => Hsla::default(),
+                };
+                border_color.a = 0.;
+                window.paint_quad(quad(
+                    bounds,
+                    corner_radii,
+                    background_color.unwrap_or_default(),
+                    Edges::default(),
+                    border_color,
+                    self.border_style,
+                ));
             }
 
             if let Some(ring) = self.inset_ring.inset_shadow(current_color) {
@@ -921,20 +930,16 @@ impl Style {
 
             if self.is_border_visible() {
                 let border_widths = self.border_widths.to_pixels(rem_size);
-                let border_color = self.border_color.unwrap_or_default();
-                window.paint_quad_with_corner_smoothing(
-                    quad(
-                        bounds,
-                        corner_radii,
-                        border_color.opacity(0.),
-                        border_widths,
-                        border_color,
-                        self.border_style,
-                    )
-                    .border_dashed_length(self.border_dashed_length)
-                    .border_dashed_gap(self.border_dashed_gap),
-                    corner_smoothing,
-                );
+                let mut background = self.border_color.unwrap_or_default();
+                background.a = 0.;
+                window.paint_quad(quad(
+                    bounds,
+                    corner_radii,
+                    background,
+                    border_widths,
+                    self.border_color.unwrap_or_default(),
+                    self.border_style,
+                ));
             }
         };
 
@@ -959,8 +964,7 @@ impl Style {
     }
 
     fn is_border_visible(&self) -> bool {
-        self.border_color
-            .is_some_and(|background| !background.is_transparent())
+        self.border_color.is_some_and(|color| color.a > 0.)
             && self.border_widths.any(|length| !length.is_zero())
     }
 }
@@ -1115,7 +1119,7 @@ impl HighlightStyle {
                 .color
                 .map(|other_color| {
                     if let Some(color) = self.color {
-                        color.blend(&other_color)
+                        color.blend(other_color)
                     } else {
                         other_color
                     }
@@ -1168,7 +1172,7 @@ impl From<FontStyle> for HighlightStyle {
 impl From<Rgba> for HighlightStyle {
     fn from(color: Rgba) -> Self {
         Self {
-            color: Some(color.into_color()),
+            color: Some(color.into()),
             ..Default::default()
         }
     }
@@ -1589,7 +1593,7 @@ mod tests {
         let mut style_c = expected_style;
 
         let style_d = HighlightStyle {
-            color: Some(blue().with_alpha(0.7)),
+            color: Some(blue().alpha(0.7)),
             strikethrough: Some(StrikethroughStyle {
                 thickness: px(4.),
                 color: Some(crate::red()),
@@ -1606,7 +1610,7 @@ mod tests {
         };
 
         let expected_style = HighlightStyle {
-            color: Some(red().blend(&blue().with_alpha(0.7))),
+            color: Some(red().blend(blue().alpha(0.7))),
             strikethrough: Some(StrikethroughStyle {
                 thickness: px(4.),
                 color: Some(red()),

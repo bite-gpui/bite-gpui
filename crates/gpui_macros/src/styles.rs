@@ -771,10 +771,10 @@ pub fn border_style_methods(input: TokenStream) -> TokenStream {
         /// Sets the background painted into the border of the element.
         #visibility fn border_color<C>(mut self, border_color: C) -> Self
         where
-            C: Into<gpui::Background>,
+            C: gpui::IntoHsla,
             Self: Sized,
         {
-            self.style().border_color = Some(border_color.into());
+            self.style().border_color = Some(border_color.into_hsla());
             self
         }
 
@@ -835,10 +835,10 @@ pub fn box_shadow_style_methods(input: TokenStream) -> TokenStream {
         /// [Docs](https://tailwindcss.com/docs/box-shadow#setting-the-ring-color)
         #visibility fn ring_color<C>(mut self, color: C) -> Self
         where
-            C: Into<gpui::Background>,
+            C: gpui::IntoHsla,
             Self: Sized,
         {
-            self.style().ring.color = Some(gpui::RingColor::Color(color.into()));
+            self.style().ring.color = Some(gpui::RingColor::Color(color.into_hsla()));
             self
         }
 
@@ -853,10 +853,10 @@ pub fn box_shadow_style_methods(input: TokenStream) -> TokenStream {
         /// [Docs](https://tailwindcss.com/docs/box-shadow#setting-the-inset-ring-color)
         #visibility fn inset_ring_color<C>(mut self, color: C) -> Self
         where
-            C: Into<gpui::Background>,
+            C: gpui::IntoHsla,
             Self: Sized,
         {
-            self.style().inset_ring.color = Some(gpui::RingColor::Color(color.into()));
+            self.style().inset_ring.color = Some(gpui::RingColor::Color(color.into_hsla()));
             self
         }
 

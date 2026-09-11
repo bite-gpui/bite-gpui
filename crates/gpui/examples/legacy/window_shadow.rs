@@ -111,8 +111,12 @@ impl Render for WindowShadow {
                             .when(!tiling.right, |div| div.border_r(border_size))
                             .when(!tiling.is_tiled(), |div| {
                                 div.shadow(vec![
-                                    gpui::BoxShadow::new(px(0.), px(0.), hsla(0., 0., 0., 0.4))
-                                        .blur_radius(shadow_size / 2.),
+                                    gpui::BoxShadow::new(
+                                        px(0.),
+                                        px(0.),
+                                        gpui::hsla(0., 0., 0., 0.4),
+                                    )
+                                    .blur_radius(shadow_size / 2.),
                                 ])
                             }),
                     })
@@ -147,7 +151,7 @@ impl Render for WindowShadow {
                                             gpui::BoxShadow::new(
                                                 px(0.),
                                                 px(0.),
-                                                hsla(0., 0., 0., 1.),
+                                                gpui::hsla(0., 0., 0., 1.),
                                             )
                                             .blur_radius(px(20.0)),
                                         ])
