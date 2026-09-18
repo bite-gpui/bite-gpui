@@ -2,7 +2,7 @@ use crate::{CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext};
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
-use gpui_backend::{
+use gpui_engine::{
     AtlasTextureId, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer,
     get_gamma_correction_ratios,
 };
@@ -2614,7 +2614,7 @@ impl RenderingParameters {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_backend::{MonochromeSprite, PolychromeSprite, Quad, SubpixelSprite, Underline};
+    use gpui_engine::{MonochromeSprite, PolychromeSprite, Quad, SubpixelSprite, Underline};
     use gpui_platform::{BorderStyle, ColorSpace, ContentMask, Corners, Edges, Hsla, Shadow, Size, linear_color_stop, linear_gradient};
     #[cfg(target_os = "linux")]
     use gpui::{DevicePixels, PlatformHeadlessRenderer, Scene};
