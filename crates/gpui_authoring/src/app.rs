@@ -43,15 +43,15 @@ use crate::asset_cache::CachedLoad;
 use crate::{
     Action, ActionBuildError, ActionRegistry, ActivityGuard, Any, AnyView, AnyWindowHandle,
     AppContext, Arena, ArenaBox, Asset, AssetSource, BackgroundExecutor, Bounds, ClipboardItem,
-    ClipboardReadError, CursorStyle, DispatchPhase, DisplayId, EventEmitter, ExternalDragPayload,
-    FocusHandle, FocusMap, ForegroundExecutor, FramePipeline, Global, KeyBinding, KeyContext,
-    Keymap, Keystroke, LayoutEngine, LayoutId, Menu, MenuCommandId, MenuItem, MissingGlyph,
-    OwnedMenu, OwnedMenuItem, PathPromptOptions, Pixels, Platform, PlatformDisplay,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, Point, Priority, PromptBuilder, PromptButton,
-    PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle, Reservation,
-    ScreenCaptureSource, SharedString, StandardImmediatePipeline, SubscriberSet, Subscription,
-    SvgRenderer, SystemNotification, SystemNotificationResponse, SystemWindowTab, Task,
-    TextRenderingMode, TextSystem, ThermalState, Window, WindowAppearance, WindowButtonLayout,
+    ClipboardReadError, CursorStyle, DefaultTextSystem, DispatchPhase, DisplayId, EventEmitter,
+    ExternalDragPayload, FocusHandle, FocusMap, ForegroundExecutor, FramePipeline, Global,
+    KeyBinding, KeyContext, Keymap, Keystroke, LayoutEngine, LayoutId, Menu, MenuCommandId,
+    MenuItem, MissingGlyph, OwnedMenu, OwnedMenuItem, PathPromptOptions, Pixels, Platform,
+    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point, Priority, PromptBuilder,
+    PromptButton, PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle,
+    Reservation, ScreenCaptureSource, SharedString, StandardImmediatePipeline, SubscriberSet,
+    Subscription, SvgRenderer, SystemNotification, SystemNotificationResponse, SystemWindowTab,
+    Task, TextRenderingMode, TextSystem, ThermalState, Window, WindowAppearance, WindowButtonLayout,
     WindowHandle, WindowHost, WindowId, WindowInvalidator,
     colors::{Colors, GlobalColors},
     hash, init_app_menus, resolve_dock_menu, resolve_menus,
@@ -622,7 +622,7 @@ enum PlatformOwnedDragState {
 pub struct App {
     pub(crate) this: Weak<AppCell>,
     pub(crate) platform: Rc<dyn Platform>,
-    text_system: Arc<TextSystem>,
+    text_system: Arc<dyn TextSystem>,
     /// Creates a fresh layout engine for each window. Injected at application
     /// construction so windows drive layout through the [`LayoutEngine`] trait
     /// without naming an implementation.
@@ -754,7 +754,7 @@ impl App {
         let foreground_journal = crate::profiler::journal::install_foreground_journal();
         let synced_animation_epoch = background_executor.now();
 
-        let text_system = Arc::new(TextSystem::new(platform.text_system()));
+        let text_system = Arc::new(DefaultTextSystem::new(platform.text_system()));
         let entities = EntityMap::new();
         let keyboard_layout = platform.keyboard_layout();
         let keyboard_mapper = platform.keyboard_mapper();
@@ -2034,7 +2034,7 @@ impl App {
     }
 
     /// Accessor for the text system.
-    pub fn text_system(&self) -> &Arc<TextSystem> {
+    pub fn text_system(&self) -> &Arc<dyn TextSystem> {
         &self.text_system
     }
 
@@ -2057,7 +2057,7 @@ impl App {
         if let Some(mut receiver) = self.text_system.take_missing_glyph_receiver() {
             let callback = self.missing_glyph_callback.clone();
             self.spawn(async move |cx| {
-                while let Ok(missing_glyphs) = receiver.recv().await {
+                while let Some(missing_glyphs) = receiver.recv().await {
                     cx.update(|cx| callback.invoke(&missing_glyphs, cx));
                 }
             })
@@ -2911,6 +2911,12 @@ impl App {
         factory: Rc<dyn Fn(WindowId) -> Box<dyn FramePipeline>>,
     ) {
         self.frame_pipeline_factory = factory;
+    }
+
+    /// Replaces the text system used to shape and lay out text.
+    #[doc(hidden)]
+    pub fn set_text_system(&mut self, text_system: Arc<dyn TextSystem>) {
+        self.text_system = text_system;
     }
 
     /// Sets the arguments to pass when restarting the application.
