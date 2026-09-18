@@ -104,8 +104,8 @@ impl Render for DynamicFonts {
 }
 
 fn main() {
-    gpui_platform::web_init();
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui::web_init();
+    gpui::application().run(|cx: &mut App| {
         if cx
             .text_system()
             .add_fonts(vec![Cow::Borrowed(include_bytes!(

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use gpui::{
+use gpui_platform::{
     Bounds, Capslock, DispatchEventResult, DisplayId, GpuSpecs, HeadlessAtlas, Modifiers, Pixels,
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, WindowAppearance,

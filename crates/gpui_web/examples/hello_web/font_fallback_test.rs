@@ -18,7 +18,7 @@ impl MissingGlyphSink for Reports {
 
 #[wasm_bindgen]
 pub fn test_missing_glyph_notifications() -> Result<(), JsValue> {
-    let platform = gpui_platform::current_platform(false);
+    let platform = gpui::current_platform(false);
     let text_system = platform.text_system();
     text_system
         .add_fonts(vec![Cow::Borrowed(include_bytes!(

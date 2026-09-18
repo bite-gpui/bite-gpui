@@ -2,7 +2,7 @@ use crate::metal_atlas::MetalAtlas;
 use anyhow::{Context as _, Result};
 use block2::RcBlock;
 use core_graphics::geometry::CGSize;
-use gpui::{
+use gpui_platform::{
     AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path, Point,
     PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
 };
@@ -25,7 +25,7 @@ use parking_lot::Mutex;
 use std::{cell::Cell, ffi::c_void, mem, mem::MaybeUninit, ops::Range, ptr, slice, sync::Arc};
 
 // Exported to metal
-pub(crate) type PointF = gpui::Point<f32>;
+pub(crate) type PointF = gpui_platform::Point<f32>;
 
 #[cfg(not(feature = "runtime_shaders"))]
 const SHADERS_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shaders.metallib"));
@@ -45,7 +45,7 @@ pub unsafe fn new_renderer(
     context: self::Context,
     _native_window: *mut c_void,
     _native_view: *mut c_void,
-    _bounds: gpui::Size<f32>,
+    _bounds: gpui_platform::Size<f32>,
     transparent: bool,
 ) -> Renderer {
     MetalRenderer::new(context, transparent)
@@ -1652,7 +1652,7 @@ impl MetalHeadlessRenderer {
 }
 
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
-impl gpui::PlatformHeadlessRenderer for MetalHeadlessRenderer {
+impl gpui_platform::PlatformHeadlessRenderer for MetalHeadlessRenderer {
     fn render_scene_to_image(
         &mut self,
         scene: &Scene,
@@ -1665,7 +1665,7 @@ impl gpui::PlatformHeadlessRenderer for MetalHeadlessRenderer {
         self.renderer.render_scene(scene, size)
     }
 
-    fn sprite_atlas(&self) -> Arc<dyn gpui::PlatformAtlas> {
+    fn sprite_atlas(&self) -> Arc<dyn gpui_platform::PlatformAtlas> {
         self.renderer.sprite_atlas().clone()
     }
 }
