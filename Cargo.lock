@@ -7349,6 +7349,7 @@ dependencies = [
  "futures 0.3.34",
  "futures-concurrency",
  "getrandom 0.3.4",
+ "gpui_backend",
  "gpui_linux",
  "gpui_macos",
  "gpui_macros",
@@ -7431,6 +7432,7 @@ dependencies = [
  "foreign-types 0.5.0",
  "futures 0.3.34",
  "gpui",
+ "gpui_backend",
  "gpui_platform",
  "gpui_util",
  "image",
@@ -7454,6 +7456,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_backend"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel 2.5.0",
+ "collections",
+ "derive_more",
+ "etagere",
+ "futures 0.3.34",
+ "gpui_shared_string",
+ "gpui_types",
+ "image",
+ "itertools 0.14.0",
+ "log",
+ "parking_lot",
+ "profiling",
+ "rand 0.9.4",
+ "schemars 1.0.4",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "stacksafe",
+ "taffy",
+]
+
+[[package]]
 name = "gpui_linux"
 version = "0.1.0"
 dependencies = [
@@ -7469,6 +7497,7 @@ dependencies = [
  "filedescriptor",
  "futures 0.3.34",
  "gpui",
+ "gpui_backend",
  "gpui_platform",
  "gpui_types",
  "gpui_util",
@@ -7517,10 +7546,12 @@ dependencies = [
  "futures 0.3.34",
  "gpui",
  "gpui_apple",
+ "gpui_backend",
  "gpui_platform",
  "gpui_util",
  "image",
  "itertools 0.14.0",
+ "libc",
  "log",
  "objc",
  "objc2 0.6.3",
@@ -7564,6 +7595,7 @@ dependencies = [
  "derive_more",
  "etagere",
  "futures 0.3.34",
+ "gpui_backend",
  "gpui_shared_string",
  "gpui_types",
  "gpui_util",
@@ -7574,7 +7606,6 @@ dependencies = [
  "objc2-core-video",
  "parking",
  "parking_lot",
- "profiling",
  "rand 0.9.4",
  "raw-window-handle",
  "scheduler",
@@ -7645,6 +7676,7 @@ dependencies = [
  "console_error_panic_hook",
  "futures 0.3.34",
  "gpui",
+ "gpui_backend",
  "gpui_platform",
  "gpui_wgpu",
  "http_client",
@@ -7676,6 +7708,7 @@ dependencies = [
  "criterion",
  "etagere",
  "gpui",
+ "gpui_backend",
  "gpui_platform",
  "gpui_util",
  "image",
@@ -7706,6 +7739,7 @@ dependencies = [
  "dunce",
  "etagere",
  "futures 0.3.34",
+ "gpui_backend",
  "gpui_platform",
  "gpui_util",
  "image",

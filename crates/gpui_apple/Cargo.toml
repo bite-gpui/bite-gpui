@@ -21,6 +21,7 @@ font-kit = ["dep:font-kit", "dep:core-text", "dep:objc2-core-text", "dep:pathfin
 
 [dependencies]
 gpui_platform.workspace = true
+gpui_backend.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 anyhow.workspace = true

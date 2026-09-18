@@ -12,16 +12,12 @@
 #![warn(missing_docs)]
 
 mod app;
-mod atlas;
-mod bounds_tree;
 mod clipboard;
 mod cursor;
 mod dispatcher;
 mod display;
 mod executor;
 mod executor_runtime;
-mod font_fallbacks;
-mod font_features;
 mod gestures;
 mod gpu;
 mod input;
@@ -47,31 +43,25 @@ mod prompt;
 ))]
 #[expect(missing_docs)]
 pub mod queue;
-mod render;
 #[cfg(all(
     feature = "screen-capture",
     any(target_os = "windows", target_os = "linux", target_os = "freebsd",)
 ))]
 pub mod scap_screen_capture;
-mod scene;
 mod screen_capture;
 #[cfg(any(test, feature = "test-support"))]
 mod test_dispatcher;
 mod text_input;
-mod text_system;
 mod window;
 mod window_id;
 
 pub use app::*;
-pub use atlas::*;
 pub use clipboard::*;
 pub use cursor::*;
 pub use dispatcher::*;
 pub use display::*;
 pub use executor::*;
 pub use executor_runtime::*;
-pub use font_fallbacks::*;
-pub use font_features::*;
 pub use gestures::*;
 pub use gpu::*;
 pub use gpui_shared_string::*;
@@ -97,12 +87,9 @@ pub use prompt::*;
     feature = "bench-support"
 ))]
 pub use queue::*;
-pub use render::*;
-pub use scene::*;
 pub use screen_capture::*;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_dispatcher::*;
 pub use text_input::*;
-pub use text_system::*;
 pub use window::*;
 pub use window_id::*;
