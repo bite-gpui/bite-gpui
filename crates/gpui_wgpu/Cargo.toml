@@ -19,7 +19,7 @@ font-kit = ["dep:font-kit"]
 test-support = ["gpui/test-support", "dep:image"]
 
 [dependencies]
-gpui.workspace = true
+gpui_platform.workspace = true
 anyhow.workspace = true
 bytemuck = "1"
 collections.workspace = true
@@ -29,6 +29,7 @@ itertools.workspace = true
 image = { workspace = true, optional = true }
 log.workspace = true
 parking_lot.workspace = true
+pollster.workspace = true
 profiling.workspace = true
 raw-window-handle.workspace = true
 smallvec.workspace = true

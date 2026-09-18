@@ -215,7 +215,7 @@ pub fn test(args: TokenStream, function: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// The benchmark crate must add `criterion` and `gpui_platform` (with its
+/// The benchmark crate must add `criterion` and `gpui` (with its
 /// `test-support` feature) to its dev-dependencies and enable gpui's `bench`
 /// feature, since the generated code references all three.
 #[proc_macro_attribute]
