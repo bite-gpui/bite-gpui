@@ -12,12 +12,12 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
+use gpui_backend::{HeadlessAtlas, PlatformAtlas, Scene, SceneRenderer};
 use gpui_platform::{
-    Bounds, Capslock, DispatchEventResult, DisplayId, GpuSpecs, HeadlessAtlas, Modifiers, Pixels,
-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams, WindowVisibility,
-    px,
+    Bounds, Capslock, DispatchEventResult, DisplayId, GpuSpecs, Modifiers, Pixels,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
+    PromptLevel, RequestFrameOptions, Size, WindowAppearance, WindowBackgroundAppearance,
+    WindowBounds, WindowControlArea, WindowParams, WindowVisibility, px,
 };
 
 #[derive(Debug)]
@@ -56,6 +56,7 @@ struct HeadlessWindowState {
     input_handler: Option<PlatformInputHandler>,
     title: Option<String>,
     is_fullscreen: bool,
+    renderer: HeadlessRenderer,
 }
 
 pub(crate) struct HeadlessWindow(Rc<RefCell<HeadlessWindowState>>);
@@ -90,6 +91,7 @@ impl HeadlessWindow {
             input_handler: None,
             title: None,
             is_fullscreen: false,
+            renderer: HeadlessRenderer::default(),
         })))
     }
 }
@@ -225,10 +227,14 @@ impl PlatformWindow for HeadlessWindow {
 
     fn on_appearance_changed(&self, _callback: Box<dyn FnMut()>) {}
 
-    fn draw(&self, _scene: &Scene) {}
+    fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {
+        let mut state = self.0.borrow_mut();
+        f(&mut state.renderer);
+    }
 
-    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        Arc::new(HeadlessAtlas::default())
+    fn present(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer) -> bool) {
+        let mut state = self.0.borrow_mut();
+        f(&mut state.renderer);
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {
@@ -239,5 +245,29 @@ impl PlatformWindow for HeadlessWindow {
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         None
+    }
+}
+
+/// A renderer for headless windows: it discards frames and hands out atlas
+/// tiles without uploading pixels.
+struct HeadlessRenderer {
+    atlas: Arc<HeadlessAtlas>,
+}
+
+impl Default for HeadlessRenderer {
+    fn default() -> Self {
+        Self {
+            atlas: Arc::new(HeadlessAtlas::default()),
+        }
+    }
+}
+
+impl SceneRenderer for HeadlessRenderer {
+    fn draw(&mut self, _scene: &Scene) -> bool {
+        true
+    }
+
+    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+        self.atlas.clone()
     }
 }

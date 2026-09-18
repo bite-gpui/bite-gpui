@@ -36,6 +36,7 @@ platform = [
 ]
 test-support = [
     "collections/test-support",
+    "gpui_backend/test-support",
     "gpui_platform/test-support",
     "gpui_types/test-support",
     "http_client/test-support",
@@ -78,7 +79,7 @@ screen-capture = [
 ]
 windows-manifest = ["dep:embed-resource"]
 profiler = ["dep:hdrhistogram", "gpui_platform/profiler"]
-stacker = ["dep:stacksafe"]
+stacker = ["dep:stacksafe", "gpui_backend/stacker"]
 
 [lib]
 path = "src/gpui.rs"
@@ -99,6 +100,7 @@ etagere.workspace = true
 futures.workspace = true
 futures-concurrency = { workspace = true, optional = true }
 gpui_macros.workspace = true
+gpui_backend.workspace = true
 gpui_platform.workspace = true
 gpui_shared_string.workspace = true
 gpui_types = { workspace = true, features = ["lyon"] }
@@ -206,6 +208,7 @@ env_logger.workspace = true
 futures-concurrency.workspace = true
 postage = { workspace = true, features = ["blocking"] }
 web-time.workspace = true
+gpui_backend = { workspace = true, features = ["test-support"] }
 gpui_platform = { workspace = true, features = ["test-support", "wayland", "x11"] }
 gpui_util.workspace = true
 lyon = { version = "1.0", features = ["extra"] }

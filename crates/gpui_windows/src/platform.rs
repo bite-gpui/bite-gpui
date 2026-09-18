@@ -37,6 +37,7 @@ use windows::{
 };
 
 use crate::*;
+use gpui_backend::{NoopTextSystem, PlatformTextSystem};
 use gpui_platform::*;
 
 struct TrackedWindow {
@@ -191,7 +192,7 @@ impl WindowsPlatform {
             )
         } else {
             (
-                Arc::new(gpui_platform::NoopTextSystem::new()) as Arc<dyn PlatformTextSystem>,
+                Arc::new(NoopTextSystem::new()) as Arc<dyn PlatformTextSystem>,
                 None,
             )
         };
