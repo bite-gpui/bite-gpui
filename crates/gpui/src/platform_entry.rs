@@ -1,48 +1,52 @@
-//! Convenience crate that re-exports GPUI's platform traits and the
-//! `current_platform` constructor so consumers don't need `#[cfg]` gating.
+//! Platform entrypoints: construct the default [`crate::Platform`] for the
+//! current operating system and turn it into an [`crate::Application`].
+//!
+//! These live behind the `platform` feature, which pulls in the
+//! backend for the target OS.
 
-pub use gpui::Platform;
-
+use crate::{Application, BackgroundExecutor, Platform};
 use std::rc::Rc;
 
 /// Returns a background executor for the current platform.
-pub fn background_executor() -> gpui::BackgroundExecutor {
+pub fn background_executor() -> BackgroundExecutor {
     current_platform(true).background_executor()
 }
 
-pub fn application() -> gpui::Application {
+/// Returns an [`Application`] backed by the default platform for this OS.
+pub fn application() -> Application {
     #[cfg(target_family = "wasm")]
     {
         application_with_web_backend(gpui_web::WebBackendPreference::Auto)
     }
 
     #[cfg(not(target_family = "wasm"))]
-    gpui::Application::with_platform(current_platform(false))
+    Application::with_platform(current_platform(false))
 }
 
-pub fn headless() -> gpui::Application {
-    gpui::Application::with_platform(current_platform(true))
+/// Returns a headless [`Application`] backed by the default platform for this OS.
+pub fn headless() -> Application {
+    Application::with_platform(current_platform(true))
 }
 
 #[cfg(target_family = "wasm")]
 pub use gpui_web::WebBackendPreference;
 
 #[cfg(target_family = "wasm")]
-pub fn application_with_web_backend(backend_preference: WebBackendPreference) -> gpui::Application {
+pub fn application_with_web_backend(backend_preference: WebBackendPreference) -> Application {
     let platform = Rc::new(gpui_web::WebPlatform::new_with_backend(
         true,
         backend_preference,
     ));
     let http_client = std::sync::Arc::new(platform.fetch_http_client());
-    gpui::Application::with_platform(platform).with_http_client(http_client)
+    Application::with_platform(platform).with_http_client(http_client)
 }
 
 /// Unlike `application`, this function returns a single-threaded web application.
 #[cfg(target_family = "wasm")]
-pub fn single_threaded_web() -> gpui::Application {
+pub fn single_threaded_web() -> Application {
     let platform = Rc::new(gpui_web::WebPlatform::new(false));
     let http_client = std::sync::Arc::new(platform.fetch_http_client());
-    gpui::Application::with_platform(platform).with_http_client(http_client)
+    Application::with_platform(platform).with_http_client(http_client)
 }
 
 /// Initializes panic hooks and logging for the web platform.
@@ -80,9 +84,9 @@ pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
     }
 }
 
-/// Returns a new [`HeadlessRenderer`] for the current platform, if available.
+/// Returns a new [`crate::PlatformHeadlessRenderer`] for the current platform, if available.
 #[cfg(any(feature = "bench-support", feature = "test-support"))]
-pub fn current_headless_renderer() -> Option<Box<dyn gpui::PlatformHeadlessRenderer>> {
+pub fn current_headless_renderer() -> Option<Box<dyn crate::PlatformHeadlessRenderer>> {
     #[cfg(target_os = "macos")]
     {
         Some(Box::new(
@@ -99,7 +103,7 @@ pub fn current_headless_renderer() -> Option<Box<dyn gpui::PlatformHeadlessRende
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
-    use gpui::{AppContext, Empty, VisualTestAppContext};
+    use crate::{AppContext, Empty, VisualTestAppContext};
     use std::cell::RefCell;
     use std::time::Duration;
 
