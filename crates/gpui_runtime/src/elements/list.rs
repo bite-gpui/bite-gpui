@@ -9,9 +9,8 @@
 
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, DispatchPhase, Edges, Element, EntityId,
-    FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
-    Overflow, Pixels, Point, ScrollDelta, ScrollWheelEvent, Size, Style, StyleRefinement, Styled,
-    Window, point, px, size,
+    FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, IntoElement, Overflow, Pixels, Point,
+    ScrollDelta, ScrollWheelEvent, Size, Style, StyleRefinement, Styled, Window, point, px, size,
 };
 use collections::VecDeque;
 use refineable::Refineable as _;
@@ -596,7 +595,7 @@ impl ListState {
 
     /// Scroll the list to the very end (past the last item).
     ///
-    /// Unlike [`scroll_to_reveal_item`], this uses the total item count as the
+    /// Unlike [`Self::scroll_to_reveal_item`], this uses the total item count as the
     /// anchor, so the list's layout pass will walk backwards from the end and
     /// always show the bottom of the last item — even when that item is still
     /// growing (e.g. during streaming).
@@ -1452,7 +1451,6 @@ impl Element for List {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (crate::LayoutId, Self::RequestLayoutState) {
@@ -1526,7 +1524,6 @@ impl Element for List {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         window: &mut Window,
@@ -1579,7 +1576,6 @@ impl Element for List {
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<crate::Pixels>,
         _: &mut Self::RequestLayoutState,
         prepaint: &mut Self::PrepaintState,
