@@ -5,42 +5,41 @@ for Rust, designed to support a wide variety of applications.
 
 ## Getting Started
 
-GPUI is still in active development as we work on the Zed code editor, and is still pre-1.0. There will often be breaking changes between versions. You'll also need to use the latest version of stable Rust. Add `gpui`, and optionally `gpui_platform`, to your `Cargo.toml`:
+GPUI is still in active development as we work on the Zed code editor, and is still pre-1.0. There will often be breaking changes between versions. You'll also need to use the latest version of stable Rust. Add `gpui` to your `Cargo.toml`:
 
 ```toml
 gpui = { version = "*" }
-gpui_platform = { version = "*", features = ["font-kit", "wayland", "x11"] }
 ```
 
-Everything in a standalone GPUI app starts with an `Application`. You can create one with `gpui_platform::application()`, which picks the windowing and text backends for the host OS, and kick off your application by passing a callback to `Application::run()`. Inside this callback, you can create a new window with `App::open_window()` and register your first root view.
+Everything in a standalone GPUI app starts with an `Application`. You can create one with `gpui::application()`, which picks the windowing and text backends for the host OS, and kick off your application by passing a callback to `Application::run()`. Inside this callback, you can create a new window with `App::open_window()` and register your first root view.
 
 ```rust,no_run
 use gpui::*;
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui::application().run(|cx: &mut App| {
         // ..
     });
 }
 ```
 
-### `gpui_platform`
+### Platform features
 
-The features on `gpui_platform` are platform-specific, so the list above is a safe cross-platform default. If you build for a single platform, you can trim it:
+The `platform` feature is on by default. It pulls in the backend for the host OS, enables the windowing and text features a desktop build needs, and provides the `application()`, `headless()`, and `current_platform()` entrypoints.
 
-- **macOS** — Rendering uses Metal and is always available, but glyph rasterization needs `font-kit`. Without it, GPUI falls back to a placeholder text system that lays text out but renders no glyphs.
+For a headless build, or to wire up a custom backend yourself, disable it:
 
-    ```toml
-    gpui_platform = { version = "*", features = ["font-kit"] }
-    ```
+```toml
+gpui = { version = "*", default-features = false }
+```
 
-- **Linux / FreeBSD** — enable at least one windowing backend for desktop windows: `wayland`, `x11`, or both. These features also compile the renderer and text system, so no separate text feature is needed.
+Without `platform` you can still enable individual pieces:
 
-    ```toml
-    gpui_platform = { version = "*", features = ["wayland", "x11"] }
-    ```
+- **macOS** — `font-kit` for glyph rasterization. Without it, GPUI falls back to a placeholder text system that lays text out but renders no glyphs.
 
-- **Windows** — no features are required. Windowing uses Win32 and text uses DirectWrite. `font-kit` has no effect here.
+- **Linux / FreeBSD** — `wayland`, `x11`, or both, for desktop windows. These features also compile the renderer and text system, so no separate text feature is needed.
+
+- **Windows** — `windows-manifest` to embed the application manifest; windowing uses Win32 and text uses DirectWrite. `font-kit` has no effect here.
 
 ### Additional Topics
 
