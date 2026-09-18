@@ -233,7 +233,7 @@ impl<T> PriorityQueueReceiver<T> {
     }
 
     /// Returns the number of queued elements across all priorities.
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         let queues = self
             .state
             .queues

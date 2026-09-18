@@ -6,9 +6,9 @@ use gpui_util::ResultExt;
 
 use crate::linux::headless::window::{HeadlessDisplay, HeadlessWindow};
 use crate::linux::{LinuxClient, LinuxCommon, LinuxKeyboardLayout};
-use gpui::{
-    AnyWindowHandle, CursorStyle, DisplayId, PlatformDisplay, PlatformKeyboardLayout,
-    PlatformWindow, WindowParams,
+use gpui_platform::{
+    CursorStyle, DisplayId, PlatformDisplay, PlatformKeyboardLayout, PlatformWindow, WindowId,
+    WindowParams,
 };
 
 pub struct HeadlessClientState {
@@ -79,8 +79,9 @@ impl LinuxClient for HeadlessClient {
     #[cfg(feature = "screen-capture")]
     fn screen_capture_sources(
         &self,
-    ) -> futures::channel::oneshot::Receiver<anyhow::Result<Vec<Rc<dyn gpui::ScreenCaptureSource>>>>
-    {
+    ) -> futures::channel::oneshot::Receiver<
+        anyhow::Result<Vec<Rc<dyn gpui_platform::ScreenCaptureSource>>>,
+    > {
         let (tx, rx) = futures::channel::oneshot::channel();
         tx.send(Err(anyhow::anyhow!(
             "Headless mode does not support screen capture."
@@ -89,17 +90,17 @@ impl LinuxClient for HeadlessClient {
         rx
     }
 
-    fn active_window(&self) -> Option<AnyWindowHandle> {
+    fn active_window(&self) -> Option<WindowId> {
         None
     }
 
-    fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
+    fn window_stack(&self) -> Option<Vec<WindowId>> {
         None
     }
 
     fn open_window(
         &self,
-        _handle: AnyWindowHandle,
+        _handle: WindowId,
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
         Ok(Box::new(HeadlessWindow::new(
@@ -118,15 +119,15 @@ impl LinuxClient for HeadlessClient {
 
     fn reveal_path(&self, _path: std::path::PathBuf) {}
 
-    fn write_to_primary(&self, _item: gpui::ClipboardItem) {}
+    fn write_to_primary(&self, _item: gpui_platform::ClipboardItem) {}
 
-    fn write_to_clipboard(&self, _item: gpui::ClipboardItem) {}
+    fn write_to_clipboard(&self, _item: gpui_platform::ClipboardItem) {}
 
-    fn read_from_primary(&self) -> Option<gpui::ClipboardItem> {
+    fn read_from_primary(&self) -> Option<gpui_platform::ClipboardItem> {
         None
     }
 
-    fn read_from_clipboard(&self) -> Option<gpui::ClipboardItem> {
+    fn read_from_clipboard(&self) -> Option<gpui_platform::ClipboardItem> {
         None
     }
 

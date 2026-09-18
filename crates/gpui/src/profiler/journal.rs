@@ -26,6 +26,7 @@ use scheduler::Instant;
 
 use super::{ActionTiming, FrameTiming, PresentTiming, TaskTiming};
 use crate::{App, WindowId, WindowVisibility};
+use gpui_platform::ForegroundRunnableCounter;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PowerState {
@@ -366,31 +367,6 @@ impl FrameSnapshot {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct ForegroundRunnableCounter(Arc<AtomicUsize>);
-
-impl ForegroundRunnableCounter {
-    fn new() -> Self {
-        Self(Arc::new(AtomicUsize::new(0)))
-    }
-
-    pub(crate) fn queued(&self) {
-        self.0.fetch_add(1, Ordering::Release);
-    }
-
-    fn finished(&self) {
-        let _ = self
-            .0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                count.checked_sub(1)
-            });
-    }
-
-    fn has_runnables(&self) -> bool {
-        self.0.load(Ordering::Acquire) > 0
-    }
-}
-
 // Visibility and power changes clear `dirty_at`; `Window::refresh_visibility`
 // re-records the frame from the window's actual dirty state afterwards.
 struct WindowFrameState {
@@ -602,19 +578,14 @@ impl ForegroundJournalWriter {
 }
 
 thread_local! {
-    static FOREGROUND_RUNNABLES: ForegroundRunnableCounter = ForegroundRunnableCounter::new();
     static FOREGROUND_JOURNAL: RefCell<Option<ForegroundJournalWriter>> = const { RefCell::new(None) };
-}
-
-pub(crate) fn foreground_runnable_counter() -> ForegroundRunnableCounter {
-    FOREGROUND_RUNNABLES.with(Clone::clone)
 }
 
 /// Starts journaling on the calling thread. Called once by `App` construction
 /// on the main thread; every other thread's recording calls are no-ops.
 /// Idempotent so that multiple `App`s on one thread (tests) share one journal.
 pub(crate) fn install_foreground_journal() -> ForegroundJournal {
-    let foreground_runnables = foreground_runnable_counter();
+    let foreground_runnables = gpui_platform::foreground_runnable_counter();
     FOREGROUND_JOURNAL.with(|journal| {
         let mut journal = journal.borrow_mut();
         if let Some(journal) = journal.as_ref() {
@@ -660,7 +631,7 @@ pub(crate) fn install_test_foreground_journal(
     capacity: usize,
     pending_capacity: usize,
 ) -> (ForegroundJournal, TestForegroundJournalGuard) {
-    let foreground_runnables = foreground_runnable_counter();
+    let foreground_runnables = gpui_platform::foreground_runnable_counter();
     let (handle, publisher) = ForegroundJournal::new(capacity, pending_capacity);
     let previous = FOREGROUND_JOURNAL.with(|journal| {
         journal.borrow_mut().replace(ForegroundJournalWriter::new(
@@ -766,7 +737,7 @@ pub(crate) fn end_foreground_turn() {
 }
 
 pub(crate) fn record_task_poll(timing: TaskTiming) {
-    FOREGROUND_RUNNABLES.with(ForegroundRunnableCounter::finished);
+    gpui_platform::foreground_runnable_finished();
     with_journal(|journal| {
         if journal.power_interrupted_since(timing.start) {
             journal.end_turn(timing.end.0);
