@@ -3,22 +3,19 @@
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 use crate::layer_shell;
 use crate::{
-    Decorations, DispatchEventResult, ExternalDragPayload, GpuSpecs, PlatformAtlas,
-    PlatformDisplay, PlatformInput, PlatformInputHandler, PromptButton, PromptLevel,
-    RequestFrameOptions, ResizeEdge, Scene, SystemWindowTab, TextInputConfiguration,
-    TextInputStateChange, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowControls, WindowDecorations, WindowInsets,
+    Decorations, DispatchEventResult, ExternalDragPayload, GpuSpecs, PlatformDisplay,
+    PlatformInput, PlatformInputHandler, PromptButton, PromptLevel, RequestFrameOptions,
+    ResizeEdge, SystemWindowTab, TextInputConfiguration, TextInputStateChange, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls, WindowDecorations,
+    WindowInsets,
 };
-#[cfg(any(test, feature = "test-support"))]
-use anyhow::Result;
 use futures::channel::oneshot;
+use gpui_backend::SceneRenderer;
 use gpui_types::{Bounds, Capslock, Modifiers, Pixels, Point, Size};
-#[cfg(any(test, feature = "test-support"))]
-use image::RgbaImage;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 use std::any::Any;
-use std::{rc::Rc, sync::Arc};
+use std::rc::Rc;
 
 /// Whether the platform is presenting a window's frames.
 ///
@@ -147,9 +144,18 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_close(&self, callback: Box<dyn FnOnce()>);
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
     fn on_button_layout_changed(&self, _callback: Box<dyn FnMut()>) {}
-    fn draw(&self, scene: &Scene);
+    /// Borrows this window's scene renderer without presenting a frame.
+    ///
+    /// Use this for renderer queries such as reading the sprite atlas or
+    /// capturing an image; backends must not advance their frame loop here.
+    fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer));
+    /// Submits a frame through this window's scene renderer.
+    ///
+    /// `f` encodes and submits the frame and returns whether it was presented.
+    /// Backends that pace themselves on compositor callbacks use that result
+    /// to update their frame loop.
+    fn present(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer) -> bool);
     fn schedule_frame(&self) {}
-    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
     fn is_subpixel_rendering_supported(&self) -> bool;
 
     // macOS specific methods
@@ -269,13 +275,5 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
     fn as_test(&mut self) -> Option<&mut dyn Any> {
         None
-    }
-
-    /// Renders the given scene to a texture and returns the pixel data as an RGBA image.
-    /// This does not present the frame to screen - useful for visual testing where we want
-    /// to capture what would be rendered without displaying it or requiring the window to be visible.
-    #[cfg(any(test, feature = "test-support"))]
-    fn render_to_image(&self, _scene: &Scene) -> Result<RgbaImage> {
-        anyhow::bail!("render_to_image not implemented for this platform")
     }
 }
