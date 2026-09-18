@@ -1,11 +1,10 @@
 use crate::{
-    AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTile, Bounds, DevicePixels, DispatchEventResult,
-    GpuSpecs, HeadlessAtlas, Pixels, PlatformAtlas, PlatformDisplay, PlatformHeadlessRenderer,
+    AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTile, Bounds, DevicePixels,
+    DispatchEventResult, GpuSpecs, HeadlessAtlas, Pixels, PlatformAtlas, PlatformDisplay,
     PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton, RequestFrameOptions,
     Scene, SceneRenderer, Size, TestPlatform, TextInputConfiguration, TextInputStateChange, TileId,
-    WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowId, WindowInsets,
-    WindowParams, WindowVisibility,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowId,
+    WindowInsets, WindowParams, WindowVisibility,
 };
 #[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
@@ -604,4 +603,3 @@ impl SceneRenderer for TestRenderer {
         anyhow::bail!("render_to_image not available: no HeadlessRenderer configured")
     }
 }
-
