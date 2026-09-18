@@ -7,26 +7,27 @@ use crate::profiler;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
-    Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
-    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
-    EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
-    Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
-    KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
-    MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas,
-    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
-    Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage,
-    RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
-    StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
-    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextInputConfiguration,
-    TextInputStateChange, TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState,
-    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
-    WindowVisibility, point, prelude::*, px, rems, size, transparent_black,
+    Capslock, ContentMask, Context, Corners, CursorHideMode, CursorStyle, DEFAULT_WINDOW_SIZE,
+    Decorations, DevicePixels, DispatchActionListener, DispatchEventResult, DispatchNodeId,
+    DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, FontId,
+    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero, KeyBinding, KeyContext,
+    KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers,
+    ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
+    Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
+    PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
+    RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
+    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
+    SharedString, Size, StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription,
+    SystemWindowTab, SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task,
+    TextInputConfiguration, TextInputStateChange, TextRenderingMode, TextStyle, TextStyleRefinement,
+    ThermalState, TransformationMatrix, Underline, UnderlineStyle, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls, WindowDecorations,
+    WindowId, WindowOptions, WindowParams, WindowTextSystem, WindowVisibility,
+    new_platform_input_handler, point, prelude::*, px, rems, size, transparent_black,
 };
 
+use crate::TouchEvent;
 use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
-use crate::interactive::TouchEvent;
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
 #[cfg(target_os = "macos")]
@@ -75,9 +76,6 @@ use crate::util::{
     round_half_toward_zero_f64, round_stroke_to_device_pixel, round_to_device_pixel,
 };
 pub use prompts::*;
-
-/// Default window size used when no explicit size is provided.
-pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(1095.));
 
 /// A 6:5 aspect ratio minimum window size to be used for functional,
 /// additional-to-main-Zed windows, like the settings and rules library windows.
@@ -733,19 +731,6 @@ pub(crate) struct CursorStyleRequest {
 pub(crate) struct HitTest {
     pub(crate) ids: SmallVec<[HitboxId; 8]>,
     pub(crate) hover_hitbox_count: usize,
-}
-
-/// A type of window control area that corresponds to the platform window.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WindowControlArea {
-    /// An area that allows dragging of the platform window.
-    Drag,
-    /// An area that allows closing of the platform window.
-    Close,
-    /// An area that allows maximizing of the platform window.
-    Max,
-    /// An area that allows minimizing of the platform window.
-    Min,
 }
 
 /// An identifier for a [Hitbox] which also includes [HitboxBehavior].
@@ -1534,7 +1519,7 @@ impl Window {
 
         let window_bounds = window_bounds.unwrap_or_else(|| default_bounds(display_id, cx));
         let mut platform_window = cx.platform.open_window(
-            handle,
+            handle.window_id(),
             WindowParams {
                 bounds: window_bounds.get_bounds(),
                 titlebar,
@@ -2101,38 +2086,6 @@ impl Window {
         value: AnyWindowFocusListener,
     ) -> (Subscription, impl FnOnce() + use<>) {
         self.focus_listeners.insert((), value)
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[expect(missing_docs)]
-pub struct DispatchEventResult {
-    pub propagate: bool,
-    pub default_prevented: bool,
-}
-
-/// Indicates which region of the window is visible. Content falling outside of this mask will not be
-/// rendered. Currently, only rectangular content masks are supported, but we give the mask its own type
-/// to leave room to support more complex shapes in the future.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
-    /// The bounds
-    pub bounds: Bounds<P>,
-}
-
-impl ContentMask<Pixels> {
-    /// Scale the content mask's pixel units by the given scaling factor.
-    pub fn scale(&self, factor: f32) -> ContentMask<ScaledPixels> {
-        ContentMask {
-            bounds: self.bounds.scale(factor),
-        }
-    }
-
-    /// Intersect the content mask with the given content mask.
-    pub fn intersect(&self, other: &Self) -> Self {
-        let bounds = self.bounds.intersect(&other.bounds);
-        ContentMask { bounds }
     }
 }
 
@@ -5119,7 +5072,10 @@ impl Window {
             let cx = self.to_async(cx);
             self.next_frame
                 .input_handlers
-                .push(Some(PlatformInputHandler::new(cx, Box::new(input_handler))));
+                .push(Some(new_platform_input_handler(
+                    cx,
+                    Box::new(input_handler),
+                )));
         }
     }
 
@@ -6968,25 +6924,6 @@ impl Window {
             pressed_button: None,
         });
         let _ = self.dispatch_event(event, cx);
-    }
-}
-
-// #[derive(Clone, Copy, Eq, PartialEq, Hash)]
-slotmap::new_key_type! {
-    /// A unique identifier for a window.
-    pub struct WindowId;
-}
-
-impl WindowId {
-    /// Converts this window ID to a `u64`.
-    pub fn as_u64(&self) -> u64 {
-        self.0.as_ffi()
-    }
-}
-
-impl From<u64> for WindowId {
-    fn from(value: u64) -> Self {
-        WindowId(slotmap::KeyData::from_ffi(value))
     }
 }
 

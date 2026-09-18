@@ -45,15 +45,15 @@ use crate::{
     AppContext, Arena, ArenaBox, Asset, AssetSource, BackgroundExecutor, Bounds, ClipboardItem,
     ClipboardReadError, CursorStyle, DispatchPhase, DisplayId, EventEmitter, ExternalDragPayload,
     FocusHandle, FocusMap, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap, Keystroke,
-    LayoutId, Menu, MenuItem, MissingGlyph, OwnedMenu, PathPromptOptions, Pixels, Platform,
-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point, Priority,
-    PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render, RenderImage,
-    RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString, SubscriberSet,
-    Subscription, SvgRenderer, SystemNotification, SystemNotificationResponse, Task,
-    TextRenderingMode, TextSystem, ThermalState, Window, WindowAppearance, WindowButtonLayout,
-    WindowHandle, WindowId, WindowInvalidator,
+    LayoutId, Menu, MenuCommandId, MenuItem, MissingGlyph, OwnedMenu, OwnedMenuItem,
+    PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, Point, Priority, PromptBuilder, PromptButton, PromptHandle, PromptLevel,
+    Render, RenderImage, RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString,
+    SubscriberSet, Subscription, SvgRenderer, SystemNotification, SystemNotificationResponse,
+    SystemWindowTab, Task, TextRenderingMode, TextSystem, ThermalState, Window, WindowAppearance,
+    WindowButtonLayout, WindowHandle, WindowId, WindowInvalidator,
     colors::{Colors, GlobalColors},
-    hash, init_app_menus,
+    hash, init_app_menus, resolve_dock_menu, resolve_menus,
 };
 
 mod async_context;
@@ -409,27 +409,6 @@ pub enum CursorHideMode {
     OnTypingAndAction,
 }
 
-#[doc(hidden)]
-#[derive(Clone, PartialEq, Eq)]
-pub struct SystemWindowTab {
-    pub id: WindowId,
-    pub title: SharedString,
-    pub handle: AnyWindowHandle,
-    pub last_active_at: Instant,
-}
-
-impl SystemWindowTab {
-    /// Create a new instance of the window tab.
-    pub fn new(title: SharedString, handle: AnyWindowHandle) -> Self {
-        Self {
-            id: handle.id,
-            title,
-            handle,
-            last_active_at: Instant::now(),
-        }
-    }
-}
-
 /// A controller for managing window tabs.
 #[derive(Default)]
 pub struct SystemWindowTabController {
@@ -459,7 +438,7 @@ impl SystemWindowTabController {
     }
 
     /// Get the next tab group window handle.
-    pub fn get_next_tab_group_window(cx: &mut App, id: WindowId) -> Option<&AnyWindowHandle> {
+    pub fn get_next_tab_group_window(cx: &mut App, id: WindowId) -> Option<AnyWindowHandle> {
         let controller = cx.global::<SystemWindowTabController>();
         let current_group = controller
             .tab_groups
@@ -472,19 +451,20 @@ impl SystemWindowTabController {
         let idx = group_ids.iter().position(|g| *g == current_group)?;
         let next_idx = (idx + 1) % group_ids.len();
 
-        controller
+        let tab_handle = controller
             .tab_groups
             .get(group_ids[next_idx])
             .and_then(|tabs| {
                 tabs.iter()
                     .max_by_key(|tab| tab.last_active_at)
                     .or_else(|| tabs.first())
-                    .map(|tab| &tab.handle)
-            })
+                    .map(|tab| tab.handle)
+            })?;
+        cx.window_handle(tab_handle)
     }
 
     /// Get the previous tab group window handle.
-    pub fn get_prev_tab_group_window(cx: &mut App, id: WindowId) -> Option<&AnyWindowHandle> {
+    pub fn get_prev_tab_group_window(cx: &mut App, id: WindowId) -> Option<AnyWindowHandle> {
         let controller = cx.global::<SystemWindowTabController>();
         let current_group = controller
             .tab_groups
@@ -501,15 +481,16 @@ impl SystemWindowTabController {
             idx - 1
         };
 
-        controller
+        let tab_handle = controller
             .tab_groups
             .get(group_ids[prev_idx])
             .and_then(|tabs| {
                 tabs.iter()
                     .max_by_key(|tab| tab.last_active_at)
                     .or_else(|| tabs.first())
-                    .map(|tab| &tab.handle)
-            })
+                    .map(|tab| tab.handle)
+            })?;
+        cx.window_handle(tab_handle)
     }
 
     /// Get all tabs in the same window.
@@ -667,36 +648,46 @@ impl SystemWindowTabController {
 
     /// Selects the next tab in the tab group in the trailing direction.
     pub fn select_next_tab(cx: &mut App, id: WindowId) {
-        let mut controller = cx.global_mut::<SystemWindowTabController>();
-        let Some(tabs) = controller.tabs(id) else {
-            return;
+        let next_handle = {
+            let controller = cx.global::<SystemWindowTabController>();
+            let Some(tabs) = controller.tabs(id) else {
+                return;
+            };
+
+            let current_index = tabs.iter().position(|tab| tab.id == id).unwrap();
+            let next_index = (current_index + 1) % tabs.len();
+            tabs[next_index].handle
         };
 
-        let current_index = tabs.iter().position(|tab| tab.id == id).unwrap();
-        let next_index = (current_index + 1) % tabs.len();
-
-        let _ = &tabs[next_index].handle.update(cx, |_, window, _| {
-            window.activate_window();
-        });
+        if let Some(handle) = cx.window_handle(next_handle) {
+            let _ = handle.update(cx, |_, window, _| {
+                window.activate_window();
+            });
+        }
     }
 
     /// Selects the previous tab in the tab group in the leading direction.
     pub fn select_previous_tab(cx: &mut App, id: WindowId) {
-        let mut controller = cx.global_mut::<SystemWindowTabController>();
-        let Some(tabs) = controller.tabs(id) else {
-            return;
+        let previous_handle = {
+            let controller = cx.global::<SystemWindowTabController>();
+            let Some(tabs) = controller.tabs(id) else {
+                return;
+            };
+
+            let current_index = tabs.iter().position(|tab| tab.id == id).unwrap();
+            let previous_index = if current_index == 0 {
+                tabs.len() - 1
+            } else {
+                current_index - 1
+            };
+            tabs[previous_index].handle
         };
 
-        let current_index = tabs.iter().position(|tab| tab.id == id).unwrap();
-        let previous_index = if current_index == 0 {
-            tabs.len() - 1
-        } else {
-            current_index - 1
-        };
-
-        let _ = &tabs[previous_index].handle.update(cx, |_, window, _| {
-            window.activate_window();
-        });
+        if let Some(handle) = cx.window_handle(previous_handle) {
+            let _ = handle.update(cx, |_, window, _| {
+                window.activate_window();
+            });
+        }
     }
 }
 
@@ -759,6 +750,8 @@ pub struct App {
     pub(crate) window_handles: FxHashMap<WindowId, AnyWindowHandle>,
     pub(crate) focus_handles: Arc<FocusMap>,
     pub(crate) keymap: Rc<RefCell<Keymap>>,
+    pub(crate) menu_actions: Rc<RefCell<Vec<Box<dyn Action>>>>,
+    owned_menus: Rc<RefCell<Option<Vec<OwnedMenu>>>>,
     pub(crate) keyboard_layout: Box<dyn PlatformKeyboardLayout>,
     pub(crate) keyboard_mapper: Rc<dyn PlatformKeyboardMapper>,
     pub(crate) global_action_listeners:
@@ -851,6 +844,7 @@ impl App {
             background_executor.is_main_thread(),
             "must construct App on main thread"
         );
+        crate::profiler::install_profiler_hooks();
         #[cfg(feature = "profiler")]
         let foreground_journal = crate::profiler::journal::install_foreground_journal();
         let synced_animation_epoch = background_executor.now();
@@ -891,6 +885,8 @@ impl App {
                 window_handles: FxHashMap::default(),
                 focus_handles: Arc::new(RwLock::new(SlotMap::with_key())),
                 keymap: Rc::new(RefCell::new(Keymap::default())),
+                menu_actions: Rc::new(RefCell::new(Vec::new())),
+                owned_menus: Rc::new(RefCell::new(None)),
                 keyboard_layout,
                 keyboard_mapper,
                 global_action_listeners: Default::default(),
@@ -1329,12 +1325,24 @@ impl App {
     ///
     /// This method returns None if the platform doesn't implement the method yet.
     pub fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
-        self.platform.window_stack()
+        self.platform.window_stack().map(|window_ids| {
+            window_ids
+                .into_iter()
+                .filter_map(|window_id| self.window_handle(window_id))
+                .collect()
+        })
     }
 
     /// Returns a handle to the window that is currently focused at the platform level, if one exists.
     pub fn active_window(&self) -> Option<AnyWindowHandle> {
-        self.platform.active_window()
+        self.platform
+            .active_window()
+            .and_then(|window_id| self.window_handle(window_id))
+    }
+
+    /// Returns the handle for the window with the given id, if it is open.
+    pub fn window_handle(&self, window_id: WindowId) -> Option<AnyWindowHandle> {
+        self.window_handles.get(&window_id).copied()
     }
 
     /// Opens a new window with the given option and the root view returned by the given function.
@@ -2561,18 +2569,52 @@ impl App {
 
     /// Sets the menu bar for this application. This will replace any existing menu bar.
     pub fn set_menus(&self, menus: impl IntoIterator<Item = Menu>) {
-        let menus: Vec<Menu> = menus.into_iter().collect();
-        self.platform.set_menus(menus, &self.keymap.borrow());
+        let owned: Vec<OwnedMenu> = menus.into_iter().map(Menu::owned).collect();
+        let resolved = {
+            let keymap = self.keymap.borrow();
+            let mut actions = self.menu_actions.borrow_mut();
+            resolve_menus(&owned, &keymap, &mut actions)
+        };
+        *self.owned_menus.borrow_mut() = Some(owned);
+        self.platform.set_menus(resolved);
     }
 
     /// Gets the menu bar for this application.
     pub fn get_menus(&self) -> Option<Vec<OwnedMenu>> {
-        self.platform.get_menus()
+        self.owned_menus.borrow().clone()
     }
 
     /// Sets the right click menu for the app icon in the dock
     pub fn set_dock_menu(&self, menus: Vec<MenuItem>) {
-        self.platform.set_dock_menu(menus, &self.keymap.borrow())
+        let owned: Vec<OwnedMenuItem> = menus.into_iter().map(MenuItem::owned).collect();
+        let resolved = {
+            let keymap = self.keymap.borrow();
+            let mut actions = self.menu_actions.borrow_mut();
+            resolve_dock_menu(&owned, &keymap, &mut actions)
+        };
+        self.platform.set_dock_menu(resolved)
+    }
+
+    /// Returns whether the menu command with the given id is currently available.
+    pub(crate) fn is_menu_command_available(&mut self, command_id: MenuCommandId) -> bool {
+        let action = self
+            .menu_actions
+            .borrow()
+            .get(command_id)
+            .map(|action| action.boxed_clone());
+        action.is_some_and(|action| self.is_action_available(action.as_ref()))
+    }
+
+    /// Dispatches the menu command with the given id.
+    pub(crate) fn dispatch_menu_command(&mut self, command_id: MenuCommandId) {
+        let action = self
+            .menu_actions
+            .borrow()
+            .get(command_id)
+            .map(|action| action.boxed_clone());
+        if let Some(action) = action {
+            self.dispatch_action(action.as_ref());
+        }
     }
 
     /// Performs the action associated with the given dock menu item, only used on Windows for now.
@@ -2595,7 +2637,13 @@ impl App {
         menus: Vec<MenuItem>,
         entries: Vec<SmallVec<[PathBuf; 2]>>,
     ) -> Task<Vec<SmallVec<[PathBuf; 2]>>> {
-        self.platform.update_jump_list(menus, entries)
+        let owned: Vec<OwnedMenuItem> = menus.into_iter().map(MenuItem::owned).collect();
+        let resolved = {
+            let keymap = self.keymap.borrow();
+            let mut actions = self.menu_actions.borrow_mut();
+            resolve_dock_menu(&owned, &keymap, &mut actions)
+        };
+        self.platform.update_jump_list(resolved, entries)
     }
 
     /// Dispatch an action to the currently active window or global action handler

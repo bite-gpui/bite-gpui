@@ -12,7 +12,6 @@ mod app;
 mod arena;
 mod asset_cache;
 mod assets;
-mod bounds_tree;
 /// The default colors used by GPUI.
 pub mod colors;
 #[cfg(feature = "profiler")]
@@ -20,8 +19,6 @@ mod debug_overlay;
 mod element;
 mod elements;
 mod executor;
-mod platform_scheduler;
-pub(crate) use platform_scheduler::PlatformScheduler;
 mod gestures;
 mod global;
 mod input;
@@ -31,20 +28,11 @@ mod key_dispatch;
 mod keymap;
 mod path_builder;
 mod platform;
+#[cfg(feature = "platform")]
+mod platform_entry;
 pub mod prelude;
 /// Profiling utilities for task, frame, and thread performance tracking.
 pub mod profiler;
-#[cfg(any(
-    test,
-    target_os = "windows",
-    target_os = "linux",
-    target_family = "wasm",
-    feature = "test-support",
-    feature = "bench-support"
-))]
-#[expect(missing_docs)]
-pub mod queue;
-mod scene;
 mod shared_uri;
 mod spring;
 mod style;
@@ -129,8 +117,7 @@ macro_rules! bench_main {
         criterion::criterion_main!($($tokens)*);
     };
 }
-pub use gpui_shared_string::*;
-pub use gpui_types::*;
+pub use gpui_platform::*;
 pub use gpui_util::arc_cow::ArcCow;
 pub use http_client;
 pub use input::*;
@@ -140,11 +127,10 @@ use key_dispatch::*;
 pub use keymap::*;
 pub use path_builder::*;
 pub use platform::*;
+#[cfg(feature = "platform")]
+pub use platform_entry::*;
 pub use profiler::*;
-#[cfg(any(target_os = "windows", target_os = "linux", target_family = "wasm"))]
-pub use queue::{PriorityQueueReceiver, PriorityQueueSender};
 pub use refineable::*;
-pub use scene::*;
 pub use shared_uri::*;
 use std::{any::Any, future::Future};
 pub use style::*;
@@ -379,17 +365,4 @@ where
         self.borrow_mut().default_global::<G>();
         self.update_global(f)
     }
-}
-
-/// Information about the GPU GPUI is running on.
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct GpuSpecs {
-    /// Whether the GPU is really a fake (like `llvmpipe`) running on the CPU.
-    pub is_software_emulated: bool,
-    /// The name of the device, as reported by Vulkan.
-    pub device_name: String,
-    /// The name of the driver, as reported by Vulkan.
-    pub driver_name: String,
-    /// Further information about the driver, as reported by Vulkan.
-    pub driver_info: String,
 }

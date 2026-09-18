@@ -4,7 +4,7 @@ use cosmic_text::{
     Attrs, AttrsList, Ellipsize, Family, Font as CosmicTextFont,
     FontFeatures as CosmicFontFeatures, FontSystem, ShapeBuffer, ShapeLine, Stretch, Style, Weight,
 };
-use gpui::{
+use gpui_platform::{
     Bounds, DevicePixels, FallbackFontClass, Font, FontFallbacks, FontFeatures, FontId,
     FontMetrics, FontRun, GlyphId, IsZero as _, LineLayout, MissingGlyph, MissingGlyphSink, Pixels,
     PlatformTextSystem, RenderGlyphParams, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ShapedGlyph,
@@ -96,7 +96,7 @@ impl CosmicTextSystem {
     pub fn font_weight_and_style(
         &self,
         font_id: FontId,
-    ) -> Result<(gpui::FontWeight, gpui::FontStyle)> {
+    ) -> Result<(gpui_platform::FontWeight, gpui_platform::FontStyle)> {
         let state = self.0.read();
         let font = state
             .loaded_fonts
@@ -108,11 +108,11 @@ impl CosmicTextSystem {
             .face(font.font.id())
             .context("font face not found")?;
         let style = match face.style {
-            cosmic_text::Style::Normal => gpui::FontStyle::Normal,
-            cosmic_text::Style::Italic => gpui::FontStyle::Italic,
-            cosmic_text::Style::Oblique => gpui::FontStyle::Oblique,
+            cosmic_text::Style::Normal => gpui_platform::FontStyle::Normal,
+            cosmic_text::Style::Italic => gpui_platform::FontStyle::Italic,
+            cosmic_text::Style::Oblique => gpui_platform::FontStyle::Oblique,
         };
-        Ok((gpui::FontWeight(face.weight.0 as f32), style))
+        Ok((gpui_platform::FontWeight(face.weight.0 as f32), style))
     }
 
     /// Builds reports for unresolved source indices after an outer text system
@@ -383,7 +383,7 @@ impl CosmicTextSystemState {
             _ => Arc::from(Vec::new()),
         };
 
-        let name = gpui::font_name_with_fallbacks(name, &self.system_font_fallback);
+        let name = gpui_platform::font_name_with_fallbacks(name, &self.system_font_fallback);
 
         let families = self
             .font_system
@@ -998,7 +998,7 @@ fn find_best_match(
     let target_weight = font.weight.0;
     let target_italic = matches!(
         font.style,
-        gpui::FontStyle::Italic | gpui::FontStyle::Oblique
+        gpui_platform::FontStyle::Italic | gpui_platform::FontStyle::Oblique
     );
 
     let mut best_index = 0;
@@ -1155,12 +1155,12 @@ fn cosmic_font_features(features: &FontFeatures) -> Result<CosmicFontFeatures> {
 }
 
 #[cfg(feature = "font-kit")]
-fn font_into_properties(font: &gpui::Font) -> font_kit::properties::Properties {
+fn font_into_properties(font: &gpui_platform::Font) -> font_kit::properties::Properties {
     font_kit::properties::Properties {
         style: match font.style {
-            gpui::FontStyle::Normal => font_kit::properties::Style::Normal,
-            gpui::FontStyle::Italic => font_kit::properties::Style::Italic,
-            gpui::FontStyle::Oblique => font_kit::properties::Style::Oblique,
+            gpui_platform::FontStyle::Normal => font_kit::properties::Style::Normal,
+            gpui_platform::FontStyle::Italic => font_kit::properties::Style::Italic,
+            gpui_platform::FontStyle::Oblique => font_kit::properties::Style::Oblique,
         },
         weight: font_kit::properties::Weight(font.weight.0),
         stretch: Default::default(),
@@ -1288,7 +1288,7 @@ mod tests {
             len: text.len(),
             font_id,
         }];
-        Ok(text_system.layout_line(text, gpui::px(14.0), &runs))
+        Ok(text_system.layout_line(text, gpui_platform::px(14.0), &runs))
     }
 
     /// Mirrors the original crash: mixed-direction text reaching the shaper
@@ -1306,7 +1306,8 @@ mod tests {
             ..Default::default()
         }];
 
-        let lines = window_text_system.shape_text(text, gpui::px(14.0), &runs, None, None)?;
+        let lines =
+            window_text_system.shape_text(text, gpui_platform::px(14.0), &runs, None, None)?;
 
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[1].len(), "\u{05d0}\u{001c}A".len());
@@ -1493,7 +1494,7 @@ mod tests {
                 font_id,
             },
         ];
-        let layout = text_system.layout_line(text, gpui::px(14.0), &runs);
+        let layout = text_system.layout_line(text, gpui_platform::px(14.0), &runs);
 
         assert_eq!(layout.len, text.len());
         assert!(layout.width > Pixels::ZERO);
