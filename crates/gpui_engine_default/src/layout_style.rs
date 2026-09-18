@@ -1,11 +1,17 @@
-//! Conversion from GPUI's [`Style`] to `taffy` styles.
+//! Conversion from the engine's layout style to `taffy`.
 //!
-//! The layout engine itself lives in `gpui_backend`; this module stays in the
-//! facade because the conversion names GPUI's styling types.
+//! The engine enums and `taffy`'s enums are both foreign to this crate, so the
+//! enum conversions are free functions rather than `From` impls. Everything
+//! else is expressed through the private [`ToTaffy`] trait, whose impls are
+//! allowed because the trait is local.
 
-use crate::{
-    AbsoluteLength, DefiniteLength, Edges, GridTemplate, Length, Pixels, Size, Style,
-    util::{round_stroke_to_device_pixel, round_to_device_pixel},
+use gpui_engine::{
+    AlignContent, AlignItems, Display, EngineLayoutStyle, FlexDirection, FlexWrap, GridTemplate,
+    GridTemplateMinSize, Overflow, Position,
+};
+use gpui_types::{
+    AbsoluteLength, DefiniteLength, Edges, GridPlacement, Length, Pixels, Size,
+    round_stroke_to_device_pixel, round_to_device_pixel,
 };
 use std::{fmt::Debug, ops::Range};
 use taffy::{
@@ -13,9 +19,77 @@ use taffy::{
     prelude::{max_content, min_content},
 };
 
-/// Converts a GPUI [`Style`] into the `taffy` style the engine consumes.
+fn to_taffy_align_items(value: AlignItems) -> taffy::style::AlignItems {
+    match value {
+        AlignItems::Start => taffy::style::AlignItems::START,
+        AlignItems::End => taffy::style::AlignItems::END,
+        AlignItems::FlexStart => taffy::style::AlignItems::FLEX_START,
+        AlignItems::FlexEnd => taffy::style::AlignItems::FLEX_END,
+        AlignItems::Center => taffy::style::AlignItems::CENTER,
+        AlignItems::Baseline => taffy::style::AlignItems::BASELINE,
+        AlignItems::Stretch => taffy::style::AlignItems::STRETCH,
+    }
+}
+
+fn to_taffy_align_content(value: AlignContent) -> taffy::style::AlignContent {
+    match value {
+        AlignContent::Start => taffy::style::AlignContent::START,
+        AlignContent::End => taffy::style::AlignContent::END,
+        AlignContent::FlexStart => taffy::style::AlignContent::FLEX_START,
+        AlignContent::FlexEnd => taffy::style::AlignContent::FLEX_END,
+        AlignContent::Center => taffy::style::AlignContent::CENTER,
+        AlignContent::Stretch => taffy::style::AlignContent::STRETCH,
+        AlignContent::SpaceBetween => taffy::style::AlignContent::SPACE_BETWEEN,
+        AlignContent::SpaceEvenly => taffy::style::AlignContent::SPACE_EVENLY,
+        AlignContent::SpaceAround => taffy::style::AlignContent::SPACE_AROUND,
+    }
+}
+
+fn to_taffy_display(value: Display) -> taffy::style::Display {
+    match value {
+        Display::Block => taffy::style::Display::Block,
+        Display::Flex => taffy::style::Display::Flex,
+        Display::Grid => taffy::style::Display::Grid,
+        Display::None => taffy::style::Display::None,
+    }
+}
+
+fn to_taffy_flex_wrap(value: FlexWrap) -> taffy::style::FlexWrap {
+    match value {
+        FlexWrap::NoWrap => taffy::style::FlexWrap::NoWrap,
+        FlexWrap::Wrap => taffy::style::FlexWrap::Wrap,
+        FlexWrap::WrapReverse => taffy::style::FlexWrap::WrapReverse,
+    }
+}
+
+fn to_taffy_flex_direction(value: FlexDirection) -> taffy::style::FlexDirection {
+    match value {
+        FlexDirection::Row => taffy::style::FlexDirection::Row,
+        FlexDirection::Column => taffy::style::FlexDirection::Column,
+        FlexDirection::RowReverse => taffy::style::FlexDirection::RowReverse,
+        FlexDirection::ColumnReverse => taffy::style::FlexDirection::ColumnReverse,
+    }
+}
+
+fn to_taffy_overflow(value: Overflow) -> taffy::style::Overflow {
+    match value {
+        Overflow::Visible => taffy::style::Overflow::Visible,
+        Overflow::Clip => taffy::style::Overflow::Clip,
+        Overflow::Hidden => taffy::style::Overflow::Hidden,
+        Overflow::Scroll => taffy::style::Overflow::Scroll,
+    }
+}
+
+fn to_taffy_position(value: Position) -> taffy::style::Position {
+    match value {
+        Position::Relative => taffy::style::Position::Relative,
+        Position::Absolute => taffy::style::Position::Absolute,
+    }
+}
+
+/// Converts an engine layout style into the `taffy` style the layout tree owns.
 pub(crate) fn to_taffy_style(
-    style: &Style,
+    style: &EngineLayoutStyle,
     rem_size: Pixels,
     scale_factor: f32,
 ) -> taffy::style::Style {
@@ -45,13 +119,11 @@ trait ToTaffy<Output> {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> Output;
 }
 
-impl ToTaffy<taffy::style::Style> for Style {
+impl ToTaffy<taffy::style::Style> for EngineLayoutStyle {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> taffy::style::Style {
         use taffy::style_helpers::{fr, length, minmax, repeat};
 
-        fn to_grid_line(
-            placement: &Range<crate::GridPlacement>,
-        ) -> taffy::Line<taffy::GridPlacement> {
+        fn to_grid_line(placement: &Range<GridPlacement>) -> taffy::Line<taffy::GridPlacement> {
             taffy::Line {
                 start: placement.start.into(),
                 end: placement.end.into(),
@@ -64,21 +136,21 @@ impl ToTaffy<taffy::style::Style> for Style {
             unit.map(|template| {
                 match template.min_size {
                     // grid-template-*: repeat(<number>, minmax(0, 1fr));
-                    crate::GridTemplateMinSize::Zero => {
+                    GridTemplateMinSize::Zero => {
                         vec![repeat(
                             template.repeat,
                             vec![minmax(length(0.0_f32), fr(1.0_f32))],
                         )]
                     }
                     // grid-template-*: repeat(<number>, minmax(min-content, 1fr));
-                    crate::GridTemplateMinSize::MinContent => {
+                    GridTemplateMinSize::MinContent => {
                         vec![repeat(
                             template.repeat,
                             vec![minmax(min_content(), fr(1.0_f32))],
                         )]
                     }
                     // grid-template-*: repeat(<number>, minmax(0, max-content))
-                    crate::GridTemplateMinSize::MaxContent => {
+                    GridTemplateMinSize::MaxContent => {
                         vec![repeat(
                             template.repeat,
                             vec![minmax(length(0.0_f32), max_content())],
@@ -90,10 +162,13 @@ impl ToTaffy<taffy::style::Style> for Style {
         }
 
         taffy::style::Style {
-            display: self.display.into(),
-            overflow: self.overflow.into(),
+            display: to_taffy_display(self.display),
+            overflow: taffy::geometry::Point {
+                x: to_taffy_overflow(self.overflow.x),
+                y: to_taffy_overflow(self.overflow.y),
+            },
             scrollbar_width: self.scrollbar_width.to_taffy(rem_size, scale_factor),
-            position: self.position.into(),
+            position: to_taffy_position(self.position),
             inset: self.inset.to_taffy(rem_size, scale_factor),
             size: self.size.to_taffy(rem_size, scale_factor),
             min_size: self.min_size.to_taffy(rem_size, scale_factor),
@@ -102,13 +177,13 @@ impl ToTaffy<taffy::style::Style> for Style {
             margin: self.margin.to_taffy(rem_size, scale_factor),
             padding: self.padding.to_taffy(rem_size, scale_factor),
             border: border_widths_to_taffy(&self.border_widths, rem_size, scale_factor),
-            align_items: self.align_items.map(|x| x.into()),
-            align_self: self.align_self.map(|x| x.into()),
-            align_content: self.align_content.map(|x| x.into()),
-            justify_content: self.justify_content.map(|x| x.into()),
+            align_items: self.align_items.map(to_taffy_align_items),
+            align_self: self.align_self.map(to_taffy_align_items),
+            align_content: self.align_content.map(to_taffy_align_content),
+            justify_content: self.justify_content.map(to_taffy_align_content),
             gap: self.gap.to_taffy(rem_size, scale_factor),
-            flex_direction: self.flex_direction.into(),
-            flex_wrap: self.flex_wrap.into(),
+            flex_direction: to_taffy_flex_direction(self.flex_direction),
+            flex_wrap: to_taffy_flex_wrap(self.flex_wrap),
             flex_basis: self.flex_basis.to_taffy(rem_size, scale_factor),
             flex_grow: self.flex_grow,
             flex_shrink: self.flex_shrink,

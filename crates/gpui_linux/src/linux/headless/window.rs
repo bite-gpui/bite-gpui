@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use gpui_backend::{
+use gpui_engine::{
     AtlasKey, AtlasTextureId, AtlasTile, HeadlessAtlas, PlatformAtlas, Scene, SceneRenderer, TileId,
 };
 use gpui_platform::{
