@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use derive_more::{Deref, DerefMut};
 use etagere::BucketedAtlasAllocator;
-use gpui_backend::{
+use gpui_engine::{
     AtlasBackend, AtlasKey, AtlasState, AtlasTextureId, AtlasTextureKind, AtlasTextureList,
     AtlasTile, PlatformAtlas,
 };
@@ -279,7 +279,7 @@ unsafe impl<T> Send for AssertSend<T> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_backend::PlatformAtlas;
+    use gpui_engine::PlatformAtlas;
     use std::borrow::Cow;
 
     fn create_atlas() -> Option<MetalAtlas> {
@@ -288,8 +288,8 @@ mod tests {
     }
 
     fn make_image_key(image_id: usize, frame_index: usize) -> AtlasKey {
-        AtlasKey::Image(gpui_backend::RenderImageParams {
-            image_id: gpui_backend::ImageId(image_id),
+        AtlasKey::Image(gpui_engine::RenderImageParams {
+            image_id: gpui_engine::ImageId(image_id),
             frame_index,
         })
     }

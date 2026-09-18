@@ -23,7 +23,8 @@ use core_text::{
 };
 use font_kit::font::Font as FontKitFont;
 use gpui::{FontFallbacks, FontFeatures};
-use gpui_backend::{FontFallbacks, FontFeatures};
+use gpui_engine::{FontFallbacks, FontFeatures};
+use gpui_engine::{FontFallbacks, FontFeatures};
 use gpui_platform::{FontFallbacks, FontFeatures};
 use objc2_core_text::{kCTFontOpenTypeFeatureTag, kCTFontOpenTypeFeatureValue};
 use std::ptr;

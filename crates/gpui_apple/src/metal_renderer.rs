@@ -3,7 +3,8 @@ use anyhow::{Context as _, Result};
 use block2::RcBlock;
 use cocoa::{base::{NO, YES}, foundation::{NSSize, NSUInteger}, quartzcore::AutoresizingMask};
 use core_graphics::{geometry::CGSize};
-use gpui_backend::{AtlasTextureId, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer};
+use gpui_engine::{AtlasTextureId, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer};
+use gpui_engine::{AtlasTextureId, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer};
 use gpui_platform::{
     Background, Bounds, ContentMask, DevicePixels, Point, ScaledPixels, Size, point, size,
 };

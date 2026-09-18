@@ -344,7 +344,6 @@ impl<V: View> Element for ViewElement<V> {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
@@ -382,7 +381,6 @@ impl<V: View> Element for ViewElement<V> {
     fn prepaint(
         &mut self,
         global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         element: &mut Self::RequestLayoutState,
         window: &mut Window,
@@ -423,7 +421,6 @@ impl<V: View> Element for ViewElement<V> {
     fn paint(
         &mut self,
         global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         element: &mut Self::PrepaintState,

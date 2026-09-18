@@ -1,6 +1,8 @@
+#[cfg(target_os = "macos")]
+use crate::MacWindowExt;
 use crate::{
-    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    ObjectFit, Pixels, Style, StyleRefinement, Styled, Window,
+    App, Bounds, Element, ElementId, GlobalElementId, IntoElement, LayoutId, ObjectFit, Pixels,
+    Style, StyleRefinement, Styled, Window,
 };
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use objc2_core_foundation::CFRetained;
@@ -63,7 +65,6 @@ impl Element for Surface {
     fn request_layout(
         &mut self,
         _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
@@ -76,7 +77,6 @@ impl Element for Surface {
     fn prepaint(
         &mut self,
         _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         _window: &mut Window,
@@ -87,12 +87,7 @@ impl Element for Surface {
     fn paint(
         &mut self,
         _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        #[cfg_attr(
-            not(any(target_os = "macos", target_os = "ios")),
-            allow(unused_variables)
-        )]
-        bounds: Bounds<Pixels>,
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         #[cfg_attr(

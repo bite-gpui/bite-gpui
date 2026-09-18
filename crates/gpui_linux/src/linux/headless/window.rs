@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_backend::{HeadlessAtlas, PlatformAtlas, Scene, SceneRenderer};
+use gpui_engine::{AtlasKey, AtlasTextureId, AtlasTile, HeadlessAtlas, PlatformAtlas, Scene, SceneRenderer, TileId};
 use gpui_platform::{
     Bounds, Capslock, DispatchEventResult, GpuSpecs, Modifiers, Pixels, PlatformDisplay,
     PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel,
