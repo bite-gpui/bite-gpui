@@ -259,7 +259,7 @@ impl BoundsExt for Bounds<Pixels> {
     }
 }
 
-impl HasRemSize for Window {
+impl HasRemSize for Window<'_> {
     fn rem_size(&self) -> Pixels {
         Window::rem_size(self)
     }

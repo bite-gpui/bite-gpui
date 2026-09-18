@@ -176,7 +176,7 @@ impl Element for Anchored {
             }
         }
 
-        let client_inset = window.client_inset.unwrap_or(px(0.));
+        let client_inset = window.core.client_inset.unwrap_or(px(0.));
         let edges = match self.fit_mode {
             AnchoredFitMode::SnapToWindowWithMargin(edges) => edges,
             _ => Edges::default(),
@@ -332,7 +332,12 @@ mod tests {
 
         let menu_bounds = window
             .update(cx, |_, window, _| {
-                window.rendered_frame.debug_bounds.get("MENU").copied()
+                window
+                    .frame_state
+                    .rendered_frame
+                    .debug_bounds
+                    .get("MENU")
+                    .copied()
             })
             .unwrap()
             .expect("MENU debug bounds not found");
@@ -364,7 +369,12 @@ mod tests {
 
         let menu_bounds = window
             .update(cx, |_, window, _| {
-                window.rendered_frame.debug_bounds.get("MENU").copied()
+                window
+                    .frame_state
+                    .rendered_frame
+                    .debug_bounds
+                    .get("MENU")
+                    .copied()
             })
             .unwrap()
             .expect("MENU debug bounds not found");
@@ -383,7 +393,12 @@ mod tests {
 
         let menu_bounds = window
             .update(cx, |_, window, _| {
-                window.rendered_frame.debug_bounds.get("MENU").copied()
+                window
+                    .frame_state
+                    .rendered_frame
+                    .debug_bounds
+                    .get("MENU")
+                    .copied()
             })
             .unwrap()
             .expect("MENU debug bounds not found");

@@ -623,4 +623,3 @@ impl SceneRenderer for TestRenderer {
         anyhow::bail!("render_to_image not available: no HeadlessRenderer configured")
     }
 }
-
