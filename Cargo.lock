@@ -7735,6 +7735,7 @@ version = "0.2.2"
 dependencies = [
  "accesskit",
  "anyhow",
+ "arc-swap",
  "async-channel 2.5.0",
  "async-task",
  "backtrace",
