@@ -3,7 +3,6 @@ use std::{
     ffi::c_void,
     ptr::NonNull,
     rc::Rc,
-    sync::Arc,
 };
 
 use calloop::ping::Ping;
@@ -32,12 +31,13 @@ use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1;
 
 use crate::linux::wayland::{display::WaylandDisplay, serial::SerialKind};
 use crate::linux::{Globals, Output, WaylandClientStatePtr, get_window};
+use gpui_backend::SceneRenderer;
 use gpui_platform::{
     Bounds, Capslock, Decorations, DevicePixels, ExternalDragPayload, GpuSpecs, Modifiers, Pixels,
-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, Scene, Size, Tiling,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls,
-    WindowDecorations, WindowId, WindowKind, WindowParams, WindowVisibility,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
+    PromptLevel, RequestFrameOptions, ResizeEdge, Size, Tiling, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls, WindowDecorations,
+    WindowId, WindowKind, WindowParams, WindowVisibility,
     layer_shell::{Anchor, LayerShellNotSupportedError},
     popup::PopupOptions,
     px, size,
@@ -1938,7 +1938,12 @@ impl PlatformWindow for WaylandWindow {
         self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
     }
 
-    fn draw(&self, scene: &Scene) {
+    fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {
+        let mut state = self.borrow_mut();
+        f(&mut state.renderer);
+    }
+
+    fn present(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer) -> bool) {
         let mut state = self.borrow_mut();
 
         if state.renderer.device_lost() {
@@ -1969,7 +1974,7 @@ impl PlatformWindow for WaylandWindow {
             let callback = state.surface.frame(&state.globals.qh, state.surface.id());
             state.pending_frame_callback = Some(callback);
         }
-        if state.renderer.draw(scene) {
+        if f(&mut state.renderer) {
             state.presentation = PresentationState::Presented;
             self.0.frame_loop.set(FrameLoop::AwaitingCallback);
         } else {
@@ -1984,11 +1989,6 @@ impl PlatformWindow for WaylandWindow {
 
     fn schedule_frame(&self) {
         self.0.schedule_frame();
-    }
-
-    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        let state = self.borrow();
-        state.renderer.sprite_atlas().clone()
     }
 
     fn show_window_menu(&self, position: Point<Pixels>) {

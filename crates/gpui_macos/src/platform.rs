@@ -28,15 +28,15 @@ use core_foundation::{
 use ctor::ctor;
 use dispatch2::DispatchQueue;
 use futures::channel::oneshot;
+use gpui_backend::PlatformTextSystem;
 use gpui_platform::{
     ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
     MenuCommandId, OsAction, PathPromptOptions, Platform, PlatformDisplay, PlatformKeyboardLayout,
-    PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformOsMenu, PlatformTextSystem,
-    PlatformWindow, SystemMenuType, Task, ThermalState, WindowAppearance, WindowId, WindowKind,
-    WindowParams, popup::PopupNotSupportedError,
+    PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformOsMenu, PlatformWindow,
+    SystemMenuType, Task, ThermalState, WindowAppearance, WindowId, WindowKind, WindowParams,
+    popup::PopupNotSupportedError,
 };
 use gpui_util::{ResultExt, new_std_command};
-use itertools::Itertools;
 use objc::{
     class,
     declare::ClassDecl,
@@ -218,7 +218,7 @@ impl MacPlatform {
                     "gpui_macos was compiled without the `font-kit` feature, so no text will be rendered."
                 );
             }
-            Arc::new(gpui_platform::NoopTextSystem::new())
+            Arc::new(gpui_backend::NoopTextSystem::new())
         };
 
         let keyboard_layout = MacKeyboardLayout::new();
@@ -323,19 +323,19 @@ impl MacPlatform {
                             let mut mask = NSEventModifierFlags::empty();
                             for (modifier, flag) in &[
                                 (
-                                    keystroke.modifiers().platform,
+                                    keystroke.modifiers.platform,
                                     NSEventModifierFlags::NSCommandKeyMask,
                                 ),
                                 (
-                                    keystroke.modifiers().control,
+                                    keystroke.modifiers.control,
                                     NSEventModifierFlags::NSControlKeyMask,
                                 ),
                                 (
-                                    keystroke.modifiers().alt,
+                                    keystroke.modifiers.alt,
                                     NSEventModifierFlags::NSAlternateKeyMask,
                                 ),
                                 (
-                                    keystroke.modifiers().shift,
+                                    keystroke.modifiers.shift,
                                     NSEventModifierFlags::NSShiftKeyMask,
                                 ),
                             ] {
@@ -344,7 +344,7 @@ impl MacPlatform {
                                 }
                             }
 
-                            (key_to_native(keystroke.key()).into_owned(), mask)
+                            (key_to_native(&keystroke.key).into_owned(), mask)
                         }
                         None => (String::new(), NSEventModifierFlags::empty()),
                     };
