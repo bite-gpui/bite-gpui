@@ -22,7 +22,7 @@ unicode-script = "0.5.7"
 unicode-segmentation = "1.10"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-gpui_backend.workspace = true
+gpui_engine.workspace = true
 gpui_platform.workspace = true
 scheduler.workspace = true
 parking_lot = { workspace = true, features = ["nightly"] }

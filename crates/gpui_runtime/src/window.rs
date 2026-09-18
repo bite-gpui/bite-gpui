@@ -30,11 +30,9 @@ use crate::TouchEvent;
 use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
-#[cfg(target_os = "macos")]
-use core_video::pixel_buffer::CVPixelBuffer;
 use derive_more::{Deref, DerefMut};
 use futures::channel::oneshot;
-use gpui_backend::__private::FrameSession;
+use gpui_engine::FrameSession;
 use gpui_util::post_inc;
 use gpui_util::{ResultExt, measure};
 use itertools::FoldWhile::{Continue, Done};
@@ -65,14 +63,18 @@ use std::{
 use uuid::Uuid;
 
 pub(crate) mod a11y;
+#[cfg(target_os = "macos")]
+mod mac;
 mod prompts;
 
 pub use a11y::A11ySubtreeBuilder;
+#[cfg(target_os = "macos")]
+pub use mac::*;
 
 use self::a11y::A11y;
 #[cfg(not(target_family = "wasm"))]
 use self::a11y::ROOT_NODE_ID;
-use crate::taffy::to_taffy_style;
+use crate::engine_layout::to_engine_layout_style;
 use crate::util::{
     atomic_incr_if_not_zero, ceil_to_device_pixel, floor_to_device_pixel, round_half_toward_zero,
     round_half_toward_zero_f64, round_stroke_to_device_pixel, round_to_device_pixel,
@@ -1141,10 +1143,29 @@ enum InputModality {
 }
 
 /// Holds the state for a specific window.
+///
+/// # Authoring API
+///
+/// An [`Element`] drives a frame through the calls below. Together they are the
+/// stable authoring surface; everything else on this type is runtime machinery
+/// that elements and components should not depend on. See the
+/// [authoring guide](crate::_authoring).
+///
+/// - Layout: [`Window::request_layout`], [`Window::request_measured_layout`]
+///   and [`Window::layout_bounds`].
+/// - Hit testing: [`Window::insert_hitbox`].
+/// - Drawing: [`Window::paint_quad`], [`Window::paint_path`],
+///   [`Window::paint_image`], [`Window::paint_drop_shadows`] and
+///   [`Window::paint_inset_shadows`].
 pub struct Window {
     pub(crate) handle: AnyWindowHandle,
     pub(crate) invalidator: WindowInvalidator,
     pub(crate) removed: bool,
+    /// The inspector identity of the element the runtime is currently laying
+    /// out or painting. `Drawable` publishes this around each lifecycle call so
+    /// that inspector state and hitboxes attribute to the right element without
+    /// every [`Element`] having to thread the token through its signature.
+    pub(crate) inspector_element_id: Option<crate::InspectorElementId>,
     pub(crate) platform_window: Box<dyn PlatformWindow>,
     display_id: Option<DisplayId>,
     is_resizable: bool,
@@ -2029,7 +2050,8 @@ impl Window {
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
             viewport_size: content_size,
-            layout_session: Rc::new(FrameSession::new()),
+            layout_session: Rc::new(FrameSession::new(cx.new_layout_engine())),
+            inspector_element_id: None,
             root: None,
             element_id_stack: SmallVec::default(),
             text_style_stack: Vec::new(),
@@ -3117,6 +3139,11 @@ impl Window {
 
     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
     /// the contents of the new [`Scene`], use [`Self::present`].
+    ///
+    /// Runtime API: the visual test harnesses render frames with this, but
+    /// elements and components should not call it. See the
+    /// [authoring guide](crate::_authoring).
+    #[doc(hidden)]
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
         // Drain every draw in profiler builds so a previous frame's
@@ -3317,7 +3344,7 @@ impl Window {
 
     /// Presents the most recently drawn frame if it hasn't been presented yet.
     #[cfg(all(test, feature = "profiler"))]
-    pub fn present_if_needed(&mut self) {
+    pub(crate) fn present_if_needed(&mut self) {
         if self.needs_present.get() {
             self.present();
         }
@@ -4235,6 +4262,7 @@ impl Window {
     /// after the element's background so they layer on top of the fill.
     ///
     /// This method should only be called as part of the paint phase of element drawing.
+    /// Part of the [authoring surface](crate::_authoring) for custom elements.
     pub fn paint_drop_shadows(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -4271,6 +4299,7 @@ impl Window {
     /// Paint the inset shadows from `shadows` into the scene at the current z-index. Should
     /// be called after the element's background so the shadow layers on top of the fill.
     /// Drop shadows are skipped; paint those with [`Self::paint_drop_shadows`] before the background.
+    /// Part of the [authoring surface](crate::_authoring) for custom elements.
     pub fn paint_inset_shadows(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -4361,6 +4390,7 @@ impl Window {
     /// Note that the `quad.corner_radii` are allowed to exceed the bounds, creating sharp corners
     /// where the circular arcs meet. This will not display well when combined with dashed borders.
     /// Use `Corners::clamp_radii_for_quad_size` if the radii should fit within the bounds.
+    /// Part of the [authoring surface](crate::_authoring) for custom elements.
     pub fn paint_quad(&mut self, quad: PaintQuad) {
         self.invalidator.debug_assert_paint();
 
@@ -4432,6 +4462,7 @@ impl Window {
     /// Paint the given `Path` into the scene for the next frame at the current z-index.
     ///
     /// This method should only be called as part of the paint phase of element drawing.
+    /// Part of the [authoring surface](crate::_authoring) for custom elements.
     pub fn paint_path(&mut self, mut path: Path<Pixels>, color: impl Into<Background>) {
         self.invalidator.debug_assert_paint();
 
@@ -4751,6 +4782,7 @@ impl Window {
     ///
     /// The visible region rendered is `bounds.intersect(&image_bounds)`, with `corner_radii`
     /// applied to `bounds`.
+    /// Part of the [authoring surface](crate::_authoring) for custom elements.
     pub fn paint_image(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -4849,25 +4881,6 @@ impl Window {
         Ok(())
     }
 
-    /// Paint a surface into the scene for the next frame at the current z-index.
-    ///
-    /// This method should only be called as part of the paint phase of element drawing.
-    #[cfg(target_os = "macos")]
-    pub fn paint_surface(&mut self, bounds: Bounds<Pixels>, image_buffer: CVPixelBuffer) {
-        use crate::PaintSurface;
-
-        self.invalidator.debug_assert_paint();
-
-        let bounds = self.snap_bounds(bounds);
-        let content_mask = self.snapped_content_mask();
-        self.next_frame.scene.insert_primitive(PaintSurface {
-            order: 0,
-            bounds,
-            content_mask,
-            image_buffer,
-        });
-    }
-
     /// Removes an image from the sprite atlas.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
         for frame_index in 0..data.frame_count() {
@@ -4902,6 +4915,7 @@ impl Window {
     /// calls to the [`Element::request_layout`] trait method and enables any element to participate in layout.
     ///
     /// This method should only be called as part of the request_layout or prepaint phase of element drawing.
+    /// Part of the [authoring surface](crate::_authoring) for custom elements.
     #[must_use]
     pub fn request_layout(
         &mut self,
@@ -4915,10 +4929,14 @@ impl Window {
         cx.layout_id_buffer.extend(children);
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
-        let taffy_style = to_taffy_style(&style, rem_size, scale_factor);
+        let engine_style = to_engine_layout_style(&style);
 
-        self.layout_session
-            .request_layout(taffy_style, &cx.layout_id_buffer)
+        self.layout_session.request_layout(
+            &engine_style,
+            rem_size,
+            scale_factor,
+            &cx.layout_id_buffer,
+        )
     }
 
     /// Add a node to the layout tree for the current frame. Instead of taking a `Style` and children,
@@ -4929,6 +4947,7 @@ impl Window {
     /// returns a `Size`.
     ///
     /// This method should only be called as part of the request_layout or prepaint phase of element drawing.
+    /// Part of the [authoring surface](crate::_authoring) for custom elements.
     pub fn request_measured_layout<F>(&mut self, style: Style, measure: F) -> LayoutId
     where
         F: Fn(Size<Option<Pixels>>, Size<AvailableSpace>, &mut Window, &mut App) -> Size<Pixels>
@@ -4938,7 +4957,7 @@ impl Window {
 
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
-        let taffy_style = to_taffy_style(&style, rem_size, scale_factor);
+        let engine_style = to_engine_layout_style(&style);
         let measure = move |known_dimensions, available_space, context: &mut dyn MeasureContext| {
             let (window, cx) = context.handles();
             let window = window
@@ -4949,8 +4968,12 @@ impl Window {
                 .expect("measure context app should be an App");
             measure(known_dimensions, available_space, window, cx)
         };
-        self.layout_session
-            .request_measured_layout(taffy_style, measure)
+        self.layout_session.request_measured_layout(
+            &engine_style,
+            rem_size,
+            scale_factor,
+            Box::new(measure),
+        )
     }
 
     /// Compute the layout for the given id within the given available space.
@@ -4958,7 +4981,7 @@ impl Window {
     /// After calling it, you can request the bounds of the given layout node id or any descendant.
     ///
     /// This method should only be called as part of the prepaint phase of element drawing.
-    pub fn compute_layout(
+    pub(crate) fn compute_layout(
         &mut self,
         layout_id: LayoutId,
         available_space: Size<AvailableSpace>,
@@ -4980,6 +5003,7 @@ impl Window {
     /// GPUI itself automatically in order to pass your element its `Bounds` automatically.
     ///
     /// This method should only be called as part of element drawing.
+    /// Part of the [authoring surface](crate::_authoring) for custom elements.
     pub fn layout_bounds(&mut self, layout_id: LayoutId) -> Bounds<Pixels> {
         self.invalidator.debug_assert_prepaint();
 
@@ -4998,6 +5022,7 @@ impl Window {
     /// to determine whether the inserted hitbox was the topmost.
     ///
     /// This method should only be called as part of the prepaint phase of element drawing.
+    /// Part of the [authoring surface](crate::_authoring) for custom elements.
     pub fn insert_hitbox(&mut self, bounds: Bounds<Pixels>, behavior: HitboxBehavior) -> Hitbox {
         self.invalidator.debug_assert_prepaint();
 
@@ -6772,15 +6797,28 @@ impl Window {
         false
     }
 
-    /// Executes the provided function with mutable access to an inspector state.
+    /// Publishes `inspector_element_id` as the identity of the element being
+    /// laid out or painted, returning the previous value so the caller can put
+    /// it back once the element returns.
+    pub(crate) fn set_inspector_element_id(
+        &mut self,
+        inspector_element_id: Option<crate::InspectorElementId>,
+    ) -> Option<crate::InspectorElementId> {
+        std::mem::replace(&mut self.inspector_element_id, inspector_element_id)
+    }
+
+    /// Executes the provided function with mutable access to the inspector state
+    /// of the element with `inspector_id`, if that element is the one the
+    /// inspector has active. The inspector UI itself uses this to read and edit
+    /// a selected element's state.
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub fn with_inspector_state<T: 'static, R>(
         &mut self,
-        _inspector_id: Option<&crate::InspectorElementId>,
+        inspector_id: Option<&crate::InspectorElementId>,
         cx: &mut App,
         f: impl FnOnce(&mut Option<T>, &mut Self) -> R,
     ) -> R {
-        if let Some(inspector_id) = _inspector_id
+        if let Some(inspector_id) = inspector_id
             && let Some(inspector) = &self.inspector
         {
             let inspector = inspector.clone();
@@ -6792,6 +6830,21 @@ impl Window {
             }
         }
         f(&mut None, self)
+    }
+
+    /// Executes the provided function with mutable access to the inspector state
+    /// of the element the runtime is currently laying out or painting.
+    ///
+    /// This is the form elements use: the runtime publishes their identity
+    /// around each lifecycle call, so they never handle the token themselves.
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    pub fn with_current_inspector_state<T: 'static, R>(
+        &mut self,
+        cx: &mut App,
+        f: impl FnOnce(&mut Option<T>, &mut Self) -> R,
+    ) -> R {
+        let inspector_id = self.inspector_element_id.clone();
+        self.with_inspector_state(inspector_id.as_ref(), cx, f)
     }
 
     #[cfg(any(feature = "inspector", debug_assertions))]
@@ -6837,21 +6890,19 @@ impl Window {
 
     /// Registers a hitbox that can be used for inspector picking mode, allowing users to select and
     /// inspect UI elements by clicking on them.
+    ///
+    /// The runtime does this for an element as it paints it; elements do not call
+    /// it themselves.
     #[cfg(any(feature = "inspector", debug_assertions))]
-    pub fn insert_inspector_hitbox(
-        &mut self,
-        hitbox_id: HitboxId,
-        inspector_id: Option<&crate::InspectorElementId>,
-        cx: &App,
-    ) {
+    pub(crate) fn insert_inspector_hitbox(&mut self, hitbox_id: HitboxId, cx: &App) {
         self.invalidator.debug_assert_paint_or_prepaint();
         if !self.is_inspector_picking(cx) {
             return;
         }
-        if let Some(inspector_id) = inspector_id {
+        if let Some(inspector_id) = self.inspector_element_id.clone() {
             self.next_frame
                 .inspector_hitboxes
-                .insert(hitbox_id, inspector_id.clone());
+                .insert(hitbox_id, inspector_id);
         }
     }
 

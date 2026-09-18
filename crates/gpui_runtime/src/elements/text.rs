@@ -1,9 +1,9 @@
 use crate::{
     ActiveTooltip, AnyView, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId,
-    HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Size, TextOverflow,
-    TextRun, TextStyle, TooltipId, TruncateFrom, WhiteSpace, Window, WrappedLine,
-    WrappedLineLayout, register_tooltip_mouse_handlers, set_tooltip_on_window,
+    HighlightStyle, Hitbox, HitboxBehavior, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, SharedString, Size, TextOverflow, TextRun, TextStyle, TooltipId,
+    TruncateFrom, WhiteSpace, Window, WrappedLine, WrappedLineLayout,
+    register_tooltip_mouse_handlers, set_tooltip_on_window,
 };
 use anyhow::Context as _;
 use gpui_util::ResultExt;
@@ -20,7 +20,7 @@ use std::{
 
 /// An [`Element`] that renders text.
 ///
-/// In general, [`Text`] objects should be created via the [`text`] macro:
+/// In general, [`Text`] objects should be created via the [`text!`](crate::text) macro:
 /// ```rust
 /// # use gpui::*;
 /// # fn render() -> impl IntoElement {
@@ -40,7 +40,7 @@ use std::{
 /// if the ID changes, then the screen reader will be notified that a node has
 /// been removed, and a new node has been added.
 ///
-/// When using the [`text`] macro, each invocation of the macro will get a
+/// When using the [`text!`](crate::text) macro, each invocation of the macro will get a
 /// unique ID, derived from its position in the source code (filename, line, and
 /// column). For example:
 /// ```rust
@@ -56,11 +56,11 @@ use std::{
 /// // equal, because the same `text!` invocation produced them
 /// assert_eq!(x.id(), y.id());
 /// ```
-/// When the contents of an invocation of [`text`] do not change, this
+/// When the contents of an invocation of [`text!`](crate::text) do not change, this
 /// distinction is less relevant (with the caveat that you still need to take
 /// care to ensure that duplicate IDs do not appear).
 ///
-/// However, when a [`text`] invocation's argument *does* change, you should
+/// However, when a [`text!`](crate::text) invocation's argument *does* change, you should
 /// consider whether this change should be reported as a node "updating its
 /// contents", or an old node being destroyed and a new node being created.
 #[derive(Debug, Clone)]
@@ -72,8 +72,9 @@ pub struct Text {
 impl Text {
     /// Create a new [`Text`] element with a specific ID.
     ///
-    /// If you want a unique ID to be assigned automatically, use the [`text`]
-    /// macro. The docs for [`Text`] have more detail about choosing IDs.
+    /// If you want a unique ID to be assigned automatically, use the
+    /// [`text!`](crate::text) macro. The docs for [`Text`] have more detail about
+    /// choosing IDs.
     #[inline]
     pub const fn new(id: ElementId, text: SharedString) -> Self {
         Self { id: Some(id), text }
@@ -82,7 +83,7 @@ impl Text {
     /// Create a new [`Text`] element that is inaccessible to screen readers.
     ///
     /// In order for text to be accessible to screen readers, it must have an ID
-    /// provided. If you want text to be accessible, either use [`text`] to have
+    /// provided. If you want text to be accessible, either use [`text!`](crate::text) to have
     /// an ID automatically assigned, or use [`Text::new`] to manually assign an
     /// ID.
     ///
@@ -125,7 +126,7 @@ impl DerefMut for Text {
     }
 }
 
-/// Trivial hash function for the location information produced by the [`text`]
+/// Trivial hash function for the location information produced by the [`text!`](crate::text)
 /// macro. Not covered by semver guarantees. Performance is not particularly
 /// significant because it's only used on small strings in const contexts.
 #[doc(hidden)]
@@ -201,37 +202,26 @@ impl Element for Text {
     fn request_layout(
         &mut self,
         id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        <SharedString as Element>::request_layout(&mut self.text, id, inspector_id, window, cx)
+        <SharedString as Element>::request_layout(&mut self.text, id, window, cx)
     }
 
     fn prepaint(
         &mut self,
         id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        <SharedString as Element>::prepaint(
-            &mut self.text,
-            id,
-            inspector_id,
-            bounds,
-            request_layout,
-            window,
-            cx,
-        )
+        <SharedString as Element>::prepaint(&mut self.text, id, bounds, request_layout, window, cx)
     }
 
     fn paint(
         &mut self,
         id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         request_layout: &mut Self::RequestLayoutState,
         prepaint: &mut Self::PrepaintState,
@@ -241,7 +231,6 @@ impl Element for Text {
         <SharedString as Element>::paint(
             &mut self.text,
             id,
-            inspector_id,
             bounds,
             request_layout,
             prepaint,
@@ -266,7 +255,6 @@ impl Element for &'static str {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
@@ -278,7 +266,6 @@ impl Element for &'static str {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         text_layout: &mut Self::RequestLayoutState,
         _window: &mut Window,
@@ -290,7 +277,6 @@ impl Element for &'static str {
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         text_layout: &mut TextLayout,
         _: &mut (),
@@ -340,7 +326,6 @@ impl Element for SharedString {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
@@ -352,7 +337,6 @@ impl Element for SharedString {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         text_layout: &mut Self::RequestLayoutState,
         _window: &mut Window,
@@ -364,7 +348,6 @@ impl Element for SharedString {
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         text_layout: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
@@ -554,7 +537,6 @@ impl Element for StyledText {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
@@ -578,7 +560,6 @@ impl Element for StyledText {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         _window: &mut Window,
@@ -590,7 +571,6 @@ impl Element for StyledText {
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
@@ -1080,17 +1060,15 @@ impl Element for InteractiveText {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        self.text.request_layout(None, inspector_id, window, cx)
+        self.text.request_layout(None, window, cx)
     }
 
     fn prepaint(
         &mut self,
         global_id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         state: &mut Self::RequestLayoutState,
         window: &mut Window,
@@ -1113,8 +1091,7 @@ impl Element for InteractiveText {
                     }
                 }
 
-                self.text
-                    .prepaint(None, inspector_id, bounds, state, window, cx);
+                self.text.prepaint(None, bounds, state, window, cx);
                 let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
                 (hitbox, interactive_state)
             },
@@ -1124,7 +1101,6 @@ impl Element for InteractiveText {
     fn paint(
         &mut self,
         global_id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         hitbox: &mut Hitbox,
@@ -1263,8 +1239,7 @@ impl Element for InteractiveText {
                     );
                 }
 
-                self.text
-                    .paint(None, inspector_id, bounds, &mut (), &mut (), window, cx);
+                self.text.paint(None, bounds, &mut (), &mut (), window, cx);
 
                 ((), interactive_state)
             },

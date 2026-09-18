@@ -1,6 +1,6 @@
 use crate::{
     AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTile, Bounds, DevicePixels, DispatchEventResult,
-    GpuSpecs, Pixels, PlatformAtlas, PlatformDisplay, PlatformHeadlessRenderer, PlatformInput,
+    GpuSpecs, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
     PlatformInputHandler, PlatformWindow, Point, PromptButton, RequestFrameOptions, Scene,
     SceneRenderer, Size, TestPlatform, TextInputConfiguration, TextInputStateChange, TileId,
     WindowAppearance,
