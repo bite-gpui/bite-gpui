@@ -51,7 +51,7 @@ use crate::{
     Render, RenderImage, RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString,
     SubscriberSet, Subscription, SvgRenderer, SystemNotification, SystemNotificationResponse,
     SystemWindowTab, Task, TextRenderingMode, TextSystem, ThermalState, Window, WindowAppearance,
-    WindowButtonLayout, WindowHandle, WindowId, WindowInvalidator,
+    WindowButtonLayout, WindowHandle, WindowHost, WindowId, WindowInvalidator,
     colors::{Colors, GlobalColors},
     hash, init_app_menus, resolve_dock_menu, resolve_menus,
 };
@@ -73,6 +73,67 @@ mod visual_test_context;
 /// The duration for which native applications wait for futures returned from
 /// [Context::on_app_quit] before fully quitting.
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// A window host, shareable so that a frame can borrow one apart from the
+/// application.
+pub(crate) type WindowCell = Rc<RefCell<WindowHost>>;
+
+/// Every open window's host.
+///
+/// Hosts are held behind their own cells rather than directly in this map, which
+/// is what lets a frame borrow its window and the application at once, and lets
+/// the registry be mutated -- a window opened while another is painting -- while
+/// a frame is running.
+///
+/// A reserved slot holds no cell yet. Ids come from this map, and a host is
+/// constructed with the id it will live under, so the id has to exist before the
+/// host can be built.
+#[derive(Default)]
+pub(crate) struct WindowRegistry {
+    hosts: SlotMap<WindowId, Option<WindowCell>>,
+}
+
+impl WindowRegistry {
+    /// Takes an id for a host that is still being built.
+    pub(crate) fn reserve(&mut self) -> WindowId {
+        self.hosts.insert(None)
+    }
+
+    /// Puts a built host under an id previously returned by [`Self::reserve`].
+    pub(crate) fn register(&mut self, id: WindowId, host: WindowHost) {
+        if let Some(slot) = self.hosts.get_mut(id) {
+            *slot = Some(Rc::new(RefCell::new(host)));
+        }
+    }
+
+    /// The cell for `id`, if that window is open.
+    pub(crate) fn cell(&self, id: WindowId) -> Option<WindowCell> {
+        self.hosts.get(id).and_then(|slot| slot.clone())
+    }
+
+    pub(crate) fn remove(&mut self, id: WindowId) {
+        self.hosts.remove(id);
+    }
+
+    /// Closes every window, without the per-window teardown a removal does.
+    pub(crate) fn clear(&mut self) {
+        self.hosts.clear();
+    }
+
+    /// The ids of every slot, including ones still being built.
+    pub(crate) fn ids(&self) -> impl Iterator<Item = WindowId> + '_ {
+        self.hosts.keys()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.hosts.is_empty()
+    }
+
+    /// Every open window's cell, in id order.
+    pub(crate) fn cells(&self) -> impl Iterator<Item = &WindowCell> {
+        self.hosts.values().filter_map(|slot| slot.as_ref())
+    }
+}
 
 /// Temporary(?) wrapper around [`RefCell<App>`] to help us debug any double borrows.
 /// Strongly consider removing after stabilization.
@@ -762,7 +823,7 @@ pub struct App {
     foreground_journal: crate::profiler::journal::ForegroundJournal,
     pub(crate) entities: EntityMap,
     pub(crate) new_entity_observers: SubscriberSet<TypeId, NewEntityListener>,
-    pub(crate) windows: SlotMap<WindowId, Option<Box<Window>>>,
+    pub(crate) windows: WindowRegistry,
     pub(crate) window_handles: FxHashMap<WindowId, AnyWindowHandle>,
     pub(crate) focus_handles: Arc<FocusMap>,
     pub(crate) keymap: Rc<RefCell<Keymap>>,
@@ -902,7 +963,7 @@ impl App {
                 globals_by_type: Default::default(),
                 entities,
                 new_entity_observers: SubscriberSet::new(),
-                windows: SlotMap::with_key(),
+                windows: WindowRegistry::default(),
                 window_update_stack: Vec::new(),
                 window_handles: FxHashMap::default(),
                 focus_handles: Arc::new(RwLock::new(SlotMap::with_key())),
@@ -1336,7 +1397,7 @@ impl App {
     /// To find all windows of a given type, you could filter on
     pub fn windows(&self) -> Vec<AnyWindowHandle> {
         self.windows
-            .keys()
+            .ids()
             .flat_map(|window_id| self.window_handles.get(&window_id).copied())
             .collect()
     }
@@ -1376,25 +1437,27 @@ impl App {
         build_root_view: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
     ) -> anyhow::Result<WindowHandle<V>> {
         self.update(|cx| {
-            let id = cx.windows.insert(None);
+            let id = cx.windows.reserve();
             let handle = WindowHandle::new(id);
-            match Window::new(handle.into(), options, cx) {
-                Ok(mut window) => {
+            match WindowHost::new(handle.into(), options, cx) {
+                Ok(mut host) => {
                     cx.window_update_stack.push(id);
-                    let root_view = build_root_view(&mut window, cx);
+                    let root_view = host.with_window(|window| build_root_view(window, cx));
                     cx.window_update_stack.pop();
-                    window.root.replace(root_view.into());
-                    window.defer(cx, |window: &mut Window, cx| window.appearance_changed(cx));
+                    host.core.root.replace(root_view.into());
+                    host.with_window(|window| {
+                        window.defer(cx, |window: &mut Window, cx| window.appearance_changed(cx));
 
-                    // allow a window to draw at least once before returning
-                    // this didn't cause any issues on non windows platforms as it seems we always won the race to on_request_frame
-                    // on windows we quite frequently lose the race and return a window that has never rendered, which leads to a crash
-                    // where DispatchTree::root_node_id asserts on empty nodes
-                    let clear = window.draw(cx);
-                    clear.clear(cx);
+                        // allow a window to draw at least once before returning
+                        // this didn't cause any issues on non windows platforms as it seems we always won the race to on_request_frame
+                        // on windows we quite frequently lose the race and return a window that has never rendered, which leads to a crash
+                        // where DispatchTree::root_node_id asserts on empty nodes
+                        let clear = window.draw(cx);
+                        clear.clear(cx);
+                    });
 
-                    cx.window_handles.insert(id, window.handle);
-                    cx.windows.get_mut(id).unwrap().replace(Box::new(window));
+                    cx.window_handles.insert(id, host.core.handle);
+                    cx.windows.register(id, host);
                     Ok(handle)
                 }
                 Err(e) => {
@@ -1842,27 +1905,28 @@ impl App {
             } else {
                 #[cfg(any(test, feature = "test-support"))]
                 if matches!(self.mode, GpuiMode::Test { .. }) {
-                    for window in self
+                    for handle in self
                         .windows
-                        .values()
-                        .filter_map(|window| {
-                            let window = window.as_deref()?;
-                            window.invalidator.is_dirty().then_some(window.handle)
+                        .cells()
+                        .filter_map(|cell| {
+                            let host = cell.borrow();
+                            host.core.invalidator.is_dirty().then_some(host.core.handle)
                         })
                         .collect::<Vec<_>>()
                     {
-                        self.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+                        self.update_window(handle, |_, window, cx| window.draw(cx).clear(cx))
                             .unwrap();
                     }
                 }
 
                 if self.pending_effects.is_empty() {
-                    for window in self.windows.values().filter_map(|window| window.as_deref()) {
-                        if window.invalidator.is_dirty()
-                            || window.needs_present.get()
-                            || !window.next_frame_callbacks.borrow().is_empty()
+                    for cell in self.windows.cells() {
+                        let host = cell.borrow();
+                        if host.core.invalidator.is_dirty()
+                            || host.core.needs_present.get()
+                            || !host.core.next_frame_callbacks.borrow().is_empty()
                         {
-                            window.platform_window.schedule_frame();
+                            host.core.platform_window.schedule_frame();
                         }
                     }
 
@@ -1905,7 +1969,7 @@ impl App {
                     for window_handle in self.windows() {
                         window_handle
                             .update(self, |_, window, cx| {
-                                if window.focus == Some(handle_id) {
+                                if window.core.focus == Some(handle_id) {
                                     window.blur(cx);
                                 }
                             })
@@ -1939,11 +2003,10 @@ impl App {
     }
 
     fn apply_refresh_effect(&mut self) {
-        for window in self.windows.values_mut() {
-            if let Some(window) = window.as_deref_mut() {
-                window.refreshing = true;
-                window.invalidator.set_dirty(true);
-            }
+        for cell in self.windows.cells() {
+            let mut host = cell.borrow_mut();
+            host.core.refreshing = true;
+            host.core.invalidator.set_dirty(true);
         }
     }
 
@@ -2011,56 +2074,56 @@ impl App {
         F: FnOnce(AnyView, &mut Window, &mut App) -> T,
     {
         self.update(|cx| {
-            let mut window = cx.windows.get_mut(id)?.take()?;
+            let cell = cx
+                .windows
+                .cell(id)
+                .ok_or_else(|| anyhow!("window {id:?} is not open"))?;
+            let mut host = cell
+                .try_borrow_mut()
+                .map_err(|_| anyhow!("window {id:?} is already being updated"))?;
 
-            let root_view = window.root.clone().unwrap();
+            let root_view = host.core.root.clone().unwrap();
 
-            cx.window_update_stack.push(window.handle.id);
-            let result = update(root_view, &mut window, cx);
-            fn trail(id: WindowId, window: Box<Window>, cx: &mut App) -> Option<()> {
-                cx.window_update_stack.pop();
+            cx.window_update_stack.push(host.core.handle.id);
+            let result = host.with_window(|window| update(root_view, window, cx));
+            let removed = host.core.removed;
+            drop(host);
+            cx.window_update_stack.pop();
 
-                if window.removed {
-                    cx.end_platform_drag(id);
-                    cx.window_handles.remove(&id);
-                    cx.windows.remove(id);
-                    if let Some(tracked) = cx.tracked_entities.remove(&id) {
-                        for entity_id in tracked {
-                            if let Some(windows) =
-                                cx.window_invalidators_by_entity.get_mut(&entity_id)
-                            {
-                                windows.remove(&id);
-                            }
-                            if cx.current_window_by_entity.get(&entity_id) == Some(&id) {
-                                cx.current_window_by_entity.remove(&entity_id);
-                            }
+            if removed {
+                cx.end_platform_drag(id);
+                cx.window_handles.remove(&id);
+                cx.windows.remove(id);
+                if let Some(tracked) = cx.tracked_entities.remove(&id) {
+                    for entity_id in tracked {
+                        if let Some(windows) = cx.window_invalidators_by_entity.get_mut(&entity_id)
+                        {
+                            windows.remove(&id);
+                        }
+                        if cx.current_window_by_entity.get(&entity_id) == Some(&id) {
+                            cx.current_window_by_entity.remove(&entity_id);
                         }
                     }
-
-                    cx.window_closed_observers.clone().retain(&(), |callback| {
-                        callback(cx, id);
-                        true
-                    });
-
-                    let quit_on_empty = match cx.quit_mode {
-                        QuitMode::Explicit => false,
-                        QuitMode::LastWindowClosed => true,
-                        QuitMode::Default => cfg!(not(target_os = "macos")),
-                    };
-
-                    if quit_on_empty && cx.windows.is_empty() {
-                        cx.quit();
-                    }
-                } else {
-                    cx.windows.get_mut(id)?.replace(window);
                 }
-                Some(())
-            }
-            trail(id, window, cx)?;
 
-            Some(result)
+                cx.window_closed_observers.clone().retain(&(), |callback| {
+                    callback(cx, id);
+                    true
+                });
+
+                let quit_on_empty = match cx.quit_mode {
+                    QuitMode::Explicit => false,
+                    QuitMode::LastWindowClosed => true,
+                    QuitMode::Default => cfg!(not(target_os = "macos")),
+                };
+
+                if quit_on_empty && cx.windows.is_empty() {
+                    cx.quit();
+                }
+            }
+
+            Ok(result)
         })
-        .context("window not found")
     }
 
     /// Creates an `AsyncApp`, which can be cloned and has a static lifetime
@@ -2350,7 +2413,7 @@ impl App {
     where
         T: 'static,
     {
-        let window_handle = window.handle;
+        let window_handle = window.core.handle;
         self.observe_release(handle, move |entity, cx| {
             let _ = window_handle.update(cx, |_, window, cx| on_release(entity, window, cx));
         })
@@ -2947,8 +3010,9 @@ impl App {
     /// This is a no-op if the image is not in the sprite atlas.
     pub fn drop_image(&mut self, image: Arc<RenderImage>, current_window: Option<&mut Window>) {
         // remove the texture from all other windows
-        for window in self.windows.values_mut().flatten() {
-            _ = window.drop_image(image.clone());
+        for cell in self.windows.cells() {
+            let mut host = cell.borrow_mut();
+            _ = host.with_window(|window| window.drop_image(image.clone()));
         }
 
         // remove the texture from the current window
@@ -3073,14 +3137,12 @@ impl AppContext for App {
     where
         T: 'static,
     {
-        let window = self
-            .windows
-            .get(window.id)
-            .context("window not found")?
-            .as_deref()
+        let cell = self.windows.cell(window.id).context("window not found")?;
+        let host = cell
+            .try_borrow()
             .expect("attempted to read a window that is already on the stack");
 
-        let root_view = window.root.clone().unwrap();
+        let root_view = host.core.root.clone().unwrap();
         let view = root_view
             .downcast::<T>()
             .map_err(|_| anyhow!("root view's type has changed"))?;

@@ -297,8 +297,8 @@ impl<E: Element> Drawable<E> {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::Start => {
                 let global_id = self.element.id().map(|element_id| {
-                    window.element_id_stack.push(element_id);
-                    GlobalElementId(Arc::from(&*window.element_id_stack))
+                    window.frame_state.element_id_stack.push(element_id);
+                    GlobalElementId(Arc::from(&*window.frame_state.element_id_stack))
                 });
 
                 let inspector_id;
@@ -306,7 +306,9 @@ impl<E: Element> Drawable<E> {
                 {
                     inspector_id = self.element.source_location().map(|source| {
                         let path = crate::InspectorElementPath {
-                            global_id: GlobalElementId(Arc::from(&*window.element_id_stack)),
+                            global_id: GlobalElementId(Arc::from(
+                                &*window.frame_state.element_id_stack,
+                            )),
                             source_location: source,
                         };
                         window.build_inspector_element_id(path)
@@ -323,7 +325,7 @@ impl<E: Element> Drawable<E> {
                 window.set_inspector_element_id(previous_inspector_id);
 
                 if global_id.is_some() {
-                    window.element_id_stack.pop();
+                    window.frame_state.element_id_stack.pop();
                 }
 
                 self.phase = ElementDrawPhase::RequestLayout {
@@ -354,13 +356,16 @@ impl<E: Element> Drawable<E> {
                 ..
             } => {
                 if let Some(element_id) = self.element.id() {
-                    window.element_id_stack.push(element_id);
-                    debug_assert_eq!(&*global_id.as_ref().unwrap().0, &*window.element_id_stack);
+                    window.frame_state.element_id_stack.push(element_id);
+                    debug_assert_eq!(
+                        &*global_id.as_ref().unwrap().0,
+                        &*window.frame_state.element_id_stack
+                    );
                 }
 
                 let bounds = window.layout_bounds(layout_id);
                 let mut pushed_a11y_node = false;
-                if window.a11y.is_active() {
+                if window.core.a11y.is_active() {
                     if let Some(global_id) = global_id.as_ref() {
                         if let Some(role) = self.element.a11y_role() {
                             let node_id = global_id.accesskit_node_id();
@@ -373,17 +378,18 @@ impl<E: Element> Drawable<E> {
                                 y1: ((bounds.origin.y.0 + bounds.size.height.0) * scale) as f64,
                             });
                             self.element.write_a11y_info(&mut node);
-                            window.a11y.node_bounds.insert(node_id, bounds);
-                            pushed_a11y_node = window.a11y.nodes.push(node_id, node);
+                            window.core.a11y.node_bounds.insert(node_id, bounds);
+                            pushed_a11y_node = window.core.a11y.nodes.push(node_id, node);
                             #[cfg(debug_assertions)]
                             if pushed_a11y_node {
                                 let view = window
+                                    .core
                                     .a11y
                                     .view_type_names
                                     .get(&window.current_view())
                                     .copied();
                                 let source_location = self.element.source_location();
-                                window.a11y.nodes.record_node_info(
+                                window.core.a11y.nodes.record_node_info(
                                     node_id,
                                     crate::window::a11y::debug::NodeDebugInfo {
                                         synthetic: false,
@@ -397,7 +403,7 @@ impl<E: Element> Drawable<E> {
                     }
                 }
 
-                let node_id = window.next_frame.dispatch_tree.push_node();
+                let node_id = window.frame_state.next_frame.dispatch_tree.push_node();
                 let previous_inspector_id = window.set_inspector_element_id(inspector_id.clone());
                 let mut prepaint = self.element.prepaint(
                     global_id.as_ref(),
@@ -407,13 +413,14 @@ impl<E: Element> Drawable<E> {
                     cx,
                 );
                 window.set_inspector_element_id(previous_inspector_id);
-                window.next_frame.dispatch_tree.pop_node();
+                window.frame_state.next_frame.dispatch_tree.pop_node();
 
                 if pushed_a11y_node {
                     if let Some(global_id) = global_id.as_ref() {
                         #[cfg(debug_assertions)]
                         let creator = crate::window::a11y::debug::NodeCreator {
                             view: window
+                                .core
                                 .a11y
                                 .view_type_names
                                 .get(&window.current_view())
@@ -423,7 +430,7 @@ impl<E: Element> Drawable<E> {
                         };
                         let mut builder = A11ySubtreeBuilder::new(
                             global_id.accesskit_node_id(),
-                            &mut window.a11y.nodes,
+                            &mut window.core.a11y.nodes,
                         );
                         #[cfg(debug_assertions)]
                         {
@@ -432,11 +439,11 @@ impl<E: Element> Drawable<E> {
                         self.element
                             .a11y_synthetic_children(&mut prepaint, &mut builder);
                     }
-                    window.a11y.nodes.pop();
+                    window.core.a11y.nodes.pop();
                 }
 
                 if global_id.is_some() {
-                    window.element_id_stack.pop();
+                    window.frame_state.element_id_stack.pop();
                 }
 
                 self.phase = ElementDrawPhase::Prepaint {
@@ -468,11 +475,18 @@ impl<E: Element> Drawable<E> {
                 ..
             } => {
                 if let Some(element_id) = self.element.id() {
-                    window.element_id_stack.push(element_id);
-                    debug_assert_eq!(&*global_id.as_ref().unwrap().0, &*window.element_id_stack);
+                    window.frame_state.element_id_stack.push(element_id);
+                    debug_assert_eq!(
+                        &*global_id.as_ref().unwrap().0,
+                        &*window.frame_state.element_id_stack
+                    );
                 }
 
-                window.next_frame.dispatch_tree.set_active_node(node_id);
+                window
+                    .frame_state
+                    .next_frame
+                    .dispatch_tree
+                    .set_active_node(node_id);
                 let previous_inspector_id = window.set_inspector_element_id(inspector_id.clone());
                 self.element.paint(
                     global_id.as_ref(),
@@ -485,7 +499,7 @@ impl<E: Element> Drawable<E> {
                 window.set_inspector_element_id(previous_inspector_id);
 
                 if global_id.is_some() {
-                    window.element_id_stack.pop();
+                    window.frame_state.element_id_stack.pop();
                 }
 
                 self.phase = ElementDrawPhase::Painted;
@@ -611,11 +625,11 @@ impl AnyElement {
     /// Prepares the element to be painted by storing its bounds, giving it a chance to draw hitboxes and
     /// request autoscroll before the final paint pass is confirmed.
     pub fn prepaint(&mut self, window: &mut Window, cx: &mut App) -> Option<FocusHandle> {
-        let focus_assigned = window.next_frame.focus.is_some();
+        let focus_assigned = window.frame_state.next_frame.focus.is_some();
 
         self.0.prepaint(window, cx);
 
-        if !focus_assigned && let Some(focus_id) = window.next_frame.focus {
+        if !focus_assigned && let Some(focus_id) = window.frame_state.next_frame.focus {
             return FocusHandle::for_id(focus_id, &cx.focus_handles);
         }
 
