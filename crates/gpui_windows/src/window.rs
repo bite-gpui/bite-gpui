@@ -30,7 +30,7 @@ use windows::{
 
 use crate::direct_manipulation::DirectManipulationHandler;
 use crate::*;
-use gpui::*;
+use gpui_platform::*;
 
 pub(crate) struct WindowsWindow(pub Rc<WindowsWindowInner>);
 
@@ -97,7 +97,7 @@ pub(crate) struct WindowsWindowInner {
     drop_target_helper: IDropTargetHelper,
     pub(crate) state: WindowsWindowState,
     system_settings: WindowsSystemSettings,
-    pub(crate) handle: AnyWindowHandle,
+    pub(crate) handle: WindowId,
     pub(crate) hide_title_bar: bool,
     pub(crate) is_movable: bool,
     pub(crate) is_resizable: bool,
@@ -409,7 +409,7 @@ pub(crate) struct Callbacks {
 
 struct WindowCreateContext {
     inner: Option<Result<Rc<WindowsWindowInner>>>,
-    handle: AnyWindowHandle,
+    handle: WindowId,
     hide_title_bar: bool,
     display: WindowsDisplay,
     is_movable: bool,
@@ -433,7 +433,7 @@ struct WindowCreateContext {
 
 impl WindowsWindow {
     pub(crate) fn new(
-        handle: AnyWindowHandle,
+        handle: WindowId,
         params: WindowParams,
         creation_info: WindowCreationInfo,
     ) -> Result<Self> {
@@ -651,7 +651,8 @@ impl PlatformWindow for WindowsWindow {
 
     fn resize(&mut self, size: Size<Pixels>) {
         let hwnd = self.0.hwnd;
-        let bounds = gpui::bounds(self.bounds().origin, size).to_device_pixels(self.scale_factor());
+        let bounds =
+            gpui_platform::bounds(self.bounds().origin, size).to_device_pixels(self.scale_factor());
         let rect = calculate_window_rect(bounds, &self.state.border_offset);
 
         self.0
@@ -1070,7 +1071,7 @@ impl PlatformWindow for WindowsWindow {
         let _ = unsafe { MessageBeep(MB_OK) };
     }
 
-    fn a11y_init(&self, callbacks: gpui::A11yCallbacks) {
+    fn a11y_init(&self, callbacks: gpui_platform::A11yCallbacks) {
         let action_handler = A11yActionHandler(callbacks.action);
         let is_focused = unsafe { GetForegroundWindow() } == self.0.hwnd;
 
@@ -1679,7 +1680,7 @@ fn set_non_rude_hwnd(hwnd: HWND, non_rude: bool) {
 #[cfg(test)]
 mod tests {
     use super::ClickState;
-    use gpui::{DevicePixels, MouseButton, point};
+    use gpui_platform::{DevicePixels, MouseButton, point};
     use std::time::Duration;
 
     #[test]

@@ -1,4 +1,4 @@
-use gpui::{PlatformKeyboardLayout, SharedString};
+use gpui_platform::{PlatformKeyboardLayout, SharedString};
 
 #[derive(Clone)]
 pub(crate) struct LinuxKeyboardLayout {

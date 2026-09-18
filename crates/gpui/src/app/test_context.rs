@@ -622,6 +622,7 @@ impl TestAppContext {
             .unwrap()
             .platform_window
             .as_test()
+            .and_then(|any| any.downcast_mut::<TestWindow>())
             .unwrap()
             .clone()
     }
@@ -1024,7 +1025,7 @@ impl VisualTestContext {
 
     /// Simulates the user blurring the window.
     pub fn deactivate_window(&mut self) {
-        if Some(self.window) == self.test_platform.active_window() {
+        if Some(self.window.window_id()) == self.test_platform.active_window() {
             self.test_platform.set_active_window(None)
         }
         self.background_executor.run_until_parked();
@@ -1039,6 +1040,7 @@ impl VisualTestContext {
                 window
                     .platform_window
                     .as_test()
+                    .and_then(|any| any.downcast_mut::<TestWindow>())
                     .unwrap()
                     .0
                     .lock()

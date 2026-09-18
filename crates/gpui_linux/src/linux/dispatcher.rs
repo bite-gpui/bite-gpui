@@ -7,7 +7,7 @@ use gpui_util::ResultExt;
 
 use std::{mem::MaybeUninit, thread, time::Duration};
 
-use gpui::{
+use gpui_platform::{
     PlatformDispatcher, Priority, PriorityQueueReceiver, PriorityQueueSender, RunnableVariant,
     profiler,
 };
@@ -168,7 +168,7 @@ impl<T> PriorityQueueCalloopSender<T> {
         Self { sender: tx, ping }
     }
 
-    fn send(&self, priority: Priority, item: T) -> Result<(), gpui::queue::SendError<T>> {
+    fn send(&self, priority: Priority, item: T) -> Result<(), gpui_platform::queue::SendError<T>> {
         let res = self.sender.send(priority, item);
         if res.is_ok() {
             self.ping.ping();

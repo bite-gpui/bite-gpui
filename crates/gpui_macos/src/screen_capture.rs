@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use block2::RcBlock;
 use collections::HashMap;
 use futures::channel::oneshot;
-use gpui::{
+use gpui_platform::{
     DevicePixels, ForegroundExecutor, ScreenCaptureFrame, ScreenCaptureSource, ScreenCaptureStream,
     SharedString, SourceMetadata, size,
 };
