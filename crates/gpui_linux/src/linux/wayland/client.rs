@@ -98,14 +98,14 @@ use crate::linux::{
     },
     xdg_desktop_portal::{Event as XDPEvent, XDPEventSource},
 };
-use gpui::{
-    AnyWindowHandle, Bounds, Capslock, CursorStyle, DevicePixels, ExternalDragPayload,
-    FileDragPaths, FileDropEvent, ForegroundExecutor, GraphicalEnvironment, KeyDownEvent,
-    KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
-    MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay,
-    PlatformFrameSignal, PlatformInput, PlatformKeyboardLayout, PlatformWindow, Point, ScrollDelta,
-    ScrollWheelEvent, SharedString, Size, TouchPhase, WindowButtonLayout, WindowKind, WindowParams,
-    point, px, size,
+use gpui_platform::{
+    Bounds, Capslock, CursorStyle, DevicePixels, ExternalDragPayload, FileDragPaths,
+    FileDropEvent, ForegroundExecutor, GraphicalEnvironment, KeyDownEvent, KeyUpEvent, Keystroke,
+    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
+    MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay, PlatformFrameSignal, PlatformInput,
+    PlatformKeyboardLayout, PlatformWindow, Point, ScrollDelta, ScrollWheelEvent, SharedString,
+    Size, TouchPhase, WindowButtonLayout, WindowId, WindowKind, WindowParams, point, px,
+    size,
 };
 use gpui_wgpu::{CompositorGpuHint, GpuContext};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
@@ -483,7 +483,7 @@ where
         data_offer: DataOffer,
         window: Window,
         position: Point<Pixels>,
-        paths: gpui::ExternalPaths,
+        paths: gpui_platform::ExternalPaths,
     ) -> Option<(Window, PlatformInput)> {
         if !self.is_uri_read_current(generation) {
             data_offer.destroy();
@@ -1217,7 +1217,7 @@ impl WaylandConnection {
     #[cfg(feature = "screen-capture")]
     pub(crate) fn screen_capture_sources(
         &self,
-    ) -> futures::channel::oneshot::Receiver<anyhow::Result<Vec<Rc<dyn gpui::ScreenCaptureSource>>>>
+    ) -> futures::channel::oneshot::Receiver<anyhow::Result<Vec<Rc<dyn gpui_platform::ScreenCaptureSource>>>>
     {
         // TODO: Get screen capture working on wayland. Be sure to try window resizing as that may
         // be tricky.
@@ -1234,7 +1234,7 @@ impl WaylandConnection {
 
     pub(crate) fn open_window(
         &self,
-        handle: AnyWindowHandle,
+        handle: WindowId,
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
         let mut state = self.0.borrow_mut();
@@ -1381,7 +1381,7 @@ impl WaylandConnection {
         }
     }
 
-    pub(crate) fn write_to_primary(&self, item: gpui::ClipboardItem) {
+    pub(crate) fn write_to_primary(&self, item: gpui_platform::ClipboardItem) {
         let mut state = self.0.borrow_mut();
         let (Some(primary_selection_manager), Some(primary_selection)) = (
             state.globals.primary_selection_manager.clone(),
@@ -1406,7 +1406,7 @@ impl WaylandConnection {
         }
     }
 
-    pub(crate) fn write_to_clipboard(&self, item: gpui::ClipboardItem) {
+    pub(crate) fn write_to_clipboard(&self, item: gpui_platform::ClipboardItem) {
         let mut state = self.0.borrow_mut();
         let (Some(data_device_manager), Some(data_device)) = (
             state.globals.data_device_manager.clone(),
@@ -1432,15 +1432,15 @@ impl WaylandConnection {
         }
     }
 
-    pub(crate) fn read_from_primary(&self) -> Option<gpui::ClipboardItem> {
+    pub(crate) fn read_from_primary(&self) -> Option<gpui_platform::ClipboardItem> {
         self.0.borrow_mut().clipboard.read_primary()
     }
 
-    pub(crate) fn read_from_clipboard(&self) -> Option<gpui::ClipboardItem> {
+    pub(crate) fn read_from_clipboard(&self) -> Option<gpui_platform::ClipboardItem> {
         self.0.borrow_mut().clipboard.read()
     }
 
-    pub(crate) fn active_window(&self) -> Option<AnyWindowHandle> {
+    pub(crate) fn active_window(&self) -> Option<WindowId> {
         self.0
             .borrow_mut()
             .keyboard_focused_window
@@ -1448,7 +1448,7 @@ impl WaylandConnection {
             .map(|window| window.handle())
     }
 
-    pub(crate) fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
+    pub(crate) fn window_stack(&self) -> Option<Vec<WindowId>> {
         None
     }
 
@@ -2661,7 +2661,7 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()>
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        use gpui::PinchEvent;
+        use gpui_platform::PinchEvent;
 
         let client = this.get_client();
         let mut state = client.borrow_mut();
@@ -2873,7 +2873,7 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
                                 data_offer,
                                 drag_window,
                                 position,
-                                gpui::ExternalPaths(paths),
+                                gpui_platform::ExternalPaths(paths),
                             );
 
                             drop(state);
@@ -3202,7 +3202,7 @@ mod tests {
             data_offer,
             window,
             Point::default(),
-            gpui::ExternalPaths(SmallVec::from_vec(vec![PathBuf::from("/tmp/file")])),
+            gpui_platform::ExternalPaths(SmallVec::from_vec(vec![PathBuf::from("/tmp/file")])),
         )
     }
 

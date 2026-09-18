@@ -17,11 +17,30 @@ categories = ["gui"]
 workspace = true
 
 [features]
-default = ["font-kit", "wayland", "x11", "windows-manifest"]
+# The platform bundle: pulls in the backend for the target OS, hosts the
+# `application()`, `headless()`, and `current_platform()` entrypoints, and turns
+# on the windowing and text features a desktop build needs.
+#
+# `default-features = false` drops it, leaving a headless gpui with no platform
+# dependencies compiled.
+default = ["platform"]
+platform = [
+    "dep:gpui_linux",
+    "dep:gpui_macos",
+    "dep:gpui_windows",
+    "dep:gpui_web",
+    "font-kit",
+    "wayland",
+    "x11",
+    "windows-manifest",
+]
 test-support = [
     "collections/test-support",
+    "gpui_platform/test-support",
     "gpui_types/test-support",
     "http_client/test-support",
+    "gpui_macos?/test-support",
+    "gpui_windows?/test-support",
     "wayland",
     "x11",
     "proptest",
@@ -29,25 +48,36 @@ test-support = [
     "dep:postage",
     "dep:web-time",
 ]
-bench-support = ["profiler", "dep:criterion", "dep:bench_metrics"]
+bench-support = [
+    "profiler",
+    "dep:criterion",
+    "gpui_platform/bench-support",
+    "gpui_macos?/bench-support",
+]
 # Preserve the published feature name while consumers migrate to `bench-support`.
 bench = ["bench-support"]
 inspector = ["gpui_macros/inspector"]
 # Tracks every entity handle so tests can assert nothing leaked. Also enabled
 # by setting `GPUI_LEAK_DETECTION` when building; see `build.rs`.
 leak-detection = []
-font-kit = []
-wayland = []
+font-kit = ["gpui_macos?/font-kit"]
+wayland = ["gpui_platform/wayland", "gpui_linux?/wayland"]
 x11 = [
     "scap?/x11",
+    "gpui_platform/x11",
+    "gpui_linux?/x11",
 ]
 screen-capture = [
     "scap",
     "dep:objc2-core-foundation",
     "dep:objc2-core-video",
+    "gpui_platform/screen-capture",
+    "gpui_linux?/screen-capture",
+    "gpui_macos?/screen-capture",
+    "gpui_windows?/screen-capture",
 ]
 windows-manifest = ["dep:embed-resource"]
-profiler = ["dep:hdrhistogram"]
+profiler = ["dep:hdrhistogram", "gpui_platform/profiler"]
 stacker = ["dep:stacksafe"]
 
 [lib]
@@ -69,6 +99,7 @@ etagere.workspace = true
 futures.workspace = true
 futures-concurrency = { workspace = true, optional = true }
 gpui_macros.workspace = true
+gpui_platform.workspace = true
 gpui_shared_string.workspace = true
 gpui_types = { workspace = true, features = ["lyon"] }
 http_client.workspace = true
@@ -131,9 +162,14 @@ async-channel = { workspace = true, features = ["std"] }
 pollster.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+console_error_panic_hook.workspace = true
 getrandom = { version = "0.3.4", features = ["wasm_js"] }
+gpui_web = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["js"] }
 
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_linux = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 core-video.workspace = true
@@ -141,6 +177,7 @@ core-video.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = { workspace = true, optional = true }
 objc2-core-video = { workspace = true, optional = true }
+gpui_macos = { workspace = true, optional = true }
 log.workspace = true
 objc2 = { workspace = true, optional = true }
 objc2-metal = { version = "0.3", optional = true }
@@ -153,6 +190,7 @@ libc.workspace = true
 
 
 [target.'cfg(target_os = "windows")'.dependencies]
+gpui_windows = { workspace = true, optional = true }
 windows = { workspace = true, features = [
     "Win32_System_Power",
     "Win32_System_RemoteDesktop",
@@ -168,7 +206,7 @@ env_logger.workspace = true
 futures-concurrency.workspace = true
 postage = { workspace = true, features = ["blocking"] }
 web-time.workspace = true
-gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { workspace = true, features = ["test-support", "wayland", "x11"] }
 gpui_util.workspace = true
 lyon = { version = "1.0", features = ["extra"] }
 rand = { workspace = true, default-features = true }
@@ -183,7 +221,7 @@ reqwest_client = { workspace = true, features = ["test-support"] }
 
 [target.'cfg(target_family = "wasm")'.dev-dependencies]
 wasm-bindgen.workspace = true
-web-sys.workspace = true
+web-sys = { workspace = true, features = ["console"] }
 
 [build-dependencies]
 embed-resource = { version = "3.0", optional = true }

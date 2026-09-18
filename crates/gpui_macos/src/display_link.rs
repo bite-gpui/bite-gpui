@@ -56,7 +56,7 @@ use core_video::host_time;
 use dispatch2::{
     _dispatch_source_type_data_add, DispatchObject, DispatchQueue, DispatchRetained, DispatchSource,
 };
-use gpui::{FrameRequestSource, PlatformFrameSignal};
+use gpui_platform::{FrameRequestSource, PlatformFrameSignal};
 use gpui_util::ResultExt;
 use scheduler::Instant;
 use std::{

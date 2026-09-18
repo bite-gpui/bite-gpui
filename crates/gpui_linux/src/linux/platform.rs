@@ -16,7 +16,7 @@ use std::{
 
 #[cfg(any(feature = "wayland", feature = "x11"))]
 use anyhow::ensure;
-use anyhow::{Context as _, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 #[cfg(any(feature = "wayland", feature = "x11"))]
 use ashpd::{
     desktop::{
@@ -35,12 +35,12 @@ use crate::linux::{
     Backend, DisplayConnection, HeadlessConnection, LinuxDispatcher, PriorityQueueCalloopReceiver,
     select_backend,
 };
-use gpui::{
-    Action, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle,
-    ForegroundExecutor, GraphicalEnvironment, Keymap, Menu, MenuItem, OwnedMenu, PathPromptOptions,
-    Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PlatformWindow, Result, RunnableVariant, Task, ThermalState, WindowAppearance,
-    WindowButtonLayout, WindowParams, WindowingModes, WindowingRequest,
+use gpui_platform::{
+    ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
+    GraphicalEnvironment, MenuCommandId, PathPromptOptions, Platform, PlatformDisplay,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem,
+    PlatformTextSystem, PlatformWindow, RunnableVariant, Task, ThermalState, WindowAppearance,
+    WindowButtonLayout, WindowId, WindowParams, WindowingModes, WindowingRequest,
 };
 #[cfg(any(feature = "wayland", feature = "x11"))]
 use gpui_types::{Pixels, Point, px};
@@ -65,9 +65,9 @@ pub(crate) struct PlatformHandlers {
     pub(crate) open_urls: Option<Box<dyn FnMut(Vec<String>)>>,
     pub(crate) quit: Option<Box<dyn FnMut() -> bool>>,
     pub(crate) reopen: Option<Box<dyn FnMut()>>,
-    pub(crate) app_menu_action: Option<Box<dyn FnMut(&dyn Action)>>,
+    pub(crate) app_menu_action: Option<Box<dyn FnMut(MenuCommandId)>>,
     pub(crate) will_open_app_menu: Option<Box<dyn FnMut()>>,
-    pub(crate) validate_app_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
+    pub(crate) validate_app_menu_command: Option<Box<dyn FnMut(MenuCommandId) -> bool>>,
     pub(crate) keyboard_layout_change: Option<Box<dyn FnMut()>>,
     pub(crate) system_sleep: Option<Box<dyn FnMut()>>,
     pub(crate) system_wake: Option<Box<dyn FnMut()>>,
@@ -94,7 +94,6 @@ pub(crate) struct LinuxCommon {
     pub(crate) button_layout: WindowButtonLayout,
     pub(crate) callbacks: PlatformHandlers,
     pub(crate) signal: LoopSignal,
-    pub(crate) menus: Vec<OwnedMenu>,
     app_name: Option<String>,
     system_notifications: crate::linux::system_notifications::SystemNotificationState,
     #[cfg_attr(
@@ -124,7 +123,7 @@ impl LinuxCommon {
         #[cfg(any(feature = "wayland", feature = "x11"))]
         let text_system = Arc::new(crate::linux::CosmicTextSystem::new("IBM Plex Sans"));
         #[cfg(not(any(feature = "wayland", feature = "x11")))]
-        let text_system = Arc::new(gpui::NoopTextSystem::new());
+        let text_system = Arc::new(gpui_platform::NoopTextSystem::new());
 
         let callbacks = PlatformHandlers::default();
 
@@ -141,7 +140,6 @@ impl LinuxCommon {
             button_layout: WindowButtonLayout::linux_default(),
             callbacks,
             signal,
-            menus: Vec::new(),
             app_name: None,
             system_notifications: crate::linux::system_notifications::SystemNotificationState::new(
             ),
@@ -189,9 +187,9 @@ impl LinuxCommon {
                         loop_handle.insert_idle(move |_| {
                             let location = runnable.metadata().location;
                             let spawned = runnable.metadata().spawned;
-                            gpui::profiler::update_running_task(spawned, location);
+                            gpui_platform::profiler::update_running_task(spawned, location);
                             runnable.run();
-                            gpui::profiler::save_task_timing();
+                            gpui_platform::profiler::save_task_timing();
 
                             let after_runnable = common.borrow().after_runnable.clone();
                             if let Some(after_runnable) = after_runnable {
@@ -554,7 +552,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper> {
-        Rc::new(gpui::DummyKeyboardMapper)
+        Rc::new(gpui_platform::DummyKeyboardMapper)
     }
 
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
@@ -719,21 +717,21 @@ impl Platform for LinuxPlatform {
     #[cfg(feature = "screen-capture")]
     fn screen_capture_sources(
         &self,
-    ) -> oneshot::Receiver<Result<Vec<Rc<dyn gpui::ScreenCaptureSource>>>> {
+    ) -> oneshot::Receiver<Result<Vec<Rc<dyn gpui_platform::ScreenCaptureSource>>>> {
         self.connection.borrow().screen_capture_sources()
     }
 
-    fn active_window(&self) -> Option<AnyWindowHandle> {
+    fn active_window(&self) -> Option<WindowId> {
         self.connection.borrow().active_window()
     }
 
-    fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
+    fn window_stack(&self) -> Option<Vec<WindowId>> {
         self.connection.borrow().window_stack()
     }
 
     fn open_window(
         &self,
-        handle: AnyWindowHandle,
+        handle: WindowId,
         options: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
         self.connection.borrow().open_window(handle, options)
@@ -772,7 +770,7 @@ impl Platform for LinuxPlatform {
                     .identifier(identifier.await)
                     .modal(true)
                     .title(title)
-                    .accept_label(options.prompt.as_ref().map(gpui::SharedString::as_str))
+                    .accept_label(options.prompt.as_ref().map(gpui_platform::SharedString::as_str))
                     .multiple(options.multiple)
                     .directory(options.directories)
                     .send()
@@ -928,7 +926,7 @@ impl Platform for LinuxPlatform {
         self.with_common(|common| common.app_name = Some(name.to_string()));
     }
 
-    fn show_system_notification(&self, notification: gpui::SystemNotification) {
+    fn show_system_notification(&self, notification: gpui_platform::SystemNotification) {
         self.with_common(|common| {
             common
                 .system_notifications
@@ -942,7 +940,7 @@ impl Platform for LinuxPlatform {
 
     fn on_system_notification_response(
         &self,
-        callback: Box<dyn FnMut(gpui::SystemNotificationResponse)>,
+        callback: Box<dyn FnMut(gpui_platform::SystemNotificationResponse)>,
     ) {
         self.with_common(|common| {
             let executor = common.foreground_executor.clone();
@@ -950,7 +948,7 @@ impl Platform for LinuxPlatform {
         });
     }
 
-    fn on_app_menu_action(&self, callback: Box<dyn FnMut(&dyn Action)>) {
+    fn on_app_menu_action(&self, callback: Box<dyn FnMut(MenuCommandId)>) {
         self.with_common(|common| {
             common.callbacks.app_menu_action = Some(callback);
         });
@@ -962,7 +960,7 @@ impl Platform for LinuxPlatform {
         });
     }
 
-    fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(&dyn Action) -> bool>) {
+    fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(MenuCommandId) -> bool>) {
         self.with_common(|common| {
             common.callbacks.validate_app_menu_command = Some(callback);
         });
@@ -974,17 +972,11 @@ impl Platform for LinuxPlatform {
         Ok(app_path)
     }
 
-    fn set_menus(&self, menus: Vec<Menu>, _keymap: &Keymap) {
-        self.with_common(|common| {
-            common.menus = menus.into_iter().map(|menu| menu.owned()).collect();
-        })
+    fn set_menus(&self, _menus: Vec<PlatformMenu>) {
+        // todo(linux)
     }
 
-    fn get_menus(&self) -> Option<Vec<OwnedMenu>> {
-        self.with_common(|common| Some(common.menus.clone()))
-    }
-
-    fn set_dock_menu(&self, _menu: Vec<MenuItem>, _keymap: &Keymap) {
+    fn set_dock_menu(&self, _menu: Vec<PlatformMenuItem>) {
         // todo(linux)
     }
 
@@ -1391,9 +1383,9 @@ fn guess_ascii(keycode: Keycode, shift: bool) -> Option<char> {
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(super) fn keystroke_from_xkb(
     state: &State,
-    mut modifiers: gpui::Modifiers,
+    mut modifiers: gpui_platform::Modifiers,
     keycode: Keycode,
-) -> gpui::Keystroke {
+) -> gpui_platform::Keystroke {
     let key_utf32 = state.key_get_utf32(keycode);
     let key_utf8 = state.key_get_utf8(keycode);
     let key_sym = state.key_get_one_sym(keycode);
@@ -1506,7 +1498,7 @@ pub(super) fn keystroke_from_xkb(
     let key_char =
         (key_utf32 >= 32 && key_utf32 != 127 && !key_utf8.is_empty()).then_some(key_utf8);
 
-    gpui::Keystroke {
+    gpui_platform::Keystroke {
         modifiers,
         key,
         key_char,
@@ -1573,12 +1565,12 @@ pub fn keystroke_underlying_dead_key(keysym: Keysym) -> Option<String> {
     }
 }
 #[cfg(any(feature = "wayland", feature = "x11"))]
-pub(super) fn modifiers_from_xkb(keymap_state: &State) -> gpui::Modifiers {
+pub(super) fn modifiers_from_xkb(keymap_state: &State) -> gpui_platform::Modifiers {
     let shift = keymap_state.mod_name_is_active(xkb::MOD_NAME_SHIFT, xkb::STATE_MODS_EFFECTIVE);
     let alt = keymap_state.mod_name_is_active(xkb::MOD_NAME_ALT, xkb::STATE_MODS_EFFECTIVE);
     let control = keymap_state.mod_name_is_active(xkb::MOD_NAME_CTRL, xkb::STATE_MODS_EFFECTIVE);
     let platform = keymap_state.mod_name_is_active(xkb::MOD_NAME_LOGO, xkb::STATE_MODS_EFFECTIVE);
-    gpui::Modifiers {
+    gpui_platform::Modifiers {
         shift,
         alt,
         control,
@@ -1588,9 +1580,9 @@ pub(super) fn modifiers_from_xkb(keymap_state: &State) -> gpui::Modifiers {
 }
 
 #[cfg(any(feature = "wayland", feature = "x11"))]
-pub(super) fn capslock_from_xkb(keymap_state: &State) -> gpui::Capslock {
+pub(super) fn capslock_from_xkb(keymap_state: &State) -> gpui_platform::Capslock {
     let on = keymap_state.mod_name_is_active(xkb::MOD_NAME_CAPS, xkb::STATE_MODS_EFFECTIVE);
-    gpui::Capslock { on }
+    gpui_platform::Capslock { on }
 }
 
 /// Resolve a Linux `dev_t` to PCI vendor/device IDs via sysfs, returning a
@@ -1686,7 +1678,7 @@ async fn await_idle_sleep_prevention(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Point, px};
+    use gpui_platform::{Point, px};
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
     #[test]

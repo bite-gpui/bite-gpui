@@ -1,8 +1,8 @@
 use std::{path::PathBuf, rc::Rc};
 
-use gpui::{
-    AnyWindowHandle, ClipboardItem, CursorStyle, GraphicalEnvironment, PlatformDisplay,
-    PlatformKeyboardLayout, PlatformWindow, WindowParams, WindowingModes,
+use gpui_platform::{
+    ClipboardItem, CursorStyle, GraphicalEnvironment, PlatformDisplay, PlatformKeyboardLayout,
+    PlatformWindow, WindowId, WindowParams, WindowingModes,
 };
 
 #[cfg(feature = "wayland")]
@@ -136,7 +136,7 @@ impl DisplayConnection {
 
     pub(crate) fn open_window(
         &self,
-        handle: AnyWindowHandle,
+        handle: WindowId,
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
         dispatch!(
@@ -146,11 +146,11 @@ impl DisplayConnection {
         )
     }
 
-    pub(crate) fn active_window(&self) -> Option<AnyWindowHandle> {
+    pub(crate) fn active_window(&self) -> Option<WindowId> {
         dispatch!(self, connection => connection.active_window(), headless => None)
     }
 
-    pub(crate) fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
+    pub(crate) fn window_stack(&self) -> Option<Vec<WindowId>> {
         dispatch!(self, connection => connection.window_stack(), headless => None)
     }
 
@@ -209,8 +209,9 @@ impl DisplayConnection {
     #[cfg(feature = "screen-capture")]
     pub(crate) fn screen_capture_sources(
         &self,
-    ) -> futures::channel::oneshot::Receiver<anyhow::Result<Vec<Rc<dyn gpui::ScreenCaptureSource>>>>
-    {
+    ) -> futures::channel::oneshot::Receiver<
+        anyhow::Result<Vec<Rc<dyn gpui_platform::ScreenCaptureSource>>>,
+    > {
         dispatch!(self, connection => connection.screen_capture_sources(), headless => {
             let (sender, receiver) = futures::channel::oneshot::channel();
             sender

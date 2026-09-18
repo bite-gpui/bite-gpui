@@ -46,7 +46,6 @@ path = "dynamic_fonts.rs"
 anyhow = "1"
 futures = "0.3"
 gpui = { path = "../../../gpui" }
-gpui_platform = { path = "../../../gpui_platform" }
 gpui_util = { path = "../../../gpui_util" }
 unicode-segmentation = "1"
 wasm-bindgen = "0.2"
