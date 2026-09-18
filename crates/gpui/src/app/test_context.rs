@@ -1,6 +1,7 @@
 use crate::{
     Action, AnyView, AnyWindowHandle, App, AppCell, AppContext, AsyncApp, AvailableSpace,
-    BackgroundExecutor, BorrowAppContext, Bounds, Capslock, ClipboardItem, DisplayId, DrawPhase,
+    BackgroundExecutor, BorrowAppContext, Bounds, BoundsExt, Capslock, ClipboardItem, DisplayId,
+    DrawPhase,
     Drawable, Element, Empty, EntityId, EventEmitter, ForegroundExecutor, Global, InputEvent,
     Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Platform, PlatformTextSystem, Point, Render, Result, SharedString, Size,

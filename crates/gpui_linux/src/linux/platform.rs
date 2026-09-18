@@ -43,7 +43,7 @@ use gpui::{
     WindowButtonLayout, WindowParams, WindowingModes, WindowingRequest,
 };
 #[cfg(any(feature = "wayland", feature = "x11"))]
-use gpui::{Pixels, Point, px};
+use gpui_types::{Pixels, Point, px};
 
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(crate) const SCROLL_LINES: f32 = 3.0;
