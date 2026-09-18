@@ -65,11 +65,13 @@ use std::{
 use uuid::Uuid;
 
 pub(crate) mod a11y;
+mod frame_pipeline;
 #[cfg(target_os = "macos")]
 mod mac;
 mod prompts;
 
 pub use a11y::A11ySubtreeBuilder;
+pub use frame_pipeline::{FramePipeline, StandardImmediatePipeline};
 #[cfg(target_os = "macos")]
 pub use mac::*;
 
@@ -1160,6 +1162,42 @@ enum InputModality {
 /// A field belongs here when the frame lifecycle clears it, or when it is only
 /// valid while a frame is being driven or while an element is being laid out or
 /// painted. State that survives across frames lives in [`WindowHostCore`].
+/// Which pass of a frame a window is in.
+///
+/// Debug builds check that the passes run in order, so a [`FramePipeline`] that
+/// drives them itself fails loudly instead of leaving the frame half-built.
+#[cfg(debug_assertions)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum FramePhase {
+    /// No frame is in progress.
+    Idle,
+    /// [`Window::begin_frame`] has run.
+    Begun,
+    /// [`Window::evaluate_roots`] has run.
+    Evaluated,
+    /// [`Window::layout_roots`] has run.
+    LaidOut,
+    /// [`Window::paint_roots`] has run.
+    Painted,
+    /// [`Window::finish_frame`] has run.
+    Finished,
+    /// [`Window::complete_frame`] has run.
+    Completed,
+}
+
+#[cfg(debug_assertions)]
+impl FramePhase {
+    /// Moves to `next`, asserting this pass may follow the current one.
+    #[track_caller]
+    fn enter(&mut self, from: &[FramePhase], next: FramePhase, method: &'static str) {
+        debug_assert!(
+            from.contains(self),
+            "{method} ran while the frame was {self:?}, but it must follow one of {from:?}"
+        );
+        *self = next;
+    }
+}
+
 pub(crate) struct WindowFrameState {
     /// The stack of override values for the window's rem size.
     ///
@@ -1190,6 +1228,9 @@ pub(crate) struct WindowFrameState {
     next_hitbox_id: HitboxId,
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
+    /// The pass of the frame in progress, for debug builds to check ordering.
+    #[cfg(debug_assertions)]
+    frame_phase: FramePhase,
 }
 
 /// State a window keeps across frames.
@@ -1200,6 +1241,11 @@ pub(crate) struct WindowFrameState {
 pub(crate) struct WindowHostCore {
     pub(crate) handle: AnyWindowHandle,
     pub(crate) invalidator: WindowInvalidator,
+    /// The pipeline this window draws its frames through.
+    ///
+    /// Held behind a [`RefCell`] so a frame can hold it while also borrowing the
+    /// window it is drawing.
+    frame_pipeline: Rc<RefCell<Box<dyn FramePipeline>>>,
     pub(crate) removed: bool,
     /// The most recently sampled metrics, published for lock-free reads.
     metrics: Arc<ArcSwap<WindowMetrics>>,
@@ -1275,6 +1321,16 @@ impl WindowHostCore {
             id: self.handle.window_id(),
             metrics: self.metrics.clone(),
         }
+    }
+
+    /// Whether this window's pipeline wants the frame the application is about to
+    /// draw. Consulted before any of the frame's work is started.
+    pub(crate) fn should_render_frame(&self) -> bool {
+        let is_dirty = self.invalidator.is_dirty();
+        let metrics = self.metrics.load();
+        self.frame_pipeline
+            .borrow_mut()
+            .should_render(is_dirty, &metrics)
     }
 }
 
@@ -1954,9 +2010,13 @@ impl WindowHost {
                                     // atlas tile references after a GPU device recovery.
                                     window.refresh();
                                 }
-                                let arena_clear_needed = window.draw(cx);
-                                window.present();
-                                arena_clear_needed.clear(cx);
+                                // A forced render is not the pipeline's to defer: the
+                                // cached content it would replay may be gone.
+                                if force_render || window.core.should_render_frame() {
+                                    let arena_clear_needed = window.draw(cx);
+                                    window.present();
+                                    arena_clear_needed.clear(cx);
+                                }
                             })
                             .log_err();
                     })
@@ -2183,6 +2243,7 @@ impl WindowHost {
             core: WindowHostCore {
                 handle,
                 invalidator,
+                frame_pipeline: Rc::new(RefCell::new(cx.new_frame_pipeline(handle.window_id()))),
                 removed: false,
                 metrics,
                 platform_window,
@@ -2270,9 +2331,36 @@ impl WindowHost {
                 next_hitbox_id: HitboxId(0),
                 next_tooltip_id: TooltipId::default(),
                 tooltip_bounds: None,
+                #[cfg(debug_assertions)]
+                frame_phase: FramePhase::Idle,
             },
         })
     }
+}
+
+/// The roots a frame draws, assembled before they are laid out.
+///
+/// A frame draws the window's own view tree, plus at most one overlay: a prompt,
+/// a drag image, or a tooltip. Roots are gathered by [`Window::evaluate_roots`],
+/// laid out and prepainted by [`Window::layout_roots`], and drawn by
+/// [`Window::paint_roots`], so a [`FramePipeline`] can sit between the passes.
+///
+/// Only [`root`](Self::root) is laid out like the window's view tree, filling it
+/// unless the view sizes itself. The others are placed as their own conventions
+/// require, which is why the carrier records what each one is rather than letting
+/// callers guess from the element.
+pub struct PreparedRoots {
+    /// The window's own view tree.
+    pub root: AnyElement,
+    /// A prompt, laid out like the root: it covers the window.
+    pub prompt: Option<AnyElement>,
+    /// A tooltip, already laid out where the request that asked for it wanted it.
+    pub tooltip: Option<AnyElement>,
+    /// A drag image, and the point it hangs from: the pointer, less the offset
+    /// recorded when the drag started.
+    pub drag: Option<(AnyElement, Point<Pixels>)>,
+    /// The inspector's root, when the inspector is open.
+    pub inspector: Option<AnyElement>,
 }
 
 impl Window<'_> {
@@ -3356,17 +3444,21 @@ impl Window<'_> {
     #[doc(hidden)]
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
-        // Drain every draw in profiler builds so a previous frame's
-        // first-invalidation timestamp can't be attributed to this one.
-        #[cfg(feature = "profiler")]
-        let frame_dirty = self.core.invalidator.take_frame_dirty();
-        #[cfg(feature = "profiler")]
-        self.core.window_profiler.begin_draw();
+        let pipeline = self.core.frame_pipeline.clone();
+        pipeline.borrow_mut().draw(self, cx)
+    }
 
-        // Set up the per-App arena for element allocation during this draw.
-        // This ensures that multiple test Apps have isolated arenas.
-        let arena_scope = ElementArenaScope::enter(&cx.element_arena);
-
+    /// Opens a frame: samples the platform window, resets the scratch state a
+    /// frame rebuilds, and takes ownership of the invalidations this frame owes.
+    ///
+    /// Runtime API: [driven by a `FramePipeline`][FramePipeline], not by elements.
+    pub fn begin_frame(&mut self, cx: &mut App) {
+        #[cfg(debug_assertions)]
+        self.frame_state.frame_phase.enter(
+            &[FramePhase::Idle, FramePhase::Completed],
+            FramePhase::Begun,
+            "begin_frame",
+        );
         if self.core.platform_window.prepare_frame() {
             self.refresh();
         }
@@ -3376,11 +3468,13 @@ impl Window<'_> {
         debug_assert!(self.frame_state.rendered_entity_stack.is_empty());
         self.core.invalidator.set_dirty(false);
         self.frame_state.requested_autoscroll = None;
+    }
 
-        // Restore the previously-used input handler.
-        // Place it back into a None slot (left by a previous .take()) so that
-        // cached paint_range indices in reuse_paint find the handler at the
-        // expected position.
+    /// Returns the platform's input handler to the frame it was taken from.
+    ///
+    /// It goes back into an empty slot rather than being pushed, so that the
+    /// paint ranges `reuse_paint` cached still find it where they expect.
+    fn restore_input_handler(&mut self) {
         if let Some(input_handler) = self.core.platform_window.take_input_handler() {
             if let Some(slot) = self
                 .frame_state
@@ -3398,23 +3492,27 @@ impl Window<'_> {
                     .push(Some(input_handler));
             }
         }
-        if !cx.mode.skip_drawing() {
-            self.draw_roots(cx);
-            #[cfg(feature = "profiler")]
-            {
-                let viewport_size = self.core.viewport_size;
-                let scale_factor = self.scale_factor();
-                self.core.debug_frame_overlay.paint(
-                    &mut self.frame_state.next_frame.scene,
-                    viewport_size,
-                    scale_factor,
-                );
-            }
-        }
+    }
+
+    /// Finishes the painted frame: notes the views it touched, records whether
+    /// the window is active, and hands the platform the input handler the frame
+    /// asked for.
+    ///
+    /// Runtime API: [driven by a `FramePipeline`][FramePipeline], not by elements.
+    ///
+    /// A frame that skipped drawing its roots arrives here from
+    /// [`begin_frame`](Self::begin_frame) rather than from
+    /// [`paint_roots`](Self::paint_roots).
+    pub fn finish_frame(&mut self, cx: &mut App) {
+        #[cfg(debug_assertions)]
+        self.frame_state.frame_phase.enter(
+            &[FramePhase::Begun, FramePhase::Painted],
+            FramePhase::Finished,
+            "finish_frame",
+        );
         self.frame_state.dirty_views.clear();
         self.frame_state.next_frame.window_active = self.core.active.get();
 
-        // Register requested input handler with the platform window.
         // Use .take() instead of .pop() to preserve Vec length, so that cached
         // paint_range indices remain valid for reuse_paint on the next frame.
         // Search backwards to find the last Some entry, since reuse_paint may
@@ -3450,7 +3548,22 @@ impl Window<'_> {
         self.frame_state
             .next_frame
             .finish(&mut self.frame_state.rendered_frame);
+    }
 
+    /// Retires the painted frame, swaps it in, and dispatches the focus changes
+    /// the swap produced.
+    ///
+    /// Returns the focus that was current before the listeners ran: they may
+    /// move it, and the caller has to tell those moves apart from its own.
+    ///
+    /// Runtime API: [driven by a `FramePipeline`][FramePipeline], not by elements.
+    pub fn complete_frame(&mut self, cx: &mut App) -> Option<FocusId> {
+        #[cfg(debug_assertions)]
+        self.frame_state.frame_phase.enter(
+            &[FramePhase::Finished],
+            FramePhase::Completed,
+            "complete_frame",
+        );
         self.core.invalidator.set_phase(DrawPhase::Focus);
         let previous_focus_path = self.frame_state.rendered_frame.focus_path();
         let previous_window_active = self.frame_state.rendered_frame.window_active;
@@ -3498,6 +3611,17 @@ impl Window<'_> {
                 .retain(&(), |listener| listener(&event, self, cx));
         }
 
+        focus_before_listeners
+    }
+
+    /// Closes the frame out and marks it ready to present.
+    ///
+    /// Runtime API: [driven by a `FramePipeline`][FramePipeline], not by elements.
+    pub fn end_frame(&mut self, cx: &mut App, focus_before_listeners: Option<FocusId>) {
+        #[cfg(debug_assertions)]
+        self.frame_state
+            .frame_phase
+            .enter(&[FramePhase::Completed], FramePhase::Idle, "end_frame");
         debug_assert!(self.frame_state.rendered_entity_stack.is_empty());
         self.record_entities_accessed(cx);
         self.reset_cursor_style(cx);
@@ -3511,21 +3635,7 @@ impl Window<'_> {
             self.refresh();
         }
         self.core.needs_present.set(true);
-
-        #[cfg(feature = "profiler")]
-        {
-            let draw_duration = self
-                .core
-                .window_profiler
-                .end_draw(frame_dirty.dirty_at, frame_dirty.invalidations);
-            self.core.debug_frame_overlay.record_frame(draw_duration);
-        }
-
-        // Exit the scope to obtain the arena-clear token this draw owes; the
-        // scope's teardown itself happens in `ElementArenaScope::drop`.
-        arena_scope.exit(&cx.element_arena)
     }
-
     fn record_entities_accessed(&mut self, cx: &mut App) {
         let mut entities_ref = cx.entities.accessed_entities.get_mut();
         let mut entities = mem::take(entities_ref.deref_mut());
@@ -3616,7 +3726,51 @@ impl Window<'_> {
         self.refresh();
     }
 
-    fn draw_roots(&mut self, cx: &mut App) {
+    /// Gathers the roots this frame will draw.
+    ///
+    /// The root element is produced here; a view's [`Render`][crate::Render] is
+    /// not called until [`layout_roots`](Self::layout_roots) lays it out, because
+    /// an element builds its tree when it is asked for a layout.
+    pub fn evaluate_roots(&mut self, cx: &mut App) -> PreparedRoots {
+        #[cfg(debug_assertions)]
+        self.frame_state.frame_phase.enter(
+            &[FramePhase::Begun],
+            FramePhase::Evaluated,
+            "evaluate_roots",
+        );
+        let root = self.core.root.as_ref().unwrap().clone().into_any_element();
+
+        // A prompt displaces the other overlays rather than stacking with them,
+        // so at most one of prompt, drag and tooltip is drawn.
+        let mut prompt = None;
+        let mut drag = None;
+        if let Some(handle) = self.core.prompt.take() {
+            prompt = Some(handle.view.any_view().into_any_element());
+            self.core.prompt = Some(handle);
+        } else if let Some(active_drag) = cx.active_drag.take() {
+            let origin = self.mouse_position() - active_drag.cursor_offset;
+            drag = Some((active_drag.view.clone().into_any_element(), origin));
+            cx.active_drag = Some(active_drag);
+        }
+
+        PreparedRoots {
+            root,
+            prompt,
+            tooltip: None,
+            drag,
+            inspector: None,
+        }
+    }
+
+    /// Lays out and prepaints the roots, then hit tests the pointer against what
+    /// they registered.
+    pub fn layout_roots(&mut self, roots: &mut PreparedRoots, cx: &mut App) {
+        #[cfg(debug_assertions)]
+        self.frame_state.frame_phase.enter(
+            &[FramePhase::Evaluated],
+            FramePhase::LaidOut,
+            "layout_roots",
+        );
         self.core.invalidator.set_phase(DrawPhase::Prepaint);
         self.frame_state.tooltip_bounds.take();
 
@@ -3625,13 +3779,14 @@ impl Window<'_> {
             self.core.a11y.begin_frame();
         }
 
-        let _inspector_width: Pixels = rems(30.0).to_pixels(self.rem_size());
+        #[cfg(any(feature = "inspector", debug_assertions))]
+        let inspector_width: Pixels = rems(30.0).to_pixels(self.rem_size());
         let root_size = {
             #[cfg(any(feature = "inspector", debug_assertions))]
             {
                 if self.core.inspector.is_some() {
                     let mut size = self.core.viewport_size;
-                    size.width = (size.width - _inspector_width).max(px(0.0));
+                    size.width = (size.width - inspector_width).max(px(0.0));
                     size
                 } else {
                     self.core.viewport_size
@@ -3647,64 +3802,65 @@ impl Window<'_> {
         // stretches to fill the viewport unless explicitly sized, window roots
         // fill the window when their size is `auto`.
         let scale_factor = self.scale_factor();
-        let mut root_element = self.core.root.as_ref().unwrap().clone().into_any_element();
-        let root_layout_id = root_element.request_layout(self, cx);
+        let root_layout_id = roots.root.request_layout(self, cx);
         self.frame_state.layout_session.stretch_auto_size_to_fill(
             root_layout_id,
             root_size,
             scale_factor,
         );
-        root_element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
+        roots
+            .root
+            .prepaint_as_root(Point::default(), root_size.into(), self, cx);
 
         #[cfg(any(feature = "inspector", debug_assertions))]
-        let inspector_element = self.prepaint_inspector(_inspector_width, cx);
+        {
+            roots.inspector = self.prepaint_inspector(inspector_width, cx);
+        }
 
         self.prepaint_deferred_draws(cx);
 
-        let mut prompt_element = None;
-        let mut active_drag_element = None;
-        let mut tooltip_element = None;
-        if let Some(prompt) = self.core.prompt.take() {
-            let mut element = prompt.view.any_view().into_any_element();
-            let prompt_layout_id = element.request_layout(self, cx);
+        if let Some(prompt) = roots.prompt.as_mut() {
+            let prompt_layout_id = prompt.request_layout(self, cx);
             self.frame_state.layout_session.stretch_auto_size_to_fill(
                 prompt_layout_id,
                 root_size,
                 scale_factor,
             );
-            element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
-            prompt_element = Some(element);
-            self.core.prompt = Some(prompt);
-        } else if let Some(active_drag) = cx.active_drag.take() {
-            let mut element = active_drag.view.clone().into_any_element();
-            let offset = self.mouse_position() - active_drag.cursor_offset;
-            element.prepaint_as_root(offset, AvailableSpace::min_size(), self, cx);
-            active_drag_element = Some(element);
-            cx.active_drag = Some(active_drag);
+            prompt.prepaint_as_root(Point::default(), root_size.into(), self, cx);
+        } else if let Some((drag, origin)) = roots.drag.as_mut() {
+            drag.prepaint_as_root(*origin, AvailableSpace::min_size(), self, cx);
         } else {
-            tooltip_element = self.prepaint_tooltip(cx);
+            roots.tooltip = self.prepaint_tooltip(cx);
         }
 
         self.core.mouse_hit_test = self
             .frame_state
             .next_frame
             .hit_test(self.core.mouse_position);
+    }
 
-        // Now actually paint the elements.
+    /// Paints the roots, in the order they stack.
+    pub fn paint_roots(&mut self, mut roots: PreparedRoots, cx: &mut App) {
+        #[cfg(debug_assertions)]
+        self.frame_state.frame_phase.enter(
+            &[FramePhase::LaidOut],
+            FramePhase::Painted,
+            "paint_roots",
+        );
         self.core.invalidator.set_phase(DrawPhase::Paint);
-        root_element.paint(self, cx);
+        roots.root.paint(self, cx);
 
         #[cfg(any(feature = "inspector", debug_assertions))]
-        self.paint_inspector(inspector_element, cx);
+        self.paint_inspector(roots.inspector.take(), cx);
 
         self.paint_deferred_draws(cx);
 
-        if let Some(mut prompt_element) = prompt_element {
-            prompt_element.paint(self, cx);
-        } else if let Some(mut drag_element) = active_drag_element {
-            drag_element.paint(self, cx);
-        } else if let Some(mut tooltip_element) = tooltip_element {
-            tooltip_element.paint(self, cx);
+        if let Some(mut prompt) = roots.prompt.take() {
+            prompt.paint(self, cx);
+        } else if let Some((mut drag, _)) = roots.drag.take() {
+            drag.paint(self, cx);
+        } else if let Some(mut tooltip) = roots.tooltip.take() {
+            tooltip.paint(self, cx);
         }
 
         #[cfg(any(feature = "inspector", debug_assertions))]
@@ -3736,6 +3892,17 @@ impl Window<'_> {
                 self.core.platform_window.a11y_tree_update(tree_update);
             }
         }
+    }
+
+    /// Draws the window's roots: everything on screen except the deferred draws.
+    ///
+    /// The three passes above, in sequence, with no [`FramePipeline`] between
+    /// them. A pipeline composes its own passes instead of calling this, which is
+    /// what [`FramePipeline::draw_roots`] does.
+    pub fn draw_roots(&mut self, cx: &mut App) {
+        let mut roots = self.evaluate_roots(cx);
+        self.layout_roots(&mut roots, cx);
+        self.paint_roots(roots, cx);
     }
 
     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
@@ -7936,12 +8103,13 @@ mod tests {
     };
 
     use crate::{
-        AnyWindowHandle, AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, Empty,
-        ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle,
-        InputEvent as _, InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke,
-        LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels,
-        PlatformInput, Point, Render, RequestFrameOptions, StatefulInteractiveElement as _, Styled,
-        TestAppContext, TouchDragEvent, TouchEvent, TouchId, TouchPhase, Window, WindowAppearance,
+        AnyWindowHandle, App, AppContext as _, ArenaClearNeeded, Bounds, Context, DispatchPhase,
+        DragMoveEvent, Empty, ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent,
+        FocusHandle, FocusId, FramePipeline, InputEvent as _, InteractiveElement as _, IntoElement,
+        KeyDownEvent, Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+        ParentElement, Pixels, PlatformInput, Point, Render, RequestFrameOptions,
+        StandardImmediatePipeline, StatefulInteractiveElement as _, Styled, TestAppContext,
+        TouchDragEvent, TouchEvent, TouchId, TouchPhase, Window, WindowAppearance, WindowMetrics,
         WindowOptions, canvas, div, point, px, size,
     };
 
@@ -7989,6 +8157,170 @@ mod tests {
             .update(cx, |_, window, _| assert!(window.is_visible()))
             .unwrap();
         assert_eq!(test_window.frame_wake_count(), frame_wake_count);
+    }
+
+    /// A window draws through whatever pipeline its app installs, running the
+    /// phases in order.
+    #[gpui::test]
+    fn a_window_draws_through_its_frame_pipeline(cx: &mut TestAppContext) {
+        let recorded: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let recorder = recorded.clone();
+        cx.update(move |cx| {
+            cx.set_frame_pipeline_factory(Rc::new(move |_| {
+                Box::new(RecordingPipeline(recorder.clone()))
+            }));
+        });
+
+        let window = cx.add_window(|_, _| EmptyView);
+        recorded.borrow_mut().clear();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+
+        let phases = recorded.borrow();
+        assert!(
+            phases.starts_with(&[
+                "begin_frame",
+                "draw_roots",
+                "finish_frame",
+                "complete_frame",
+                "end_frame"
+            ]),
+            "frame ran {phases:?}"
+        );
+    }
+
+    /// Records the phases it is asked to run, then delegates to the standard
+    /// implementation of each one.
+    struct RecordingPipeline(Rc<RefCell<Vec<&'static str>>>);
+
+    impl FramePipeline for RecordingPipeline {
+        fn begin_frame(&mut self, window: &mut Window, cx: &mut App) {
+            self.0.borrow_mut().push("begin_frame");
+            window.begin_frame(cx);
+        }
+
+        fn draw_roots(&mut self, window: &mut Window, cx: &mut App) {
+            self.0.borrow_mut().push("draw_roots");
+            window.draw_roots(cx);
+        }
+
+        fn finish_frame(&mut self, window: &mut Window, cx: &mut App) {
+            self.0.borrow_mut().push("finish_frame");
+            window.finish_frame(cx);
+        }
+
+        fn complete_frame(&mut self, window: &mut Window, cx: &mut App) -> Option<FocusId> {
+            self.0.borrow_mut().push("complete_frame");
+            window.complete_frame(cx)
+        }
+
+        fn end_frame(
+            &mut self,
+            window: &mut Window,
+            cx: &mut App,
+            focus_before_listeners: Option<FocusId>,
+        ) {
+            self.0.borrow_mut().push("end_frame");
+            window.end_frame(cx, focus_before_listeners);
+        }
+    }
+
+    /// A frame that skips drawing its roots goes straight from opening the frame
+    /// to finishing it, without running the root passes.
+    #[gpui::test]
+    fn a_frame_that_skips_drawing_still_completes(cx: &mut TestAppContext) {
+        cx.skip_drawing();
+        let window = cx.add_window(|_, _| EmptyView);
+
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    }
+
+    /// The passes have to run in order: one that is skipped is reported, rather
+    /// than leaving the frame half-built.
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    #[should_panic(expected = "paint_roots ran while the frame was Evaluated")]
+    fn a_frame_pass_out_of_order_is_rejected(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| EmptyView);
+
+        cx.update_window(window.into(), |_, window, cx| {
+            window.begin_frame(cx);
+            let roots = window.evaluate_roots(cx);
+            // Laying the roots out is what registers their hitboxes, so painting
+            // them now has nothing to paint.
+            window.paint_roots(roots, cx);
+        })
+        .unwrap();
+    }
+
+    /// Counts the frames it renders, and defers them when told to.
+    struct PacingPipeline {
+        frames: Rc<Cell<usize>>,
+        asks: Rc<Cell<usize>>,
+        allow: bool,
+    }
+
+    impl FramePipeline for PacingPipeline {
+        fn should_render(&mut self, is_dirty: bool, _metrics: &WindowMetrics) -> bool {
+            self.asks.set(self.asks.get() + 1);
+            self.allow && is_dirty
+        }
+
+        fn draw(&mut self, window: &mut Window, cx: &mut App) -> ArenaClearNeeded {
+            self.frames.set(self.frames.get() + 1);
+            FramePipeline::draw(&mut StandardImmediatePipeline, window, cx)
+        }
+    }
+
+    /// Installs a [`PacingPipeline`] over the app's windows.
+    fn install_pacing_pipeline(
+        cx: &mut TestAppContext,
+        frames: Rc<Cell<usize>>,
+        asks: Rc<Cell<usize>>,
+        allow: bool,
+    ) {
+        cx.update(move |cx| {
+            cx.set_frame_pipeline_factory(Rc::new(move |_| {
+                Box::new(PacingPipeline {
+                    frames: frames.clone(),
+                    asks: asks.clone(),
+                    allow,
+                })
+            }));
+        });
+    }
+
+    /// A pipeline that defers a frame stops it before any of its work starts.
+    #[gpui::test]
+    fn a_pipeline_can_defer_a_frame(cx: &mut TestAppContext) {
+        let frames = Rc::new(Cell::new(0));
+        let asks = Rc::new(Cell::new(0));
+        install_pacing_pipeline(cx, frames.clone(), asks.clone(), false);
+        let window = cx.add_window(|_, _| EmptyView);
+        let test_window = cx.test_window(window.into());
+        frames.set(0);
+        asks.set(0);
+
+        window.update(cx, |_, _, cx| cx.notify()).unwrap();
+        test_window.simulate_frame_request(RequestFrameOptions::default());
+
+        assert!(asks.get() > 0, "the pipeline was asked about the frame");
+        assert_eq!(frames.get(), 0, "the deferred frame was never drawn");
+    }
+
+    /// The same window draws once the pipeline allows the frame.
+    #[gpui::test]
+    fn a_pipeline_can_allow_a_frame(cx: &mut TestAppContext) {
+        let frames = Rc::new(Cell::new(0));
+        let asks = Rc::new(Cell::new(0));
+        install_pacing_pipeline(cx, frames.clone(), asks.clone(), true);
+        let window = cx.add_window(|_, _| EmptyView);
+        frames.set(0);
+
+        window.update(cx, |_, _, cx| cx.notify()).unwrap();
+
+        assert!(frames.get() > 0, "the allowed frame was drawn");
     }
 
     #[gpui::test]

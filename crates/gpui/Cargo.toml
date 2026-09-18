@@ -35,20 +35,20 @@ platform = [
     "windows-manifest",
 ]
 test-support = [
-    "gpui_runtime/test-support",
+    "gpui_authoring/test-support",
     "gpui_macos?/test-support",
     "gpui_windows?/test-support",
     "wayland",
     "x11",
 ]
 bench-support = [
-    "gpui_runtime/bench-support",
+    "gpui_authoring/bench-support",
     "gpui_macos?/bench-support",
 ]
 # Preserve the published feature name while consumers migrate to `bench-support`.
 bench = ["bench-support"]
-inspector = ["gpui_runtime/inspector"]
-leak-detection = ["gpui_runtime/leak-detection"]
+inspector = ["gpui_authoring/inspector"]
+leak-detection = ["gpui_authoring/leak-detection"]
 wayland = ["gpui_platform/wayland", "gpui_linux?/wayland"]
 x11 = [
     "scap?/x11",
@@ -63,8 +63,8 @@ screen-capture = [
     "gpui_windows?/screen-capture",
 ]
 windows-manifest = ["dep:embed-resource"]
-profiler = ["gpui_runtime/profiler"]
-stacker = ["gpui_runtime/stacker"]
+profiler = ["gpui_authoring/profiler"]
+stacker = ["gpui_authoring/stacker"]
 font-kit = ["dep:font-kit", "gpui_macos?/font-kit"]
 
 [lib]
@@ -72,8 +72,12 @@ path = "src/gpui.rs"
 doctest = false
 
 [dependencies]
-gpui_runtime.workspace = true
+gpui_authoring.workspace = true
+# Not named in this crate's source: the `wayland`, `x11`, and `screen-capture`
+# features forward to it. Those features belong to the platform layer, and the
+# façade is the only crate that pulls in the platform backends.
 gpui_platform.workspace = true
+gpui_runtime.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 gpui_web = { workspace = true, optional = true }
@@ -134,6 +138,14 @@ ignored = [
 [[example]]
 name = "hello_world"
 path = "examples/hello_world.rs"
+
+[[example]]
+name = "instrumented_pipeline"
+path = "examples/instrumented_pipeline.rs"
+
+[[example]]
+name = "frame_pipeline_decorator"
+path = "examples/frame_pipeline_decorator.rs"
 
 [[example]]
 name = "move_entity_between_windows"
