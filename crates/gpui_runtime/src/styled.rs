@@ -1,9 +1,9 @@
 use crate::{
     self as gpui, AbsoluteLength, AlignContent, AlignItems, AlignSelf, BorderStyle, CursorStyle,
-    DefiniteLength, Display, Fill, FlexDirection, FlexWrap, Font, FontFeatures, FontStyle,
-    FontWeight, GridPlacement, GridTemplate, GridTemplateMinSize, Hsla, JustifyContent, Length,
-    SharedString, StrikethroughStyle, StyleRefinement, TextAlign, TextOverflow,
-    TextStyleRefinement, UnderlineStyle, WhiteSpace, px, relative, rems,
+    CustomStyleProperty, DefiniteLength, Display, Fill, FlexDirection, FlexWrap, Font,
+    FontFeatures, FontStyle, FontWeight, GridPlacement, GridTemplate, GridTemplateMinSize, Hsla,
+    JustifyContent, Length, SharedString, StrikethroughStyle, StyleRefinement, TextAlign,
+    TextOverflow, TextStyleRefinement, UnderlineStyle, WhiteSpace, px, relative, rems,
 };
 pub use gpui_macros::{
     border_style_methods, box_shadow_style_methods, cursor_style_methods, margin_style_methods,
@@ -14,6 +14,10 @@ const ELLIPSIS: SharedString = SharedString::new_static("…");
 
 /// A trait for elements that can be styled.
 /// Use this to opt-in to a utility CSS-like styling API.
+///
+/// This is the composition tier of the [authoring guide](crate::_authoring): it
+/// shapes how an element is laid out and painted without drawing anything
+/// itself.
 // gate on rust-analyzer so rust-analyzer never needs to expand this macro, it takes up to 10 seconds to expand due to inefficiencies in rust-analyzers proc-macro srv
 #[cfg_attr(
     all(any(feature = "inspector", debug_assertions), not(rust_analyzer)),
@@ -22,6 +26,17 @@ const ELLIPSIS: SharedString = SharedString::new_static("…");
 pub trait Styled: Sized {
     /// Returns a reference to the style memory of this element.
     fn style(&mut self) -> &mut StyleRefinement;
+
+    /// Sets a style property defined outside of GPUI's core style structs.
+    ///
+    /// Engines and forks read the property back with
+    /// [`CustomStyles::get`](crate::CustomStyles::get) while painting, which is
+    /// how a custom effect travels the style cascade without a field of its
+    /// own on [`Style`](crate::Style).
+    fn custom_style<T: CustomStyleProperty>(mut self, property: T) -> Self {
+        self.style().custom.insert(property);
+        self
+    }
 
     gpui_macros::style_helpers!();
     gpui_macros::visibility_style_methods!();

@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use etagere::{BucketedAtlasAllocator, size2};
-use gpui_backend::{
+use gpui_engine::{
     AtlasBackend, AtlasKey, AtlasState, AtlasTextureId, AtlasTextureKind, AtlasTextureList,
     AtlasTile, PlatformAtlas,
 };
@@ -395,7 +395,7 @@ fn swizzle_upload_data(bytes: &[u8], format: wgpu::TextureFormat) -> Vec<u8> {
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
-    use gpui_backend::{ImageId, RenderImageParams};
+    use gpui_engine::{ImageId, RenderImageParams};
     use pollster::block_on;
     use std::sync::Arc;
 
