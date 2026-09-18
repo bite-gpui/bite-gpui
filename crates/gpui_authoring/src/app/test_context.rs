@@ -1,12 +1,13 @@
 use crate::{
     Action, AnyView, AnyWindowHandle, App, AppCell, AppContext, AsyncApp, AvailableSpace,
-    BackgroundExecutor, BorrowAppContext, Bounds, BoundsExt, Capslock, ClipboardItem, DrawPhase,
-    Drawable, Element, Empty, EntityId, EventEmitter, ForegroundExecutor, Global, InputEvent,
-    Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Platform, PlatformTextSystem, Point, Render, Result, SharedString, Size,
-    SystemNotification, SystemNotificationResponse, Task, TestDispatcher, TestPlatform,
-    TestScreenCaptureSource, TestWindow, TextSystem, VisualContext, Window, WindowBounds,
-    WindowHandle, WindowOptions, WindowVisibility, app::GpuiMode, window::ElementArenaScope,
+    BackgroundExecutor, BorrowAppContext, Bounds, BoundsExt, Capslock, ClipboardItem,
+    DefaultTextSystem, DrawPhase, Drawable, Element, Empty, EntityId, EventEmitter,
+    ForegroundExecutor, Global, InputEvent, Keystroke, Modifiers, ModifiersChangedEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Platform, PlatformTextSystem,
+    Point, Render, Result, SharedString, Size, SystemNotification, SystemNotificationResponse, Task,
+    TestDispatcher, TestPlatform, TestScreenCaptureSource, TestWindow, TextSystem, VisualContext,
+    Window, WindowBounds, WindowHandle, WindowOptions, WindowVisibility, app::GpuiMode,
+    window::ElementArenaScope,
 };
 use anyhow::{anyhow, bail};
 use futures::{Stream, StreamExt, channel::oneshot};
@@ -26,7 +27,7 @@ pub struct TestAppContext {
     #[doc(hidden)]
     pub dispatcher: TestDispatcher,
     test_platform: Rc<TestPlatform>,
-    text_system: Arc<TextSystem>,
+    text_system: Arc<dyn TextSystem>,
     fn_name: Option<&'static str>,
     on_quit: Rc<RefCell<Vec<Box<dyn FnOnce() + 'static>>>>,
     #[doc(hidden)]
@@ -170,7 +171,7 @@ impl TestAppContext {
     ) -> Self {
         let asset_source = Arc::new(());
         let http_client = http_client::FakeHttpClient::with_404_response();
-        let text_system = Arc::new(TextSystem::new(platform.text_system()));
+        let text_system = Arc::new(DefaultTextSystem::new(platform.text_system()));
 
         let app = App::new_app(platform.clone(), asset_source, http_client);
         app.borrow_mut().mode = GpuiMode::test();
@@ -367,8 +368,8 @@ impl TestAppContext {
         (view, cx)
     }
 
-    /// returns the TextSystem
-    pub fn text_system(&self) -> &Arc<TextSystem> {
+    /// Returns the app's [`TextSystem`].
+    pub fn text_system(&self) -> &Arc<dyn TextSystem> {
         &self.text_system
     }
 
@@ -1247,12 +1248,22 @@ impl AnyWindowHandle {
 #[cfg(test)]
 mod tests {
     use crate::{
-        PathPromptOptions, SystemNotification, SystemNotificationAction,
-        SystemNotificationResponse, TestAppContext,
+        DefaultTextSystem, NoopTextSystem, PathPromptOptions, SystemNotification,
+        SystemNotificationAction, SystemNotificationResponse, TestAppContext, TextSystem,
     };
     use std::cell::RefCell;
     use std::path::PathBuf;
     use std::rc::Rc;
+    use std::sync::Arc;
+
+    #[gpui::test]
+    async fn test_set_text_system_swaps_the_shaping_engine(cx: &mut TestAppContext) {
+        let injected: Arc<dyn TextSystem> =
+            Arc::new(DefaultTextSystem::new(Arc::new(NoopTextSystem)));
+        cx.update(|cx| cx.set_text_system(injected.clone()));
+        let current = cx.update(|cx| cx.text_system().clone());
+        assert!(Arc::ptr_eq(&current, &injected));
+    }
 
     #[gpui::test]
     async fn test_system_notifications_require_identity_and_replace_matching_tags(

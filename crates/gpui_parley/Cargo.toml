@@ -1,0 +1,42 @@
+[package]
+name = "gpui_parley"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_parley.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui = { workspace = true, optional = true }
+gpui_engine.workspace = true
+gpui_shared_string.workspace = true
+gpui_types.workspace = true
+parley = "0.11"
+skrifa = "0.44"
+smallvec.workspace = true
+tiny-skia = "0.11"
+
+[features]
+# `gpui` is needed by the example and by the injection test, and the two must not
+# share a feature set. `test-support` turns on `App::flush_effects`'s test draw
+# path, which draws every dirty window at the end of every `App::update` instead
+# of leaving frames to the platform's frame requests. A dev-dependency's features
+# are unified into the example build, so a plain `[dev-dependencies] gpui =
+# { features = ["test-support"] }` would make the example render once per input
+# event. Opting in per target keeps the example on the production path.
+demo = ["dep:gpui", "gpui/platform"]
+test-support = ["dep:gpui", "gpui/platform", "gpui/test-support"]
+
+[[example]]
+name = "parley_demo"
+required-features = ["demo"]
+
+[[test]]
+name = "injection"
+required-features = ["test-support"]
