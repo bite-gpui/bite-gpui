@@ -4,7 +4,7 @@ use cosmic_text::{
     Attrs, AttrsList, Ellipsize, Family, Font as CosmicTextFont,
     FontFeatures as CosmicFontFeatures, FontSystem, ShapeBuffer, ShapeLine, Stretch, Style, Weight,
 };
-use gpui_backend::{
+use gpui_engine::{
     FallbackFontClass, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun, GlyphId,
     LineLayout, MissingGlyph, MissingGlyphSink, PlatformTextSystem, RenderGlyphParams,
     SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ShapedGlyph, ShapedRun, TextRenderingMode,
@@ -96,7 +96,7 @@ impl CosmicTextSystem {
     pub fn font_weight_and_style(
         &self,
         font_id: FontId,
-    ) -> Result<(gpui_backend::FontWeight, gpui_backend::FontStyle)> {
+    ) -> Result<(gpui_engine::FontWeight, gpui_engine::FontStyle)> {
         let state = self.0.read();
         let font = state
             .loaded_fonts
@@ -108,11 +108,11 @@ impl CosmicTextSystem {
             .face(font.font.id())
             .context("font face not found")?;
         let style = match face.style {
-            cosmic_text::Style::Normal => gpui_backend::FontStyle::Normal,
-            cosmic_text::Style::Italic => gpui_backend::FontStyle::Italic,
-            cosmic_text::Style::Oblique => gpui_backend::FontStyle::Oblique,
+            cosmic_text::Style::Normal => gpui_engine::FontStyle::Normal,
+            cosmic_text::Style::Italic => gpui_engine::FontStyle::Italic,
+            cosmic_text::Style::Oblique => gpui_engine::FontStyle::Oblique,
         };
-        Ok((gpui_backend::FontWeight(face.weight.0 as f32), style))
+        Ok((gpui_engine::FontWeight(face.weight.0 as f32), style))
     }
 
     /// Builds reports for unresolved source indices after an outer text system
@@ -383,7 +383,7 @@ impl CosmicTextSystemState {
             _ => Arc::from(Vec::new()),
         };
 
-        gpui_backend::font_name_with_fallbacks(name, &self.system_font_fallback);
+        gpui_engine::font_name_with_fallbacks(name, &self.system_font_fallback);
 
         let families = self
             .font_system
@@ -998,7 +998,7 @@ fn find_best_match(
     let target_weight = font.weight.0;
     let target_italic = matches!(
         font.style,
-        gpui_backend::FontStyle::Italic | gpui_backend::FontStyle::Oblique
+        gpui_engine::FontStyle::Italic | gpui_engine::FontStyle::Oblique
     );
 
     let mut best_index = 0;
@@ -1155,12 +1155,12 @@ fn cosmic_font_features(features: &FontFeatures) -> Result<CosmicFontFeatures> {
 }
 
 #[cfg(feature = "font-kit")]
-fn font_into_properties(font: &gpui_backend::Font) -> font_kit::properties::Properties {
+fn font_into_properties(font: &gpui_engine::Font) -> font_kit::properties::Properties {
     font_kit::properties::Properties {
         style: match font.style {
-            gpui_backend::FontStyle::Normal => font_kit::properties::Style::Normal,
-            gpui_backend::FontStyle::Italic => font_kit::properties::Style::Italic,
-            gpui_backend::FontStyle::Oblique => font_kit::properties::Style::Oblique,
+            gpui_engine::FontStyle::Normal => font_kit::properties::Style::Normal,
+            gpui_engine::FontStyle::Italic => font_kit::properties::Style::Italic,
+            gpui_engine::FontStyle::Oblique => font_kit::properties::Style::Oblique,
         },
         weight: font_kit::properties::Weight(font.weight.0),
         stretch: Default::default(),

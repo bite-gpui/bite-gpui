@@ -14,7 +14,7 @@ use crate::{
 };
 use anyhow::Result;
 use futures::channel::oneshot;
-use gpui_backend::PlatformTextSystem;
+use gpui_engine::PlatformTextSystem;
 use smallvec::SmallVec;
 use std::{
     ffi::OsString,

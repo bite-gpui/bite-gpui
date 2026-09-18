@@ -4,12 +4,13 @@
 //! metric, raster-bounds, and line-wrapper pools. It has no knowledge of
 //! windows; the facade's window-scoped layer drives it.
 
-use crate::{
-    Font, FontId, FontMetrics, FontRun, LineWrapper, MissingGlyph, MissingGlyphSink,
-    PlatformTextSystem, RenderGlyphParams, TextRenderingMode, font,
-};
+use crate::LineWrapper;
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
+use gpui_engine::{
+    Font, FontId, FontMetrics, FontRun, MissingGlyph, MissingGlyphSink, PlatformTextSystem,
+    RenderGlyphParams, TextRenderingMode, font,
+};
 use gpui_types::{Bounds, DevicePixels, Hsla, Pixels, Size, px};
 use itertools::Itertools;
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
@@ -593,8 +594,8 @@ impl DerefMut for LineWrapperHandle {
 #[cfg(test)]
 mod missing_glyph_tests {
     use super::*;
-    use crate::FallbackFontClass;
     use futures::FutureExt as _;
+    use gpui_engine::FallbackFontClass;
 
     #[test]
     fn bounds_retained_missing_glyphs() {
