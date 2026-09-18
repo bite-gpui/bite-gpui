@@ -1,19 +1,25 @@
 use std::{
+    any::{Any, TypeId},
+    borrow::Cow,
+    fmt,
     hash::{Hash, Hasher},
     iter, mem,
     ops::Range,
+    sync::Arc,
 };
 
 use crate::{
-    AbsoluteLength, App, Background, BackgroundTag, BorderStyle, Bounds, ContentMask, Corners,
-    CornersRefinement, CursorStyle, DefiniteLength, DevicePixels, Edges, EdgesRefinement, Font,
-    FontFallbacks, FontFeatures, FontStyle, FontWeight, GridLocation, Hsla, Length, Pixels, Point,
-    PointRefinement, Rgba, SharedString, Size, SizeRefinement, StrikethroughStyle, Styled, TextRun,
-    UnderlineStyle, Window, black, phi, point, px, quad, rems, size,
+    AbsoluteLength, AlignContent, AlignItems, AlignSelf, App, Background, BackgroundTag,
+    BorderStyle, Bounds, ContentMask, Corners, CornersRefinement, CursorStyle, DefiniteLength,
+    DevicePixels, Display, Edges, EdgesRefinement, FlexDirection, FlexWrap, Font, FontFallbacks,
+    FontFeatures, FontStyle, FontWeight, GridLocation, GridTemplate, Hsla, JustifyContent, Length,
+    Overflow, Pixels, Point, PointRefinement, Position, Rgba, SharedString, Size, SizeRefinement,
+    StrikethroughStyle, Styled, TextRun, UnderlineStyle, Window, black, phi, point, px, quad, rems,
+    size,
 };
-use collections::HashSet;
-use refineable::Refineable;
-use schemars::JsonSchema;
+use collections::{HashMap, HashSet};
+use refineable::{IsEmpty, Refineable};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 /// Use this struct for interfacing with the 'debug_below' styling from your own elements.
@@ -138,40 +144,200 @@ impl ObjectFit {
     }
 }
 
-/// The minimum size of a column or row in a grid layout
-#[derive(
-    Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default, JsonSchema, Serialize, Deserialize,
-)]
-pub enum GridTemplateMinSize {
-    /// The column or row size may be 0
-    #[default]
-    Zero,
-    /// The column or row size can be determined by the min content
-    MinContent,
-    /// The column or row size can be determined by the max content
-    MaxContent,
+/// A style property defined outside of GPUI's core style structs.
+///
+/// Engines and forks carry their own rendering extensions - a backdrop blur
+/// radius, a custom shader's parameters - through the style cascade by defining
+/// a type and setting it with [`Styled::custom_style`], rather than adding a
+/// field to [`Style`] that every consumer of this crate has to know about.
+///
+/// The type itself keys the property, so a reader recovers exactly the type
+/// that was set. Any `Send + Sync + PartialEq + 'static` type is a custom
+/// property as-is; there is nothing to implement. Properties must be
+/// [`PartialEq`] because merging and subtracting style refinements diffs them.
+pub trait CustomStyleProperty: 'static + Send + Sync {
+    /// Upcasts to [`Any`] so [`CustomStyles::get`] can recover the concrete type.
+    fn as_any(&self) -> &dyn Any;
+
+    /// Compares two properties that share a concrete type.
+    fn eq_property(&self, other: &dyn CustomStyleProperty) -> bool;
 }
 
-/// A simplified representation of the grid-template-* value
-#[derive(
-    Copy,
-    Clone,
-    Refineable,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Debug,
-    Default,
-    JsonSchema,
-    Serialize,
-    Deserialize,
-)]
-pub struct GridTemplate {
-    /// How this template directive should be repeated
-    pub repeat: u16,
-    /// The minimum size in the repeat(<>, minmax(_, 1fr)) equation
-    pub min_size: GridTemplateMinSize,
+impl<T: 'static + Send + Sync + PartialEq> CustomStyleProperty for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn eq_property(&self, other: &dyn CustomStyleProperty) -> bool {
+        other.as_any().downcast_ref::<T>() == Some(self)
+    }
+}
+
+/// The custom style properties set on an element or inherited from its
+/// ancestors, keyed by property type.
+///
+/// Every property lives behind one [`Arc`], so cloning a style shares them and
+/// an element that sets none carries only a null pointer. A write copies the
+/// map before mutating it, so clones never observe each other's changes.
+#[derive(Clone, Default)]
+pub struct CustomStyles {
+    entries: Option<Arc<HashMap<TypeId, Arc<dyn CustomStyleProperty>>>>,
+}
+
+/// Custom properties merge key by key, so a refinement has the same shape as
+/// the style it refines and [`Refineable`] can use [`CustomStyles`] directly.
+pub type CustomStylesRefinement = CustomStyles;
+
+impl CustomStyles {
+    /// Sets `property`, replacing any value already set for its type.
+    pub fn insert<T: CustomStyleProperty>(&mut self, property: T) {
+        self.entries_mut()
+            .insert(TypeId::of::<T>(), Arc::new(property));
+    }
+
+    /// Returns the property of type `T`, if one was set.
+    pub fn get<T: CustomStyleProperty>(&self) -> Option<&T> {
+        self.entries
+            .as_ref()?
+            .get(&TypeId::of::<T>())?
+            .as_any()
+            .downcast_ref::<T>()
+    }
+
+    /// Merges `other` into `self`, letting `other` win where both set the same
+    /// type.
+    pub fn refine(&mut self, other: &Self) {
+        let Some(other_entries) = other.entries.as_ref() else {
+            return;
+        };
+        let entries = self.entries_mut();
+        for (type_id, property) in other_entries.iter() {
+            entries.insert(*type_id, property.clone());
+        }
+    }
+
+    fn entries_mut(&mut self) -> &mut HashMap<TypeId, Arc<dyn CustomStyleProperty>> {
+        Arc::make_mut(self.entries.get_or_insert_with(Default::default))
+    }
+
+    /// Whether any property is set. It exists because the `Refineable` derive
+    /// calls `is_some` on every field of the refinement it generates.
+    fn is_some(&self) -> bool {
+        self.entries
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+    }
+}
+
+impl IsEmpty for CustomStyles {
+    fn is_empty(&self) -> bool {
+        self.entries
+            .as_ref()
+            .is_none_or(|entries| entries.is_empty())
+    }
+}
+
+impl Refineable for CustomStyles {
+    type Refinement = CustomStylesRefinement;
+
+    fn refine(&mut self, refinement: &Self::Refinement) {
+        CustomStyles::refine(self, refinement);
+    }
+
+    fn refined(mut self, refinement: Self::Refinement) -> Self {
+        CustomStyles::refine(&mut self, &refinement);
+        self
+    }
+
+    fn is_superset_of(&self, refinement: &Self::Refinement) -> bool {
+        let Some(refinement_entries) = refinement.entries.as_ref() else {
+            return true;
+        };
+        let Some(entries) = self.entries.as_ref() else {
+            return refinement_entries.is_empty();
+        };
+        refinement_entries.iter().all(|(type_id, property)| {
+            entries
+                .get(type_id)
+                .is_some_and(|value| value.eq_property(&**property))
+        })
+    }
+
+    fn subtract(&self, refinement: &Self::Refinement) -> Self::Refinement {
+        let Some(entries) = self.entries.as_ref() else {
+            return CustomStyles::default();
+        };
+        let mut subtracted = CustomStyles::default();
+        for (type_id, property) in entries.iter() {
+            let covered_by_refinement = refinement
+                .entries
+                .as_ref()
+                .and_then(|refinement_entries| refinement_entries.get(type_id))
+                .is_some_and(|refined| property.eq_property(&**refined));
+            if !covered_by_refinement {
+                subtracted.entries_mut().insert(*type_id, property.clone());
+            }
+        }
+        subtracted
+    }
+}
+
+impl PartialEq for CustomStyles {
+    fn eq(&self, other: &Self) -> bool {
+        // An absent map is an empty one, so a style that never set a property
+        // equals one whose properties were all removed.
+        let no_properties = HashMap::default();
+        let entries = self.entries.as_deref().unwrap_or(&no_properties);
+        let other_entries = other.entries.as_deref().unwrap_or(&no_properties);
+        entries.len() == other_entries.len()
+            && entries.iter().all(|(type_id, property)| {
+                other_entries
+                    .get(type_id)
+                    .is_some_and(|other| property.eq_property(&**other))
+            })
+    }
+}
+
+impl fmt::Debug for CustomStyles {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Property values are opaque, so report how many are set rather than
+        // pretending to name them.
+        f.debug_struct("CustomStyles")
+            .field(
+                "len",
+                &self.entries.as_ref().map_or(0, |entries| entries.len()),
+            )
+            .finish()
+    }
+}
+
+impl Serialize for CustomStyles {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // A property's type is what keys it, and no serialized format can name
+        // a Rust type, so custom properties do not round-trip. Serialize an
+        // opaque value instead of claiming values we cannot represent.
+        serializer.serialize_unit()
+    }
+}
+
+impl<'de> Deserialize<'de> for CustomStyles {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Consume whatever was serialized so the rest of the style still
+        // parses, but recover no properties.
+        serde::de::IgnoredAny::deserialize(deserializer)?;
+        Ok(CustomStyles::default())
+    }
+}
+
+impl JsonSchema for CustomStyles {
+    fn schema_name() -> Cow<'static, str> {
+        "CustomStyles".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        // Custom properties have no serialized form to describe.
+        json_schema!({ "type": "null" })
+    }
 }
 
 /// The CSS styling that can be applied to an element via the `Styled` trait
@@ -311,6 +477,12 @@ pub struct Style {
 
     /// The grid location of this element
     pub grid_location: Option<GridLocation>,
+
+    /// Rendering extensions defined outside of GPUI's core style structs.
+    ///
+    /// Engines read these back with [`CustomStyles::get`] while painting.
+    #[refineable]
+    pub custom: CustomStyles,
 
     /// Whether to draw a red debugging outline around this element
     #[cfg(debug_assertions)]
@@ -812,6 +984,7 @@ impl Default for Style {
             grid_rows: None,
             grid_cols: None,
             grid_location: None,
+            custom: CustomStyles::default(),
 
             #[cfg(debug_assertions)]
             debug: false,
@@ -1000,305 +1173,6 @@ pub fn combine_highlights(
         }
         None
     })
-}
-
-/// Used to control how child nodes are aligned.
-/// For Flexbox it controls alignment in the cross axis
-/// For Grid it controls alignment in the block axis
-///
-/// [MDN](https://developer.mozilla.org/en-US/docs/Web/CSS/align-items)
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
-// Copy of taffy::style type of the same name, to derive JsonSchema.
-pub enum AlignItems {
-    /// Items are packed toward the start of the axis
-    Start,
-    /// Items are packed toward the end of the axis
-    End,
-    /// Items are packed towards the flex-relative start of the axis.
-    ///
-    /// For flex containers with flex_direction RowReverse or ColumnReverse this is equivalent
-    /// to End. In all other cases it is equivalent to Start.
-    FlexStart,
-    /// Items are packed towards the flex-relative end of the axis.
-    ///
-    /// For flex containers with flex_direction RowReverse or ColumnReverse this is equivalent
-    /// to Start. In all other cases it is equivalent to End.
-    FlexEnd,
-    /// Items are packed along the center of the cross axis
-    Center,
-    /// Items are aligned such as their baselines align
-    Baseline,
-    /// Stretch to fill the container
-    Stretch,
-}
-/// Used to control how child nodes are aligned.
-/// Does not apply to Flexbox, and will be ignored if specified on a flex container
-/// For Grid it controls alignment in the inline axis
-///
-/// [MDN](https://developer.mozilla.org/en-US/docs/Web/CSS/justify-items)
-pub type JustifyItems = AlignItems;
-/// Used to control how the specified nodes is aligned.
-/// Overrides the parent Node's `AlignItems` property.
-/// For Flexbox it controls alignment in the cross axis
-/// For Grid it controls alignment in the block axis
-///
-/// [MDN](https://developer.mozilla.org/en-US/docs/Web/CSS/align-self)
-pub type AlignSelf = AlignItems;
-/// Used to control how the specified nodes is aligned.
-/// Overrides the parent Node's `JustifyItems` property.
-/// Does not apply to Flexbox, and will be ignored if specified on a flex child
-/// For Grid it controls alignment in the inline axis
-///
-/// [MDN](https://developer.mozilla.org/en-US/docs/Web/CSS/justify-self)
-pub type JustifySelf = AlignItems;
-
-/// Sets the distribution of space between and around content items
-/// For Flexbox it controls alignment in the cross axis
-/// For Grid it controls alignment in the block axis
-///
-/// [MDN](https://developer.mozilla.org/en-US/docs/Web/CSS/align-content)
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
-// Copy of taffy::style type of the same name, to derive JsonSchema.
-pub enum AlignContent {
-    /// Items are packed toward the start of the axis
-    Start,
-    /// Items are packed toward the end of the axis
-    End,
-    /// Items are packed towards the flex-relative start of the axis.
-    ///
-    /// For flex containers with flex_direction RowReverse or ColumnReverse this is equivalent
-    /// to End. In all other cases it is equivalent to Start.
-    FlexStart,
-    /// Items are packed towards the flex-relative end of the axis.
-    ///
-    /// For flex containers with flex_direction RowReverse or ColumnReverse this is equivalent
-    /// to Start. In all other cases it is equivalent to End.
-    FlexEnd,
-    /// Items are centered around the middle of the axis
-    Center,
-    /// Items are stretched to fill the container
-    Stretch,
-    /// The first and last items are aligned flush with the edges of the container (no gap)
-    /// The gap between items is distributed evenly.
-    SpaceBetween,
-    /// The gap between the first and last items is exactly THE SAME as the gap between items.
-    /// The gaps are distributed evenly
-    SpaceEvenly,
-    /// The gap between the first and last items is exactly HALF the gap between items.
-    /// The gaps are distributed evenly in proportion to these ratios.
-    SpaceAround,
-}
-
-/// Sets the distribution of space between and around content items
-/// For Flexbox it controls alignment in the main axis
-/// For Grid it controls alignment in the inline axis
-///
-/// [MDN](https://developer.mozilla.org/en-US/docs/Web/CSS/justify-content)
-pub type JustifyContent = AlignContent;
-
-/// Sets the layout used for the children of this node
-///
-/// The default values depends on on which feature flags are enabled. The order of precedence is: Flex, Grid, Block, None.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize, JsonSchema)]
-// Copy of taffy::style type of the same name, to derive JsonSchema.
-pub enum Display {
-    /// The children will follow the block layout algorithm
-    Block,
-    /// The children will follow the flexbox layout algorithm
-    #[default]
-    Flex,
-    /// The children will follow the CSS Grid layout algorithm
-    Grid,
-    /// The children will not be laid out, and will follow absolute positioning
-    None,
-}
-
-/// Controls whether flex items are forced onto one line or can wrap onto multiple lines.
-///
-/// Defaults to [`FlexWrap::NoWrap`]
-///
-/// [Specification](https://www.w3.org/TR/css-flexbox-1/#flex-wrap-property)
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize, JsonSchema)]
-// Copy of taffy::style type of the same name, to derive JsonSchema.
-pub enum FlexWrap {
-    /// Items will not wrap and stay on a single line
-    #[default]
-    NoWrap,
-    /// Items will wrap according to this item's [`FlexDirection`]
-    Wrap,
-    /// Items will wrap in the opposite direction to this item's [`FlexDirection`]
-    WrapReverse,
-}
-
-/// The direction of the flexbox layout main axis.
-///
-/// There are always two perpendicular layout axes: main (or primary) and cross (or secondary).
-/// Adding items will cause them to be positioned adjacent to each other along the main axis.
-/// By varying this value throughout your tree, you can create complex axis-aligned layouts.
-///
-/// Items are always aligned relative to the cross axis, and justified relative to the main axis.
-///
-/// The default behavior is [`FlexDirection::Row`].
-///
-/// [Specification](https://www.w3.org/TR/css-flexbox-1/#flex-direction-property)
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize, JsonSchema)]
-// Copy of taffy::style type of the same name, to derive JsonSchema.
-pub enum FlexDirection {
-    /// Defines +x as the main axis
-    ///
-    /// Items will be added from left to right in a row.
-    #[default]
-    Row,
-    /// Defines +y as the main axis
-    ///
-    /// Items will be added from top to bottom in a column.
-    Column,
-    /// Defines -x as the main axis
-    ///
-    /// Items will be added from right to left in a row.
-    RowReverse,
-    /// Defines -y as the main axis
-    ///
-    /// Items will be added from bottom to top in a column.
-    ColumnReverse,
-}
-
-/// How children overflowing their container should affect layout
-///
-/// In CSS the primary effect of this property is to control whether contents of a parent container that overflow that container should
-/// be displayed anyway, be clipped, or trigger the container to become a scroll container. However it also has secondary effects on layout,
-/// the main ones being:
-///
-///   - The automatic minimum size Flexbox/CSS Grid items with non-`Visible` overflow is `0` rather than being content based
-///   - `Overflow::Scroll` nodes have space in the layout reserved for a scrollbar (width controlled by the `scrollbar_width` property)
-///
-/// In Taffy, we only implement the layout related secondary effects as we are not concerned with drawing/painting. The amount of space reserved for
-/// a scrollbar is controlled by the `scrollbar_width` property. If this is `0` then `Scroll` behaves identically to `Hidden`.
-///
-/// <https://developer.mozilla.org/en-US/docs/Web/CSS/overflow>
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize, JsonSchema)]
-// Copy of taffy::style type of the same name, to derive JsonSchema.
-pub enum Overflow {
-    /// The automatic minimum size of this node as a flexbox/grid item should be based on the size of its content.
-    /// Content that overflows this node *should* contribute to the scroll region of its parent.
-    #[default]
-    Visible,
-    /// The automatic minimum size of this node as a flexbox/grid item should be based on the size of its content.
-    /// Content that overflows this node should *not* contribute to the scroll region of its parent.
-    Clip,
-    /// The automatic minimum size of this node as a flexbox/grid item should be `0`.
-    /// Content that overflows this node should *not* contribute to the scroll region of its parent.
-    Hidden,
-    /// The automatic minimum size of this node as a flexbox/grid item should be `0`. Additionally, space should be reserved
-    /// for a scrollbar. The amount of space reserved is controlled by the `scrollbar_width` property.
-    /// Content that overflows this node should *not* contribute to the scroll region of its parent.
-    Scroll,
-}
-
-/// The positioning strategy for this item.
-///
-/// This controls both how the origin is determined for the [`Style::position`] field,
-/// and whether or not the item will be controlled by flexbox's layout algorithm.
-///
-/// WARNING: this enum follows the behavior of [CSS's `position` property](https://developer.mozilla.org/en-US/docs/Web/CSS/position),
-/// which can be unintuitive.
-///
-/// [`Position::Relative`] is the default value, in contrast to the default behavior in CSS.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize, JsonSchema)]
-// Copy of taffy::style type of the same name, to derive JsonSchema.
-pub enum Position {
-    /// The offset is computed relative to the final position given by the layout algorithm.
-    /// Offsets do not affect the position of any other items; they are effectively a correction factor applied at the end.
-    #[default]
-    Relative,
-    /// The offset is computed relative to this item's closest positioned ancestor, if any.
-    /// Otherwise, it is placed relative to the origin.
-    /// No space is created for the item in the page layout, and its size will not be altered.
-    ///
-    /// WARNING: to opt-out of layouting entirely, you must use [`Display::None`] instead on your [`Style`] object.
-    Absolute,
-}
-
-impl From<AlignItems> for taffy::style::AlignItems {
-    fn from(value: AlignItems) -> Self {
-        match value {
-            AlignItems::Start => Self::START,
-            AlignItems::End => Self::END,
-            AlignItems::FlexStart => Self::FLEX_START,
-            AlignItems::FlexEnd => Self::FLEX_END,
-            AlignItems::Center => Self::CENTER,
-            AlignItems::Baseline => Self::BASELINE,
-            AlignItems::Stretch => Self::STRETCH,
-        }
-    }
-}
-
-impl From<AlignContent> for taffy::style::AlignContent {
-    fn from(value: AlignContent) -> Self {
-        match value {
-            AlignContent::Start => Self::START,
-            AlignContent::End => Self::END,
-            AlignContent::FlexStart => Self::FLEX_START,
-            AlignContent::FlexEnd => Self::FLEX_END,
-            AlignContent::Center => Self::CENTER,
-            AlignContent::Stretch => Self::STRETCH,
-            AlignContent::SpaceBetween => Self::SPACE_BETWEEN,
-            AlignContent::SpaceEvenly => Self::SPACE_EVENLY,
-            AlignContent::SpaceAround => Self::SPACE_AROUND,
-        }
-    }
-}
-
-impl From<Display> for taffy::style::Display {
-    fn from(value: Display) -> Self {
-        match value {
-            Display::Block => Self::Block,
-            Display::Flex => Self::Flex,
-            Display::Grid => Self::Grid,
-            Display::None => Self::None,
-        }
-    }
-}
-
-impl From<FlexWrap> for taffy::style::FlexWrap {
-    fn from(value: FlexWrap) -> Self {
-        match value {
-            FlexWrap::NoWrap => Self::NoWrap,
-            FlexWrap::Wrap => Self::Wrap,
-            FlexWrap::WrapReverse => Self::WrapReverse,
-        }
-    }
-}
-
-impl From<FlexDirection> for taffy::style::FlexDirection {
-    fn from(value: FlexDirection) -> Self {
-        match value {
-            FlexDirection::Row => Self::Row,
-            FlexDirection::Column => Self::Column,
-            FlexDirection::RowReverse => Self::RowReverse,
-            FlexDirection::ColumnReverse => Self::ColumnReverse,
-        }
-    }
-}
-
-impl From<Overflow> for taffy::style::Overflow {
-    fn from(value: Overflow) -> Self {
-        match value {
-            Overflow::Visible => Self::Visible,
-            Overflow::Clip => Self::Clip,
-            Overflow::Hidden => Self::Hidden,
-            Overflow::Scroll => Self::Scroll,
-        }
-    }
-}
-
-impl From<Position> for taffy::style::Position {
-    fn from(value: Position) -> Self {
-        match value {
-            Position::Relative => Self::Relative,
-            Position::Absolute => Self::Absolute,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1497,6 +1371,121 @@ mod tests {
         assert_eq!(
             Some(FontWeight::SEMIBOLD),
             style.text_style().unwrap().font_weight
+        );
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct BackdropBlur(f32);
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct CustomShader(u32);
+
+    #[derive(Default)]
+    struct Element {
+        refinement: StyleRefinement,
+    }
+
+    impl Styled for Element {
+        fn style(&mut self) -> &mut StyleRefinement {
+            &mut self.refinement
+        }
+    }
+
+    #[test]
+    fn custom_style_properties_reach_the_resolved_style() {
+        let element = Element::default()
+            .custom_style(BackdropBlur(8.0))
+            .custom_style(CustomShader(7));
+
+        let mut style = Style::default();
+        style.refine(&element.refinement);
+
+        assert_eq!(style.custom.get::<BackdropBlur>(), Some(&BackdropBlur(8.0)));
+        assert_eq!(style.custom.get::<CustomShader>(), Some(&CustomShader(7)));
+    }
+
+    #[test]
+    fn refining_custom_style_properties_overrides_matching_keys_and_keeps_disjoint_ones() {
+        let mut inherited = StyleRefinement::default();
+        inherited.custom.insert(BackdropBlur(8.0));
+        inherited.custom.insert(CustomShader(7));
+
+        let mut overridden = StyleRefinement::default();
+        overridden.custom.insert(BackdropBlur(16.0));
+
+        let mut style = Style::default();
+        style.refine(&inherited);
+        style.refine(&overridden);
+
+        assert_eq!(
+            style.custom.get::<BackdropBlur>(),
+            Some(&BackdropBlur(16.0)),
+            "the later refinement should win"
+        );
+        assert_eq!(
+            style.custom.get::<CustomShader>(),
+            Some(&CustomShader(7)),
+            "a property the later refinement does not set should survive"
+        );
+    }
+
+    #[test]
+    fn custom_style_properties_are_shared_until_written() {
+        let mut style = Style::default();
+        style.custom.insert(BackdropBlur(8.0));
+
+        let mut clone = style.clone();
+        clone.custom.insert(BackdropBlur(16.0));
+
+        assert_eq!(
+            style.custom.get::<BackdropBlur>(),
+            Some(&BackdropBlur(8.0)),
+            "writing to a clone should not disturb the original"
+        );
+    }
+
+    #[test]
+    fn custom_style_properties_are_diffed_by_value() {
+        let mut style = Style::default();
+        style.custom.insert(BackdropBlur(8.0));
+
+        let mut matching = StyleRefinement::default();
+        matching.custom.insert(BackdropBlur(8.0));
+        assert!(style.is_superset_of(&matching));
+        assert!(style.subtract(&matching).custom.is_empty());
+
+        let mut differing = StyleRefinement::default();
+        differing.custom.insert(BackdropBlur(16.0));
+        assert!(!style.is_superset_of(&differing));
+        assert_eq!(
+            style.subtract(&differing).custom.get::<BackdropBlur>(),
+            Some(&BackdropBlur(8.0))
+        );
+    }
+
+    #[test]
+    fn styles_without_custom_style_properties_are_indistinguishable() {
+        assert_eq!(Style::default().custom, CustomStyles::default());
+        assert!(Style::default().custom.is_empty());
+        assert_eq!(
+            std::mem::size_of::<CustomStyles>(),
+            std::mem::size_of::<Option<Arc<()>>>(),
+            "custom properties should cost a style no more than a null pointer"
+        );
+    }
+
+    #[test]
+    fn custom_style_properties_do_not_round_trip_through_json() {
+        let mut refinement = StyleRefinement::default();
+        refinement.custom.insert(BackdropBlur(8.0));
+
+        let json = serde_json::to_string(&refinement).expect("the refinement should serialize");
+        let deserialized: StyleRefinement =
+            serde_json::from_str(&json).expect("the refinement should deserialize");
+
+        assert!(
+            deserialized.custom.is_empty(),
+            "a property type cannot be named in JSON, so nothing should come back"
         );
     }
 }

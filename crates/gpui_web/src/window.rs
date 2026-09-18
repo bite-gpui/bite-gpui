@@ -7,7 +7,7 @@ use crate::platform::WebWindowLifecycle;
 use crate::viewport::WebViewport;
 use std::{cell::Cell, cell::RefCell, rc::Rc};
 
-use gpui_backend::SceneRenderer;
+use gpui_engine::SceneRenderer;
 use gpui_platform::{
     Bounds, Capslock, Decorations, DevicePixels, DispatchEventResult, FrameRequestSource, GpuSpecs,
     Modifiers, MouseButton, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
