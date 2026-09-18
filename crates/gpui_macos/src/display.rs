@@ -7,10 +7,8 @@ use cocoa::{
 };
 use core_foundation::base::CFRelease;
 use core_foundation::uuid::{CFUUIDGetUUIDBytes, CFUUIDRef};
-use core_graphics::display::{
-    CGDirectDisplayID, CGDisplay, CGDisplayBounds, CGGetActiveDisplayList,
-};
-use gpui::{Bounds, DisplayId, Pixels, PlatformDisplay, point, px, refresh_interval_from_hz, size};
+use core_graphics::{display::{CGDirectDisplayID, CGDisplay, CGDisplayBounds, CGGetActiveDisplayList}};
+use gpui_platform::{Bounds, DisplayId, Pixels, PlatformDisplay, point, px, refresh_interval_from_hz, size};
 use objc::{msg_send, sel, sel_impl};
 use std::time::Duration;
 use uuid::Uuid;

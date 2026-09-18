@@ -370,7 +370,7 @@ gpui_apple = { path = "crates/gpui_apple" }
 gpui_linux = { path = "crates/gpui_linux", default-features = false }
 gpui_macos = { path = "crates/gpui_macos", default-features = false }
 gpui_macros = { path = "crates/gpui_macros" }
-gpui_platform = { path = "crates/gpui_platform", default-features = false }
+gpui_platform = { path = "crates/gpui_platform" }
 gpui_shared_string = { path = "crates/gpui_shared_string" }
 gpui_tokio = { path = "crates/gpui_tokio" }
 gpui_types = { path = "crates/gpui_types" }
@@ -613,7 +613,18 @@ crossbeam-queue = "0.3.12"
 ctor = "1.0.12"
 dap-types = { git = "https://github.com/zed-industries/dap-types", rev = "1b461b310481d01e02b2603c16d7144b926339f8" }
 dashmap = "6.0"
-derive_more = { version = "2.1", features = ["deref", "deref_mut", "from_str"] }
+derive_more = { version = "2.1.1", features = [
+    "add",
+    "add_assign",
+    "deref",
+    "deref_mut",
+    "display",
+    "from",
+    "from_str",
+    "mul",
+    "mul_assign",
+    "not",
+] }
 dialoguer = { version = "0.12", default-features = false }
 diffy = "0.4.2"
 dirs = "6.0"
@@ -811,7 +822,7 @@ proxyvars = "0.2"
 pulldown-cmark = { version = "0.13.0", default-features = false }
 quick-xml = "0.41"
 quote = "1.0.9"
-rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "os_rng"] }
+rand = "0.9"
 raw-window-handle = "0.6"
 rayon = "1.8"
 regex = { version = "1.5", default-features = false, features = ["std", "perf"] }
@@ -840,11 +851,11 @@ rustls = "0.23.26"
 rustls-platform-verifier = "0.7"
 # WARNING: If you change this, you must also publish a new version of zed-scap to crates.io
 scap = { git = "https://github.com/zed-industries/scap", rev = "4afea48c3b002197176fb19cd0f9b180dd36eaac", default-features = false, package = "zed-scap", version = "0.0.8-zed" }
-schemars = { version = "1.0", default-features = false, features = ["std", "indexmap2"] }
+schemars = { version = "1.0", features = ["indexmap2"] }
 sea-orm = { version = "=1.1.10", default-features = false }
 seccompiler = "0.5"
 semver = { version = "1.0", features = ["serde"] }
-serde = { version = "1.0", features = ["rc"] }
+serde = { version = "1.0.221", features = ["derive", "rc"] }
 serde_json = { version = "1.0.144", features = ["preserve_order", "raw_value"] }
 serde_json_lenient = { version = "0.2", features = [
     "preserve_order",

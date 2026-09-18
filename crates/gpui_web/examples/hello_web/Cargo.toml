@@ -50,7 +50,6 @@ path = "http_client_test.rs"
 anyhow = "1"
 futures = "0.3"
 gpui = { path = "../../../gpui" }
-gpui_platform = { path = "../../../gpui_platform" }
 gpui_util = { path = "../../../gpui_util" }
 gpui_web = { path = "../.." }
 http_client = { path = "../../../http_client" }

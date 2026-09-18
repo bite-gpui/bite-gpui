@@ -2,7 +2,7 @@ mod window;
 
 use std::rc::Rc;
 
-use gpui::{AnyWindowHandle, PlatformDisplay, PlatformWindow, WindowParams};
+use gpui_platform::{PlatformDisplay, PlatformWindow, WindowId, WindowParams};
 
 pub(crate) use window::HeadlessWindow;
 
@@ -36,7 +36,7 @@ impl HeadlessConnection {
 
     pub(crate) fn open_window(
         &self,
-        _handle: AnyWindowHandle,
+        _handle: WindowId,
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
         Ok(Box::new(HeadlessWindow::new(

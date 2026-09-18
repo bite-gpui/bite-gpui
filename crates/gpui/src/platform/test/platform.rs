@@ -4,11 +4,12 @@ use crate::NoopTextSystem;
 use crate::PathPromptOptions;
 use crate::{
     ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DevicePixels,
-    DisplayId, DummyKeyboardMapper, ForegroundExecutor, Keymap, OwnedMenu, Platform,
+    DisplayId, DummyKeyboardMapper, ForegroundExecutor, Keymap, MenuCommandId, OwnedMenu, Platform,
     PlatformDisplay, PlatformHeadlessRenderer, PlatformKeyboardLayout, PlatformKeyboardMapper,
-    PlatformTextSystem, PromptButton, ScreenCaptureFrame, ScreenCaptureSource, ScreenCaptureStream,
-    SharedString, SourceMetadata, SystemNotification, SystemNotificationResponse, Task,
-    TestDisplay, TestWindow, ThermalState, WindowAppearance, WindowParams, size,
+    PlatformMenu, PlatformMenuItem, PlatformTextSystem, PromptButton, ScreenCaptureFrame,
+    ScreenCaptureSource, ScreenCaptureStream, SharedString, SourceMetadata, SystemNotification,
+    SystemNotificationResponse, Task, TestDisplay, TestWindow, ThermalState, WindowAppearance,
+    WindowId, WindowParams, size,
 };
 use anyhow::Result;
 #[cfg(any(test, feature = "test-support"))]
@@ -54,7 +55,6 @@ pub(crate) struct TestPlatform {
     headless_renderer_factory:
         Option<Box<dyn Fn() -> anyhow::Result<Option<Box<dyn PlatformHeadlessRenderer>>>>>,
     weak: Weak<Self>,
-    menus: RefCell<Vec<OwnedMenu>>,
 }
 
 #[derive(Clone)]
@@ -224,7 +224,6 @@ impl TestPlatform {
             system_notifications: Default::default(),
             text_system,
             headless_renderer_factory,
-            menus: Default::default(),
         })
     }
 
@@ -547,7 +546,7 @@ impl Platform for TestPlatform {
         rx
     }
 
-    fn active_window(&self) -> Option<crate::AnyWindowHandle> {
+    fn active_window(&self) -> Option<WindowId> {
         self.active_window
             .borrow()
             .as_ref()
@@ -556,7 +555,7 @@ impl Platform for TestPlatform {
 
     fn open_window(
         &self,
-        handle: AnyWindowHandle,
+        handle: WindowId,
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn crate::PlatformWindow>> {
         let renderer = match self.headless_renderer_factory.as_ref() {
@@ -697,23 +696,17 @@ impl Platform for TestPlatform {
         self.system_notifications.borrow_mut().response_callback = Some(callback);
     }
 
-    fn set_menus(&self, menus: Vec<crate::Menu>, _keymap: &Keymap) {
-        *self.menus.borrow_mut() = menus.into_iter().map(|menu| menu.owned()).collect()
-    }
+    fn set_menus(&self, _menus: Vec<PlatformMenu>) {}
 
-    fn get_menus(&self) -> Option<Vec<OwnedMenu>> {
-        Some(self.menus.borrow().clone())
-    }
-
-    fn set_dock_menu(&self, _menu: Vec<crate::MenuItem>, _keymap: &Keymap) {}
+    fn set_dock_menu(&self, _menu: Vec<PlatformMenuItem>) {}
 
     fn add_recent_document(&self, _paths: &Path) {}
 
-    fn on_app_menu_action(&self, _callback: Box<dyn FnMut(&dyn crate::Action)>) {}
+    fn on_app_menu_action(&self, _callback: Box<dyn FnMut(MenuCommandId)>) {}
 
     fn on_will_open_app_menu(&self, _callback: Box<dyn FnMut()>) {}
 
-    fn on_validate_app_menu_command(&self, _callback: Box<dyn FnMut(&dyn crate::Action) -> bool>) {}
+    fn on_validate_app_menu_command(&self, _callback: Box<dyn FnMut(MenuCommandId) -> bool>) {}
 
     fn app_path(&self) -> Result<std::path::PathBuf> {
         unimplemented!()

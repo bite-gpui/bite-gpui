@@ -28,14 +28,14 @@ pub(crate) use x11::*;
 
 use std::rc::Rc;
 
-use gpui::WindowingModes;
+use gpui_platform::WindowingModes;
 
 /// Returns the default platform implementation for the current OS.
 ///
 /// A windowed platform connects to the display server the process environment names, or starts
 /// headless when it names none, and can switch between those modes later. A headless platform
 /// stays headless.
-pub fn current_platform(headless: bool) -> Rc<dyn gpui::Platform> {
+pub fn current_platform(headless: bool) -> Rc<dyn gpui_platform::Platform> {
     if headless || std::env::var_os("ZED_HEADLESS").is_some() {
         linux_platform(WindowingModes::HEADLESS)
     } else {
@@ -47,6 +47,6 @@ pub fn current_platform(headless: bool) -> Rc<dyn gpui::Platform> {
 ///
 /// It starts windowed in the process's own environment, or headless if that names no allowed
 /// display server. Set another initial mode with [`gpui::Application::with_windowing`].
-pub fn linux_platform(allowed_modes: WindowingModes) -> Rc<dyn gpui::Platform> {
+pub fn linux_platform(allowed_modes: WindowingModes) -> Rc<dyn gpui_platform::Platform> {
     Rc::new(LinuxPlatform::new(allowed_modes))
 }

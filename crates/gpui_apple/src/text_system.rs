@@ -1,4 +1,5 @@
-use anyhow::anyhow;
+use anyhow::{Result, anyhow};
+use cocoa::{appkit::CGFloat};
 use collections::{HashMap, HashSet};
 use core_foundation::{
     array::{CFArray, CFArrayRef},
@@ -32,11 +33,11 @@ use font_kit::{
     source::SystemSource,
     sources::mem::MemSource,
 };
-use gpui::{
+use gpui_platform::{
     Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
-    FontStyle, FontWeight, GlyphId, LineLayout, Pixels, PlatformTextSystem, RenderGlyphParams,
-    Result, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString, Size, TextRenderingMode,
-    point, px, size, swap_rgba_pa_to_bgra,
+    FontStyle, FontWeight, GlyphId, Hsla, LineLayout, Pixels, PlatformTextSystem, RenderGlyphParams,
+    Result, Rgba, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString, Size,
+    TextRenderingMode, point, px, size, swap_rgba_pa_to_bgra,
 };
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use pathfinder_geometry::{
@@ -287,7 +288,7 @@ impl AppleTextSystemState {
         features: &FontFeatures,
         fallbacks: Option<&FontFallbacks>,
     ) -> Result<SmallVec<[FontId; 4]>> {
-        let name = gpui::font_name_with_fallbacks(name, ".AppleSystemUIFont");
+        let name = gpui_platform::font_name_with_fallbacks(name, ".AppleSystemUIFont");
 
         let mut font_ids = SmallVec::new();
         let mut postscript_names_seen = HashSet::default();

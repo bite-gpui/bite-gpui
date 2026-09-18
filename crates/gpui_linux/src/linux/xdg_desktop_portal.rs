@@ -8,7 +8,7 @@ use calloop::{EventSource, Poll, PostAction, Readiness, Token, TokenFactory};
 use futures::future::BoxFuture;
 use smol::stream::StreamExt;
 
-use gpui::{BackgroundExecutor, Task, WindowAppearance};
+use gpui_platform::{BackgroundExecutor, Task, WindowAppearance};
 
 pub enum Event {
     WindowAppearance(WindowAppearance),
