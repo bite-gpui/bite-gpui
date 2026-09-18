@@ -2614,8 +2614,12 @@ impl RenderingParameters {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_engine::{MonochromeSprite, PolychromeSprite, Quad, SubpixelSprite, Underline};
-    use gpui_platform::{BorderStyle, ColorSpace, ContentMask, Corners, Edges, Hsla, Shadow, Size, linear_color_stop, linear_gradient};
+    use gpui_engine::{
+        BorderStyle, MonochromeSprite, PolychromeSprite, Quad, SubpixelSprite, Underline,
+    };
+    use gpui_platform::{
+        ColorSpace, ContentMask, Corners, Edges, Hsla, Shadow, linear_color_stop, linear_gradient,
+    };
     #[cfg(target_os = "linux")]
     use gpui::{DevicePixels, PlatformHeadlessRenderer, Scene};
 
