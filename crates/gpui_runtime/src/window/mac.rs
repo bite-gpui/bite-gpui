@@ -17,19 +17,22 @@ pub trait MacWindowExt {
     fn paint_surface(&mut self, bounds: Bounds<Pixels>, image_buffer: CVPixelBuffer);
 }
 
-impl MacWindowExt for Window {
+impl MacWindowExt for Window<'_> {
     fn paint_surface(&mut self, bounds: Bounds<Pixels>, image_buffer: CVPixelBuffer) {
         use crate::PaintSurface;
 
-        self.invalidator.debug_assert_paint();
+        self.core.invalidator.debug_assert_paint();
 
         let bounds = self.snap_bounds(bounds);
         let content_mask = self.snapped_content_mask();
-        self.next_frame.scene.insert_primitive(PaintSurface {
-            order: 0,
-            bounds,
-            content_mask,
-            image_buffer,
-        });
+        self.frame_state
+            .next_frame
+            .scene
+            .insert_primitive(PaintSurface {
+                order: 0,
+                bounds,
+                content_mask,
+                image_buffer,
+            });
     }
 }
