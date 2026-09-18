@@ -14,5 +14,5 @@ doctest = false
 test = false
 
 [dependencies]
-gpui_platform.workspace = true
+gpui = { workspace = true, features = ["platform"] }
 smol.workspace = true
