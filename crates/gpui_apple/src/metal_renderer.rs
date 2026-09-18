@@ -6,9 +6,11 @@ use cocoa::{
     foundation::{NSSize, NSUInteger},
     quartzcore::AutoresizingMask,
 };
+use gpui_backend::{
+    AtlasTextureId, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer,
+};
 use gpui_platform::{
-    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path, Point,
-    PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
+    Background, Bounds, ContentMask, DevicePixels, Point, ScaledPixels, Size, point, size,
 };
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use image::RgbaImage;
@@ -1599,9 +1601,35 @@ pub struct SurfaceBounds {
     pub content_mask: ContentMask<ScaledPixels>,
 }
 
+impl SceneRenderer for MetalRenderer {
+    fn draw(&mut self, scene: &Scene) -> bool {
+        MetalRenderer::draw(self, scene);
+        true
+    }
+
+    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+        MetalRenderer::sprite_atlas(self).clone()
+    }
+
+    #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+    fn render_scene_to_image(
+        &mut self,
+        scene: &Scene,
+        size: Size<DevicePixels>,
+    ) -> anyhow::Result<image::RgbaImage> {
+        MetalRenderer::render_scene_to_image(self, scene, size)
+    }
+
+    #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+    fn render_scene(&mut self, scene: &Scene, size: Size<DevicePixels>) -> anyhow::Result<()> {
+        MetalRenderer::render_scene(self, scene, size)
+    }
+}
+
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 pub struct MetalHeadlessRenderer {
     renderer: MetalRenderer,
+    viewport_size: Size<DevicePixels>,
 }
 
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
@@ -1609,12 +1637,26 @@ impl MetalHeadlessRenderer {
     pub fn new() -> Self {
         let instance_buffer_pool = Arc::new(Mutex::new(InstanceBufferPool::default()));
         let renderer = MetalRenderer::new_headless(instance_buffer_pool);
-        Self { renderer }
+        Self {
+            renderer,
+            viewport_size: Size::default(),
+        }
     }
 }
 
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
-impl gpui_platform::PlatformHeadlessRenderer for MetalHeadlessRenderer {
+impl SceneRenderer for MetalHeadlessRenderer {
+    fn draw(&mut self, scene: &Scene) -> bool {
+        if let Err(error) = self.renderer.render_scene(scene, self.viewport_size) {
+            log::warn!("headless render_scene failed: {error}");
+        }
+        true
+    }
+
+    fn set_viewport_size(&mut self, size: Size<DevicePixels>) {
+        self.viewport_size = size;
+    }
+
     fn render_scene_to_image(
         &mut self,
         scene: &Scene,
@@ -1627,7 +1669,7 @@ impl gpui_platform::PlatformHeadlessRenderer for MetalHeadlessRenderer {
         self.renderer.render_scene(scene, size)
     }
 
-    fn sprite_atlas(&self) -> Arc<dyn gpui_platform::PlatformAtlas> {
+    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.renderer.sprite_atlas().clone()
     }
 }

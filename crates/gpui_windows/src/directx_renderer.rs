@@ -21,6 +21,11 @@ use windows::{
 
 use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
 use crate::*;
+use gpui_backend::{
+    AtlasTextureId, MonochromeSprite, PaintSurface, Path, PlatformAtlas, PolychromeSprite,
+    PrimitiveBatch, Quad, Scene, SceneRenderer, SubpixelSprite, Underline,
+    get_gamma_correction_ratios,
+};
 use gpui_platform::*;
 
 pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
@@ -45,6 +50,7 @@ pub(crate) struct DirectXRenderer {
     pipelines: DirectXRenderPipelines,
     direct_composition: Option<DirectComposition>,
     font_info: &'static FontInfo,
+    background_appearance: WindowBackgroundAppearance,
 
     width: u32,
     height: u32,
@@ -191,10 +197,18 @@ impl DirectXRenderer {
             pipelines,
             direct_composition,
             font_info: Self::get_font_info(),
+            background_appearance: WindowBackgroundAppearance::Opaque,
             width: 1,
             height: 1,
             skip_draws: false,
         })
+    }
+
+    pub(crate) fn set_background_appearance(
+        &mut self,
+        background_appearance: WindowBackgroundAppearance,
+    ) {
+        self.background_appearance = background_appearance;
     }
 
     pub(crate) fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -851,7 +865,7 @@ impl DirectXRenderer {
             let render_params: IDWriteRenderingParams1 =
                 factory.CreateRenderingParams().unwrap().cast().unwrap();
             FontInfo {
-                gamma_ratios: gpui_platform::get_gamma_correction_ratios(render_params.GetGamma()),
+                gamma_ratios: get_gamma_correction_ratios(render_params.GetGamma()),
                 grayscale_enhanced_contrast: render_params.GetGrayscaleEnhancedContrast(),
                 subpixel_enhanced_contrast: render_params.GetEnhancedContrast(),
                 is_bgr: render_params.GetPixelGeometry() == DWRITE_PIXEL_GEOMETRY_BGR,
@@ -2060,5 +2074,27 @@ mod dxgi {
             (number >> 16) & 0xFFFF,
             number & 0xFFFF
         ))
+    }
+}
+
+impl SceneRenderer for DirectXRenderer {
+    fn draw(&mut self, scene: &Scene) -> bool {
+        let background_appearance = self.background_appearance;
+        self.draw(scene, background_appearance).log_err();
+        true
+    }
+
+    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+        DirectXRenderer::sprite_atlas(self)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn render_scene_to_image(
+        &mut self,
+        scene: &Scene,
+        _size: Size<DevicePixels>,
+    ) -> anyhow::Result<image::RgbaImage> {
+        let background_appearance = self.background_appearance;
+        self.render_to_image(scene, background_appearance)
     }
 }

@@ -1,4 +1,5 @@
-//! Sprite atlas contract shared by `gpui` and its platform backends.
+//! Sprite atlas contract and tile identifiers shared by the engine and its
+//! platform backends.
 
 use crate::{RenderGlyphParams, RenderImageParams, RenderSvgParams};
 use anyhow::Result;
@@ -14,13 +15,6 @@ pub enum AtlasKey {
 }
 
 impl AtlasKey {
-    #[cfg_attr(
-        all(
-            any(target_os = "linux", target_os = "freebsd"),
-            not(any(feature = "x11", feature = "wayland"))
-        ),
-        allow(dead_code)
-    )]
     /// Returns the texture kind for this atlas key.
     pub fn texture_kind(&self) -> AtlasTextureKind {
         match self {
@@ -108,9 +102,9 @@ impl<T> AtlasTextureList<T> {
     }
 }
 
+/// A tile within a sprite atlas texture.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
-#[expect(missing_docs)]
 pub struct AtlasTile {
     /// The texture this tile belongs to.
     pub texture_id: AtlasTextureId,
@@ -122,9 +116,9 @@ pub struct AtlasTile {
     pub bounds: Bounds<DevicePixels>,
 }
 
+/// Identifies a texture within the sprite atlas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(C)]
-#[expect(missing_docs)]
 pub struct AtlasTextureId {
     // We use u32 instead of usize for Metal Shader Language compatibility
     /// The index of this texture in the atlas.
@@ -133,6 +127,7 @@ pub struct AtlasTextureId {
     pub kind: AtlasTextureKind,
 }
 
+/// The kind of content stored in an atlas texture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(C)]
 #[cfg_attr(
@@ -142,16 +137,18 @@ pub struct AtlasTextureId {
     ),
     allow(dead_code)
 )]
-#[expect(missing_docs)]
 pub enum AtlasTextureKind {
+    /// Single-channel coverage.
     Monochrome = 0,
+    /// Full-color pixels.
     Polychrome = 1,
+    /// Subpixel-antialiased coverage.
     Subpixel = 2,
 }
 
+/// The unique ID of a tile within its texture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
-#[expect(missing_docs)]
 pub struct TileId(pub u32);
 
 impl From<etagere::AllocId> for TileId {

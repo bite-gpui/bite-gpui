@@ -37,6 +37,7 @@ platform = [
 test-support = [
     "leak-detection",
     "collections/test-support",
+    "gpui_backend/test-support",
     "gpui_platform/test-support",
     "gpui_types/test-support",
     "http_client/test-support",
@@ -71,7 +72,7 @@ screen-capture = [
 ]
 windows-manifest = ["dep:embed-resource"]
 profiler = ["dep:hdrhistogram", "gpui_platform/profiler"]
-stacker = ["dep:stacksafe"]
+stacker = ["dep:stacksafe", "gpui_backend/stacker"]
 font-kit = ["dep:font-kit", "gpui_macos?/font-kit"]
 
 [lib]
@@ -93,6 +94,7 @@ etagere.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 gpui_macros.workspace = true
+gpui_backend.workspace = true
 gpui_platform.workspace = true
 gpui_shared_string.workspace = true
 gpui_types = { workspace = true, features = ["lyon"] }
@@ -178,6 +180,7 @@ windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Powe
 backtrace.workspace = true
 collections = { workspace = true, features = ["test-support"] }
 env_logger.workspace = true
+gpui_backend = { workspace = true, features = ["test-support"] }
 gpui_platform = { workspace = true, features = ["test-support"] }
 gpui_util = { workspace = true }
 lyon = { version = "1.0", features = ["extra"] }

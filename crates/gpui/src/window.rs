@@ -11,9 +11,9 @@ use crate::{
     Decorations, DevicePixels, DispatchActionListener, DispatchEventResult, DispatchNodeId,
     DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, FontId,
     Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero, KeyBinding, KeyContext,
-    KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers,
-    ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
-    Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
+    KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, MeasureContext,
+    Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent,
+    MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
     PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
     RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
     SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
@@ -34,6 +34,7 @@ use collections::{FxHashMap, FxHashSet};
 use core_video::pixel_buffer::CVPixelBuffer;
 use derive_more::{Deref, DerefMut};
 use futures::channel::oneshot;
+use gpui_backend::__private::FrameSession;
 use gpui_util::post_inc;
 use gpui_util::{ResultExt, measure};
 use itertools::FoldWhile::{Continue, Done};
@@ -71,6 +72,7 @@ pub use a11y::A11ySubtreeBuilder;
 use self::a11y::A11y;
 #[cfg(not(target_family = "wasm"))]
 use self::a11y::ROOT_NODE_ID;
+use crate::taffy::to_taffy_style;
 use crate::util::{
     atomic_incr_if_not_zero, ceil_to_device_pixel, floor_to_device_pixel, round_half_toward_zero,
     round_half_toward_zero_f64, round_stroke_to_device_pixel, round_to_device_pixel,
@@ -83,6 +85,19 @@ pub const DEFAULT_ADDITIONAL_WINDOW_SIZE: Size<Pixels> = Size {
     width: Pixels(900.),
     height: Pixels(750.),
 };
+
+/// Bridges GPUI's window and app handles to the layout engine's erased
+/// [`MeasureContext`] so custom measure callbacks can recover them.
+struct WindowMeasureContext<'a> {
+    window: &'a mut Window,
+    cx: &'a mut App,
+}
+
+impl MeasureContext for WindowMeasureContext<'_> {
+    fn handles(&mut self) -> (&mut dyn Any, &mut dyn Any) {
+        (&mut *self.window, &mut *self.cx)
+    }
+}
 
 /// Represents the two different phases when dispatching events.
 #[derive(Default, Copy, Clone, Debug, Eq, PartialEq)]
@@ -1144,7 +1159,7 @@ pub struct Window {
     /// a given rem size.
     rem_size_override_stack: SmallVec<[Pixels; 8]>,
     pub(crate) viewport_size: Size<Pixels>,
-    layout_engine: Option<TaffyLayoutEngine>,
+    layout_session: Rc<FrameSession>,
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
@@ -1546,7 +1561,12 @@ impl Window {
         }
 
         let display_id = platform_window.display().map(|display| display.id());
-        let sprite_atlas = platform_window.sprite_atlas();
+        let mut sprite_atlas = None;
+        platform_window.with_renderer(&mut |renderer| {
+            sprite_atlas = Some(renderer.sprite_atlas());
+        });
+        let sprite_atlas = sprite_atlas
+            .ok_or_else(|| anyhow!("platform window did not provide a scene renderer"))?;
         let mouse_position = platform_window.mouse_position();
         let modifiers = platform_window.modifiers();
         let capslock = platform_window.capslock();
@@ -2009,7 +2029,7 @@ impl Window {
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
             viewport_size: content_size,
-            layout_engine: Some(TaffyLayoutEngine::new()),
+            layout_session: Rc::new(FrameSession::new()),
             root: None,
             element_id_stack: SmallVec::default(),
             text_style_stack: Vec::new(),
@@ -2639,9 +2659,14 @@ impl Window {
     /// This does not present the frame to screen - useful for visual testing where we want
     /// to capture what would be rendered without displaying it or requiring the window to be visible.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn render_to_image(&self) -> anyhow::Result<image::RgbaImage> {
-        self.platform_window
-            .render_to_image(&self.rendered_frame.scene)
+    pub fn render_to_image(&mut self) -> anyhow::Result<image::RgbaImage> {
+        let size = self.bounds().size.to_device_pixels(self.scale_factor());
+        let scene = &self.rendered_frame.scene;
+        let mut result = None;
+        self.platform_window.with_renderer(&mut |renderer| {
+            result = Some(renderer.render_scene_to_image(scene, size));
+        });
+        result.unwrap_or_else(|| anyhow::bail!("platform window does not support image capture"))
     }
 
     /// Returns the quads in the most recently rendered frame's scene, so tests can assert on
@@ -3176,7 +3201,7 @@ impl Window {
                 });
         }
 
-        self.layout_engine.as_mut().unwrap().clear();
+        self.layout_session.clear();
         self.text_system().finish_frame();
         self.next_frame.finish(&mut self.rendered_frame);
 
@@ -3277,7 +3302,8 @@ impl Window {
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
         let present_start = Instant::now();
-        self.platform_window.draw(&self.rendered_frame.scene);
+        self.platform_window
+            .present(&mut |renderer| renderer.draw(&self.rendered_frame.scene));
         #[cfg(feature = "profiler")]
         self.window_profiler.record_present(
             present_start,
@@ -3370,9 +3396,7 @@ impl Window {
         let scale_factor = self.scale_factor();
         let mut root_element = self.root.as_ref().unwrap().clone().into_any_element();
         let root_layout_id = root_element.request_layout(self, cx);
-        self.layout_engine
-            .as_mut()
-            .unwrap()
+        self.layout_session
             .stretch_auto_size_to_fill(root_layout_id, root_size, scale_factor);
         root_element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
 
@@ -3387,10 +3411,11 @@ impl Window {
         if let Some(prompt) = self.prompt.take() {
             let mut element = prompt.view.any_view().into_any_element();
             let prompt_layout_id = element.request_layout(self, cx);
-            self.layout_engine
-                .as_mut()
-                .unwrap()
-                .stretch_auto_size_to_fill(prompt_layout_id, root_size, scale_factor);
+            self.layout_session.stretch_auto_size_to_fill(
+                prompt_layout_id,
+                root_size,
+                scale_factor,
+            );
             element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
             prompt_element = Some(element);
             self.prompt = Some(prompt);
@@ -4890,13 +4915,10 @@ impl Window {
         cx.layout_id_buffer.extend(children);
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
+        let taffy_style = to_taffy_style(&style, rem_size, scale_factor);
 
-        self.layout_engine.as_mut().unwrap().request_layout(
-            style,
-            rem_size,
-            scale_factor,
-            &cx.layout_id_buffer,
-        )
+        self.layout_session
+            .request_layout(taffy_style, &cx.layout_id_buffer)
     }
 
     /// Add a node to the layout tree for the current frame. Instead of taking a `Style` and children,
@@ -4916,10 +4938,19 @@ impl Window {
 
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
-        self.layout_engine
-            .as_mut()
-            .unwrap()
-            .request_measured_layout(style, rem_size, scale_factor, measure)
+        let taffy_style = to_taffy_style(&style, rem_size, scale_factor);
+        let measure = move |known_dimensions, available_space, context: &mut dyn MeasureContext| {
+            let (window, cx) = context.handles();
+            let window = window
+                .downcast_mut::<Window>()
+                .expect("measure context window should be a Window");
+            let cx = cx
+                .downcast_mut::<App>()
+                .expect("measure context app should be an App");
+            measure(known_dimensions, available_space, window, cx)
+        };
+        self.layout_session
+            .request_measured_layout(taffy_style, measure)
     }
 
     /// Compute the layout for the given id within the given available space.
@@ -4935,9 +4966,14 @@ impl Window {
     ) {
         self.invalidator.debug_assert_prepaint();
 
-        let mut layout_engine = self.layout_engine.take().unwrap();
-        layout_engine.compute_layout(layout_id, available_space, self, cx);
-        self.layout_engine = Some(layout_engine);
+        let scale_factor = self.scale_factor();
+        let layout_session = self.layout_session.clone();
+        layout_session.compute_layout(
+            layout_id,
+            available_space,
+            scale_factor,
+            &mut WindowMeasureContext { window: self, cx },
+        );
     }
 
     /// Obtain the bounds computed for the given LayoutId relative to the window. This method will usually be invoked by
@@ -4949,9 +4985,7 @@ impl Window {
 
         let scale_factor = self.scale_factor();
         let mut bounds = self
-            .layout_engine
-            .as_mut()
-            .unwrap()
+            .layout_session
             .layout_bounds(layout_id, scale_factor)
             .map(Into::into);
         let snapped_offset = self.pixel_snap_point(self.element_offset());
