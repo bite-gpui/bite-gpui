@@ -1,0 +1,41 @@
+[package]
+name = "gpui_engine_default"
+version = "0.1.0"
+publish.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_engine_default.rs"
+doctest = false
+
+[features]
+default = []
+stacker = ["dep:stacksafe"]
+test-support = ["gpui_engine/test-support", "gpui_types/test-support"]
+bench-support = ["test-support", "gpui_engine/bench-support"]
+
+[dependencies]
+anyhow.workspace = true
+collections.workspace = true
+gpui_engine.workspace = true
+gpui_shared_string.workspace = true
+gpui_types.workspace = true
+itertools.workspace = true
+parking_lot.workspace = true
+smallvec.workspace = true
+stacksafe = { workspace = true, optional = true }
+taffy = "=0.13.0"
+
+[dev-dependencies]
+futures.workspace = true
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Workspace inheritance would re-enable defaults, including blocking channel synchronization.
+async-channel = { version = "2.5.0", default-features = false }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+async-channel.workspace = true
