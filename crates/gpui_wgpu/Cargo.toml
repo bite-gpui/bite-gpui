@@ -20,7 +20,7 @@ test-support = ["gpui/test-support", "dep:image"]
 
 [dependencies]
 gpui_platform.workspace = true
-gpui_backend.workspace = true
+gpui_engine.workspace = true
 anyhow.workspace = true
 bytemuck = "1"
 collections.workspace = true
