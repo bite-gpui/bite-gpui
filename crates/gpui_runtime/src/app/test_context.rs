@@ -616,10 +616,10 @@ impl TestAppContext {
         self.app
             .borrow_mut()
             .windows
-            .get_mut(window.id)
+            .cell(window.id)
             .unwrap()
-            .as_deref_mut()
-            .unwrap()
+            .borrow_mut()
+            .core
             .platform_window
             .as_test()
             .and_then(|any| any.downcast_mut::<TestWindow>())
@@ -981,7 +981,14 @@ impl VisualTestContext {
 
     /// debug_bounds returns the bounds of the element with the given selector.
     pub fn debug_bounds(&mut self, selector: &'static str) -> Option<Bounds<Pixels>> {
-        self.update(|window, _| window.rendered_frame.debug_bounds.get(selector).copied())
+        self.update(|window, _| {
+            window
+                .frame_state
+                .rendered_frame
+                .debug_bounds
+                .get(selector)
+                .copied()
+        })
     }
 
     /// Draw an element to the window. Useful for simulating events or actions
@@ -997,15 +1004,15 @@ impl VisualTestContext {
         self.update(|window, cx| {
             let arena_scope = ElementArenaScope::enter(&cx.element_arena);
 
-            window.invalidator.set_phase(DrawPhase::Prepaint);
+            window.core.invalidator.set_phase(DrawPhase::Prepaint);
             let mut element = Drawable::new(f(window, cx));
             element.layout_as_root(space.into(), window, cx);
             window.with_absolute_element_offset(origin, |window| element.prepaint(window, cx));
 
-            window.invalidator.set_phase(DrawPhase::Paint);
+            window.core.invalidator.set_phase(DrawPhase::Paint);
             let (request_layout_state, prepaint_state) = element.paint(window, cx);
 
-            window.invalidator.set_phase(DrawPhase::None);
+            window.core.invalidator.set_phase(DrawPhase::None);
             window.refresh();
 
             drop(element);
@@ -1038,6 +1045,7 @@ impl VisualTestContext {
             .cx
             .update_window(self.window, |_, window, _| {
                 window
+                    .core
                     .platform_window
                     .as_test()
                     .and_then(|any| any.downcast_mut::<TestWindow>())
@@ -1052,7 +1060,7 @@ impl VisualTestContext {
             let should_close = handler();
             self.cx
                 .update_window(self.window, |_, window, _| {
-                    window.platform_window.on_should_close(handler);
+                    window.core.platform_window.on_should_close(handler);
                 })
                 .unwrap();
             should_close

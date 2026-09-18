@@ -1098,11 +1098,11 @@ mod tests {
                 ] {
                     let origin = point(px(origin_x), px(12.25));
                     let line_height = px(20.);
-                    window.next_frame.scene.clear();
+                    window.frame_state.next_frame.scene.clear();
                     line.paint(origin, line_height, align, align_width, window, cx)
                         .unwrap();
-                    let original = window.next_frame.scene.underlines.clone();
-                    window.next_frame.scene.clear();
+                    let original = window.frame_state.next_frame.scene.underlines.clone();
+                    window.frame_state.next_frame.scene.clear();
                     line.layout
                         .paint(
                             origin,
@@ -1114,9 +1114,12 @@ mod tests {
                             cx,
                         )
                         .unwrap();
-                    assert_underline_primitives_eq(&window.next_frame.scene.underlines, &original);
+                    assert_underline_primitives_eq(
+                        &window.frame_state.next_frame.scene.underlines,
+                        &original,
+                    );
 
-                    window.next_frame.scene.clear();
+                    window.frame_state.next_frame.scene.clear();
                     let mut strokes = Vec::new();
                     line.paint_with_underline_handler(
                         origin,
@@ -1141,9 +1144,12 @@ mod tests {
                             (5..7, point(start + px(32.), y), px(16.), last_style),
                         ]
                     );
-                    assert_underline_primitives_eq(&window.next_frame.scene.underlines, &original);
+                    assert_underline_primitives_eq(
+                        &window.frame_state.next_frame.scene.underlines,
+                        &original,
+                    );
 
-                    window.next_frame.scene.clear();
+                    window.frame_state.next_frame.scene.clear();
                     let mut captured = Vec::new();
                     line.paint_with_underline_handler(
                         origin,
@@ -1158,7 +1164,7 @@ mod tests {
                     )
                     .unwrap();
                     assert_eq!(captured, strokes);
-                    assert_eq!(window.next_frame.scene.underlines.len(), 0);
+                    assert_eq!(window.frame_state.next_frame.scene.underlines.len(), 0);
                 }
             }
             for text in ["", "abc"] {
@@ -1224,11 +1230,11 @@ mod tests {
                 (TextAlign::Center, 16.),
                 (TextAlign::Right, 32.),
             ] {
-                window.next_frame.scene.clear();
+                window.frame_state.next_frame.scene.clear();
                 line.paint(origin, line_height, align, Some(px(32.)), window, cx)
                     .unwrap();
-                let original = window.next_frame.scene.underlines.clone();
-                window.next_frame.scene.clear();
+                let original = window.frame_state.next_frame.scene.underlines.clone();
+                window.frame_state.next_frame.scene.clear();
                 let mut strokes = Vec::new();
                 line.paint_with_underline_handler(
                     origin,
@@ -1253,7 +1259,10 @@ mod tests {
                         (1..2, start, width, last_style),
                     ]
                 );
-                assert_underline_primitives_eq(&window.next_frame.scene.underlines, &original);
+                assert_underline_primitives_eq(
+                    &window.frame_state.next_frame.scene.underlines,
+                    &original,
+                );
             }
         });
     }
@@ -1300,12 +1309,12 @@ mod tests {
                     text: line.text,
                     decoration_runs: line.decoration_runs.into_vec(),
                 };
-                window.next_frame.scene.clear();
+                window.frame_state.next_frame.scene.clear();
                 wrapped
                     .paint(origin, line_height, TextAlign::Left, None, window, cx)
                     .unwrap();
-                let original = window.next_frame.scene.underlines.clone();
-                window.next_frame.scene.clear();
+                let original = window.frame_state.next_frame.scene.underlines.clone();
+                window.frame_state.next_frame.scene.clear();
                 let mut strokes = Vec::new();
                 paint_line(
                     origin,
@@ -1336,7 +1345,10 @@ mod tests {
                         (0..4, point(start, y + line_height), width, style),
                     ]
                 );
-                assert_underline_primitives_eq(&window.next_frame.scene.underlines, &original);
+                assert_underline_primitives_eq(
+                    &window.frame_state.next_frame.scene.underlines,
+                    &original,
+                );
             }
         });
     }
