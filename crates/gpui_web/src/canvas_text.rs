@@ -1,5 +1,5 @@
 use anyhow::{Context as _, Result, anyhow, ensure};
-use gpui::{Bounds, DevicePixels};
+use gpui_platform::{Bounds, DevicePixels};
 use std::cell::RefCell;
 use wasm_bindgen::{JsCast as _, JsValue};
 use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
