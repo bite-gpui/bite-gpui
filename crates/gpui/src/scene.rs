@@ -9,6 +9,8 @@ use crate::{
     Point, Radians, ScaledFilter, ScaledPixels, Size, bounds_tree::BoundsTree, point,
 };
 use smallvec::SmallVec;
+
+pub use gpui_types::DrawOrder;
 use std::{
     fmt::Debug,
     iter::Peekable,
@@ -25,9 +27,6 @@ pub use abi::{SCENE_BUFFER_LAYOUTS, SceneBufferLayout};
 #[allow(non_camel_case_types, unused)]
 #[expect(missing_docs)]
 pub type PathVertex_ScaledPixels = PathVertex<ScaledPixels>;
-
-#[expect(missing_docs)]
-pub type DrawOrder = u32;
 
 pub(crate) const DEFAULT_BORDER_DASHED_LENGTH: f32 = 2.0;
 pub(crate) const DEFAULT_BORDER_DASHED_GAP: f32 = 1.0;
