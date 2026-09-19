@@ -1,5 +1,5 @@
 [package]
-name = "gpui_types_ext"
+name = "gpui_ce_types"
 version = "0.1.0"
 publish.workspace = true
 edition.workspace = true
@@ -9,7 +9,7 @@ license = "Apache-2.0"
 workspace = true
 
 [lib]
-path = "src/gpui_types_ext.rs"
+path = "src/gpui_ce_types.rs"
 doctest = false
 
 [dependencies]

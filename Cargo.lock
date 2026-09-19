@@ -2312,9 +2312,9 @@ dependencies = [
  "gpui_ce_scheduler",
  "gpui_ce_shared_string",
  "gpui_ce_sum_tree",
+ "gpui_ce_types",
  "gpui_ce_util",
  "gpui_types",
- "gpui_types_ext",
  "hdrhistogram",
  "heapless",
  "http",
@@ -2627,6 +2627,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_ce_types"
+version = "0.1.0"
+dependencies = [
+ "gpui_types",
+ "palette",
+ "schemars",
+]
+
+[[package]]
 name = "gpui_ce_util"
 version = "0.2.6"
 dependencies = [
@@ -2787,15 +2796,6 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
-]
-
-[[package]]
-name = "gpui_types_ext"
-version = "0.1.0"
-dependencies = [
- "gpui_types",
- "palette",
- "schemars",
 ]
 
 [[package]]

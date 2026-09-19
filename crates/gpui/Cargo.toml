@@ -64,7 +64,7 @@ futures-concurrency.workspace = true
 gpui_macros.workspace = true
 gpui_shared_string.workspace = true
 gpui_types = { workspace = true, features = ["lyon"] }
-gpui_types_ext.workspace = true
+gpui_ce_types.workspace = true
 http.workspace = true
 image.workspace = true
 inventory.workspace = true
@@ -170,7 +170,7 @@ bindgen = "0.72"
 
 [package.metadata.cargo-semver-checks.lints]
 # Rustdoc does not inline re-exported items from other crates, so moving public
-# types out of `gpui` (into gpui_types / gpui_types_ext) and re-exporting them is
+# types out of `gpui` (into gpui_types / gpui_ce_types) and re-exporting them is
 # reported as an item removal even though downstream code still compiles. Until
 # cargo-semver-checks can check cross-crate items, surface these as warnings:
 # https://github.com/obi1kenobi/cargo-semver-checks/issues/638
