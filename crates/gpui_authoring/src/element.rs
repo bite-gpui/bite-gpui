@@ -487,7 +487,7 @@ impl<E: Element> Drawable<E> {
                     .next_frame
                     .dispatch_tree
                     .set_active_node(node_id);
-                let previous_inspector_id = window.set_inspector_element_id(inspector_id.clone());
+                let previous_inspector_id = window.set_inspector_element_id(inspector_id);
                 self.element.paint(
                     global_id.as_ref(),
                     bounds,

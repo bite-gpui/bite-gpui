@@ -18,13 +18,13 @@ use crate::{
     PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams,
     Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y,
     ScaledPixels, Scene, Shadow, SharedString, Size, StrikethroughStyle, Style, SubpixelSprite,
-    SubscriberSet, Subscription, SystemWindowTab, SystemWindowTabController, TabStopMap,
-    TaffyLayoutEngine, Task, TextInputConfiguration, TextInputStateChange, TextRenderingMode,
-    TextStyle, TextStyleRefinement, ThermalState, TransformationMatrix, Underline, UnderlineStyle,
+    SubscriberSet, Subscription, SystemWindowTab, SystemWindowTabController, TabStopMap, Task,
+    TextInputConfiguration, TextInputStateChange, TextRenderingMode, TextStyle,
+    TextStyleRefinement, ThermalState, TransformationMatrix, Underline, UnderlineStyle,
     WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls,
     WindowDecorations, WindowId, WindowMetrics, WindowOptions, WindowParams, WindowTextSystem,
-    WindowVisibility,
-    new_platform_input_handler, point, prelude::*, px, rems, size, transparent_black,
+    WindowVisibility, new_platform_input_handler, point, prelude::*, px, rems, size,
+    transparent_black,
 };
 
 use crate::TouchEvent;
@@ -8314,7 +8314,7 @@ mod tests {
     fn a_pipeline_can_allow_a_frame(cx: &mut TestAppContext) {
         let frames = Rc::new(Cell::new(0));
         let asks = Rc::new(Cell::new(0));
-        install_pacing_pipeline(cx, frames.clone(), asks.clone(), true);
+        install_pacing_pipeline(cx, frames.clone(), asks, true);
         let window = cx.add_window(|_, _| EmptyView);
         frames.set(0);
 
