@@ -3,11 +3,12 @@ use crate::canvas_text::{self, CanvasTextMetrics};
 use crate::glyph_cache::{CanvasGlyph, GlyphCache};
 use crate::run_replacements::{Replacement, apply_replacements, collect_candidates};
 use anyhow::{Context as _, Result, ensure};
-use gpui::{
-    Bounds, DevicePixels, Font, FontId, FontMetrics, FontRun, FontStyle, GlyphId, Hsla, LineLayout,
-    MissingGlyphSink, Pixels, PlatformTextSystem, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
-    SUBPIXEL_VARIANTS_Y, ShapedGlyph, Size, TextRenderingMode, point, px, size,
+use gpui_engine::{
+    Font, FontId, FontMetrics, FontRun, FontStyle, GlyphId, LineLayout, MissingGlyphSink,
+    PlatformTextSystem, RenderGlyphParams, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ShapedGlyph,
+    TextRenderingMode,
 };
+use gpui_platform::{Bounds, DevicePixels, Hsla, Pixels, Size, point, px, size};
 use gpui_wgpu::CosmicTextSystem;
 use parking_lot::RwLock;
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
