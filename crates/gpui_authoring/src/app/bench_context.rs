@@ -16,8 +16,8 @@ use crate::{
     AnyView, AnyWindowHandle, App, AppCell, AppContext, BackgroundExecutor, Bounds, BoundsExt,
     Context, Empty, Entity, EntityId, Focusable, ForegroundExecutor, Global, Platform,
     PlatformDispatcherExt, PlatformTextSystem, Render, Reservation, SceneRenderer, Task,
-    TestPlatform, ThreadedDispatcher, VisualContext, Window, WindowBounds, WindowHandle,
-    WindowOptions,
+    TestPlatform, TestWindow, ThreadedDispatcher, VisualContext, Window, WindowBounds,
+    WindowHandle, WindowOptions,
     app::GpuiBorrow,
     profiler::{
         self, FrameEvent, FrameTimingCollector,
@@ -886,10 +886,12 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
                     let app = cx.app.borrow();
                     let window = app
                         .windows
-                        .get(window.window_id())
-                        .and_then(Option::as_deref)
+                        .cell(window.window_id())
                         .expect("renderer session window must remain open");
-                    !window.invalidator.is_dirty() && !window.needs_present.get()
+                    let window = window
+                        .try_borrow()
+                        .expect("renderer session window must not be borrowed");
+                    !window.core.invalidator.is_dirty() && !window.core.needs_present.get()
                 };
                 let dispatch_frames = |cx: &Self| {
                     check_deadline();
@@ -936,15 +938,17 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
 
     fn dispatch_pending_frames(&self, mut should_continue: impl FnMut() -> bool) -> bool {
         let pending: Vec<_> = {
-            let mut app = self.app.borrow_mut();
+            let app = self.app.borrow();
             app.windows
-                .values_mut()
-                .filter_map(|window| {
-                    let window = window.as_deref_mut()?;
-                    let handle = window.window_handle();
+                .cells()
+                .filter_map(|cell| {
+                    let mut window = cell.try_borrow_mut().ok()?;
+                    let handle = window.core.handle;
                     let platform_window = window
+                        .core
                         .platform_window
                         .as_test()
+                        .and_then(|any| any.downcast_mut::<TestWindow>())
                         .expect("benchmark platform window");
                     platform_window
                         .frame_scheduled()
@@ -959,13 +963,7 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
                 break;
             }
             // An earlier callback may have closed another window in the batch.
-            let is_open = self
-                .app
-                .borrow()
-                .windows
-                .get(handle.window_id())
-                .and_then(Option::as_deref)
-                .is_some();
+            let is_open = self.app.borrow().windows.cell(handle.window_id()).is_some();
             if is_open {
                 dispatched |= window.simulate_scheduled_frame();
             }
