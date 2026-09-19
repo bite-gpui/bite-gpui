@@ -3382,8 +3382,8 @@ mod test {
     use std::os::unix::ffi::OsStringExt;
 
     use crate::{
-        AppContext, Context, Empty, FallbackFontClass, IntoElement, MissingGlyph, Render,
-        TestAppContext, Window,
+        AppContext, Context, DefaultTextSystemExt, Empty, FallbackFontClass, IntoElement,
+        MissingGlyph, Render, TestAppContext, Window,
     };
 
     struct RenderCounter(Rc<Cell<usize>>);
@@ -3423,6 +3423,8 @@ mod test {
         });
         cx.update(|cx| {
             cx.text_system()
+                .as_default_text_system()
+                .expect("the test harness installs a DefaultTextSystem")
                 .report_missing_glyphs_in_test(vec![missing_glyph("active")]);
         });
         cx.run_until_parked();
@@ -3439,6 +3441,8 @@ mod test {
         });
         cx.update(|cx| {
             cx.text_system()
+                .as_default_text_system()
+                .expect("the test harness installs a DefaultTextSystem")
                 .report_missing_glyphs_in_test(vec![missing_glyph("replacement")]);
         });
         cx.run_until_parked();
@@ -3451,6 +3455,8 @@ mod test {
         drop(subscription);
         cx.update(|cx| {
             cx.text_system()
+                .as_default_text_system()
+                .expect("the test harness installs a DefaultTextSystem")
                 .report_missing_glyphs_in_test(vec![missing_glyph("after old drop")]);
         });
         cx.run_until_parked();
@@ -3465,6 +3471,8 @@ mod test {
         drop(second_subscription);
         cx.update(|cx| {
             cx.text_system()
+                .as_default_text_system()
+                .expect("the test harness installs a DefaultTextSystem")
                 .report_missing_glyphs_in_test(vec![missing_glyph("inactive")]);
         });
         cx.run_until_parked();
