@@ -36,7 +36,7 @@ impl Render for TimedFrame {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.frames += 1;
 
-        if self.frames % REPORT_EVERY == 0 {
+        if self.frames.is_multiple_of(REPORT_EVERY) {
             let metrics = *self.metrics.borrow();
             println!(
                 "{} frames: evaluate {:?}, layout {:?}, paint {:?} — {:?} of root passes",
