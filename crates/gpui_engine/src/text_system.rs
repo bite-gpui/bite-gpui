@@ -52,10 +52,6 @@ pub trait TextSystem: Send + Sync + Any {
     /// Stops reporting missing glyphs and discards any reports collected so far.
     fn disable_missing_glyph_reporting(&self);
 
-    /// Reports missing glyphs as if the platform text system had observed them.
-    #[cfg(any(test, feature = "test-support"))]
-    fn report_missing_glyphs_in_test(&self, missing_glyphs: Vec<MissingGlyph>);
-
     /// The font for a font id, if it was resolved through this system.
     fn get_font_for_id(&self, id: FontId) -> Option<Font>;
 
