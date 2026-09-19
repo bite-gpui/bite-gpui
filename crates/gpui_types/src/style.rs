@@ -2,10 +2,13 @@
 
 use crate::{Hsla, Pixels};
 use refineable::Refineable;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The properties that can be applied to an underline.
-#[derive(Refineable, Copy, Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Refineable, Copy, Clone, Default, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema,
+)]
 pub struct UnderlineStyle {
     /// The thickness of the underline.
     pub thickness: Pixels,
@@ -18,7 +21,9 @@ pub struct UnderlineStyle {
 }
 
 /// The properties that can be applied to a strikethrough.
-#[derive(Refineable, Copy, Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Refineable, Copy, Clone, Default, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema,
+)]
 pub struct StrikethroughStyle {
     /// The thickness of the strikethrough.
     pub thickness: Pixels,
