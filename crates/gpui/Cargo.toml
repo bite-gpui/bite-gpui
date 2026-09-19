@@ -101,6 +101,7 @@ gpui_windows = { workspace = true, optional = true }
 anyhow.workspace = true
 backtrace.workspace = true
 collections = { workspace = true, features = ["test-support"] }
+criterion.workspace = true
 env_logger.workspace = true
 gpui_macros.workspace = true
 gpui_platform = { workspace = true, features = ["test-support"] }
@@ -134,6 +135,11 @@ ignored = [
     "bindgen",
     "font-kit",
 ]
+
+[[bench]]
+name = "inspector_render"
+harness = false
+required-features = ["bench-support"]
 
 [[example]]
 name = "hello_world"
