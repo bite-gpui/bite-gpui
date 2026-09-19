@@ -8539,7 +8539,7 @@ mod tests {
     fn a_pipeline_can_allow_a_frame(cx: &mut TestAppContext) {
         let frames = Rc::new(Cell::new(0));
         let asks = Rc::new(Cell::new(0));
-        install_pacing_pipeline(cx, frames.clone(), asks.clone(), true);
+        install_pacing_pipeline(cx, frames.clone(), asks, true);
         let window = cx.add_window(|_, _| EmptyView);
         frames.set(0);
 
