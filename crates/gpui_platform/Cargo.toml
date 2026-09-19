@@ -21,11 +21,6 @@ wayland = []
 x11 = ["scap?/x11"]
 screen-capture = ["dep:scap"]
 
-[[bench]]
-name = "inspector_render"
-harness = false
-required-features = ["bench-support"]
-
 [dependencies]
 accesskit.workspace = true
 anyhow.workspace = true
