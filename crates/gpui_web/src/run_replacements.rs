@@ -1,5 +1,6 @@
 use crate::canvas_fallback::classify_canvas_fallback;
-use gpui::{FontId, FontRun, LineLayout, Pixels, Point, ShapedGlyph, ShapedRun};
+use gpui_engine::{FontId, FontRun, LineLayout, ShapedGlyph, ShapedRun};
+use gpui_platform::{Pixels, Point};
 use smallvec::SmallVec;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
