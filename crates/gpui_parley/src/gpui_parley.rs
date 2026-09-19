@@ -18,8 +18,7 @@ use anyhow::{Context as _, Result};
 use gpui_engine::{
     Font, FontId, FontMetrics, FontRun, GlyphId, LineLayout, LineLayoutIndex, LineWrapper,
     LineWrapperHandle, MissingGlyphReports, RenderGlyphParams, ShapedGlyph, ShapedRun,
-    TextRenderingMode, WrapBoundary,
-    WrappedLineLayout, font,
+    TextRenderingMode, WrapBoundary, WrappedLineLayout, font,
 };
 
 pub use gpui_engine::{PlatformTextSystem, TextSystem};
@@ -580,7 +579,7 @@ impl TextSystem for ParleyTextSystem {
             .unwrap()
             .pop()
             .unwrap_or_else(|| LineWrapper::new(font_id, font_size, self.clone()));
-        let this = self.clone();
+        let this = self;
         LineWrapperHandle::new(wrapper, move |wrapper| {
             this.wrapper_pool.lock().unwrap().push(wrapper);
         })
@@ -1062,7 +1061,7 @@ mod tests {
             text_system.get_font_for_id(regular_id),
             Some(regular.clone())
         );
-        assert_eq!(text_system.get_font_for_id(bold_id), Some(bold.clone()));
+        assert_eq!(text_system.get_font_for_id(bold_id), Some(bold));
         assert_eq!(text_system.resolve_font(&regular), regular_id);
     }
 
