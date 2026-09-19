@@ -1204,9 +1204,7 @@ mod tests {
 
     #[test]
     fn all_font_names_tracks_available_families() -> Result<()> {
-        let text_system = gpui::TextSystem::new(Arc::new(
-            CosmicTextSystem::new_without_system_fonts("IBM Plex Sans"),
-        ));
+        let text_system = CosmicTextSystem::new_without_system_fonts("IBM Plex Sans");
         assert!(text_system.all_font_names().is_empty());
 
         text_system.add_fonts(vec![Cow::Borrowed(include_bytes!(
@@ -1374,7 +1372,7 @@ mod tests {
     #[test]
     fn adding_fonts_invalidates_cached_line_layouts() -> Result<()> {
         let platform_text_system = Arc::new(text_system()?);
-        let text_system = Arc::new(gpui::TextSystem::new(platform_text_system.clone()));
+        let text_system = Arc::new(gpui::DefaultTextSystem::new(platform_text_system.clone()));
         let window_text_system = gpui::WindowTextSystem::new(text_system.clone());
         let text: SharedString = "cached text".into();
         let runs = [gpui::TextRun {
