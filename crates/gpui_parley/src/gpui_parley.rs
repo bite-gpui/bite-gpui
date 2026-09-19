@@ -458,9 +458,6 @@ impl TextSystem for ParleyTextSystem {
 
     fn disable_missing_glyph_reporting(&self) {}
 
-    #[cfg(any(test, feature = "test-support"))]
-    fn report_missing_glyphs_in_test(&self, _missing_glyphs: Vec<gpui_engine::MissingGlyph>) {}
-
     fn platform_text_system(&self) -> &Arc<dyn PlatformTextSystem> {
         &self.platform_dyn
     }
