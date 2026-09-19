@@ -138,6 +138,11 @@ macro_rules! bench_main {
 pub use gpui_shared_string::*;
 pub use gpui_types::*;
 pub use gpui_ce_types::*;
+
+// `gpui_types` and `gpui_ce_types` both name `Shadow`: upstream's inset flag is a
+// `u32`, this fork's is a `ShaderBool`. An explicit re-export shadows the globs,
+// so the fork's own type is what `gpui` publishes.
+pub use gpui_ce_types::Shadow;
 pub use gpui_util::arc_cow::ArcCow;
 /// HTTP client abstraction for making requests.
 pub mod http_client;

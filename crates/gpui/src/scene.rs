@@ -24,37 +24,14 @@ mod abi;
 #[doc(hidden)]
 pub use abi::{SCENE_BUFFER_LAYOUTS, SceneBufferLayout};
 
+pub use gpui_ce_types::{ShaderBool, Shadow};
+
 #[allow(non_camel_case_types, unused)]
 #[expect(missing_docs)]
 pub type PathVertex_ScaledPixels = PathVertex<ScaledPixels>;
 
 pub(crate) const DEFAULT_BORDER_DASHED_LENGTH: f32 = 2.0;
 pub(crate) const DEFAULT_BORDER_DASHED_GAP: f32 = 1.0;
-
-/// A boolean with the same four-byte representation in Rust and WGSL.
-/// Scene structs use it over one-byte [`bool`] to keep the storage-buffer ABI explicit.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-#[repr(u32)]
-pub enum ShaderBool {
-    /// The flag is disabled.
-    #[default]
-    Disabled = 0,
-    /// The flag is enabled.
-    Enabled = 1,
-}
-
-impl ShaderBool {
-    /// Returns this flag as a regular Rust boolean.
-    pub fn is_enabled(self) -> bool {
-        self == Self::Enabled
-    }
-}
-
-impl From<bool> for ShaderBool {
-    fn from(value: bool) -> Self {
-        if value { Self::Enabled } else { Self::Disabled }
-    }
-}
 
 #[derive(Default)]
 #[expect(missing_docs)]
@@ -815,23 +792,6 @@ impl From<Underline> for Primitive {
     fn from(underline: Underline) -> Self {
         Primitive::Underline(underline)
     }
-}
-
-#[derive(Debug, Copy, Clone)]
-#[repr(C)]
-#[expect(missing_docs)]
-pub struct Shadow {
-    pub order: DrawOrder,
-    pub blur_radius: ScaledPixels,
-    pub bounds: Bounds<ScaledPixels>,
-    pub corner_radii: Corners<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
-    pub color: Background,
-    pub element_bounds: Bounds<ScaledPixels>,
-    pub element_corner_radii: Corners<ScaledPixels>,
-    /// Whether this shadow is rendered inside the element instead of outside it.
-    pub inset: ShaderBool,
-    pub corner_smoothing: f32,
 }
 
 impl From<Shadow> for Primitive {

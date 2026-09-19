@@ -1,6 +1,6 @@
 //! GPU-facing scene primitives shared between GPUI and its platform backends.
 
-use crate::{Bounds, Pixels, ScaledPixels};
+use crate::{Bounds, Corners, Hsla, Pixels, ScaledPixels};
 use core::fmt::Debug;
 
 /// The order in which a primitive is painted within a frame.
@@ -31,4 +31,21 @@ impl ContentMask<Pixels> {
         let bounds = self.bounds.intersect(&other.bounds);
         ContentMask { bounds }
     }
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+#[expect(missing_docs)]
+pub struct Shadow {
+    pub order: DrawOrder,
+    pub blur_radius: ScaledPixels,
+    pub bounds: Bounds<ScaledPixels>,
+    pub corner_radii: Corners<ScaledPixels>,
+    pub content_mask: ContentMask<ScaledPixels>,
+    pub color: Hsla,
+    pub element_bounds: Bounds<ScaledPixels>,
+    pub element_corner_radii: Corners<ScaledPixels>,
+    /// 0 = drop shadow (rendered outside the element), 1 = inset shadow (rendered inside).
+    pub inset: u32,
+    pub pad: u32, // align to 8 bytes
 }
