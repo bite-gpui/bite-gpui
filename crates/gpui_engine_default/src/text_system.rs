@@ -537,6 +537,32 @@ struct FontIdWithSize {
     font_size: Pixels,
 }
 
+/// Affordances of the default text system that the shared [`TextSystem`] SPI does
+/// not carry, in the same spirit as `gpui_parley`'s `as_parley`.
+pub trait DefaultTextSystemExt {
+    /// This text system as a [`DefaultTextSystem`], when it is one.
+    fn as_default_text_system(&self) -> Option<&DefaultTextSystem>;
+}
+
+impl DefaultTextSystemExt for dyn TextSystem + '_ {
+    fn as_default_text_system(&self) -> Option<&DefaultTextSystem> {
+        self.as_any().downcast_ref::<DefaultTextSystem>()
+    }
+}
+
+impl DefaultTextSystem {
+    /// Reports missing glyphs as if the platform text system had observed them.
+    ///
+    /// A test affordance: the production path is
+    /// [`Self::enable_missing_glyph_reporting`] plus
+    /// [`TextSystem::take_missing_glyph_receiver`]. Test code reaches it by
+    /// downcasting, through [`DefaultTextSystemExt::as_default_text_system`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn report_missing_glyphs_in_test(&self, missing_glyphs: Vec<MissingGlyph>) {
+        self.missing_glyph_reporter.report(missing_glyphs);
+    }
+}
+
 impl TextSystem for DefaultTextSystem {
     fn take_missing_glyph_receiver(&self) -> Option<Box<dyn MissingGlyphReports>> {
         self.missing_glyph_receiver
@@ -553,11 +579,6 @@ impl TextSystem for DefaultTextSystem {
     fn disable_missing_glyph_reporting(&self) {
         self.platform_text_system.set_missing_glyph_sink(None);
         self.missing_glyph_reporter.reset();
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    fn report_missing_glyphs_in_test(&self, missing_glyphs: Vec<MissingGlyph>) {
-        self.missing_glyph_reporter.report(missing_glyphs);
     }
 
     fn platform_text_system(&self) -> &Arc<dyn PlatformTextSystem> {
