@@ -49,11 +49,11 @@ pub fn single_threaded_web() -> Application {
     Application::with_platform(platform).with_http_client(http_client)
 }
 
-/// Initializes panic hooks and logging for the web platform.
-/// Call this before running the application in a wasm_bindgen entrypoint.
+/// Initializes logging for the web platform. `gpui_web::init_logging` also
+/// installs the panic hook. Call this before running the application in a
+/// wasm_bindgen entrypoint.
 #[cfg(target_family = "wasm")]
 pub fn web_init() {
-    console_error_panic_hook::set_once();
     gpui_web::init_logging();
 }
 

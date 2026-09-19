@@ -1,5 +1,6 @@
 use anyhow::Result;
-use gpui::{FontId, GlyphId, SharedString};
+use gpui_engine::{FontId, GlyphId};
+use gpui_platform::SharedString;
 use std::collections::HashMap;
 
 #[derive(Clone)]
