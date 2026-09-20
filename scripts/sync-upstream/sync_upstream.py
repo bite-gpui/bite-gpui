@@ -77,7 +77,7 @@ TRACKED_CRATES: dict[str, str] = {
     "gpui_linux": "gpui_linux",
     "gpui_macos": "gpui_macos",
     "gpui_macros": "gpui_macros",
-    "gpui_platform": "gpui_platform",
+    "gpui_platform": "gpui_ce_platform",
     "gpui_shared_string": "gpui_shared_string",
     "gpui_tokio": "gpui_tokio",
     "gpui_web": "gpui_web",

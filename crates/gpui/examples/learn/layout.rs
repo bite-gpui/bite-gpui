@@ -484,7 +484,7 @@ fn section(colors: &Colors, title: &'static str, content: impl IntoElement) -> i
 }
 
 fn main() {
-    gpui_platform::application().run(|cx| {
+    gpui_ce_platform::application().run(|cx| {
         let bounds = Bounds::centered(None, size(px(650.), px(700.)), cx);
         cx.open_window(
             WindowOptions {

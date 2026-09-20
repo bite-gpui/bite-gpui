@@ -14,7 +14,7 @@ It delegates work to the GPU at a *deep* level, hence the name!
 
 ## Quickstart
 
-Everything in GPUI starts with an `Application`. You can create one with `gpui_platform::application()`, and kick off your application by passing a callback to `Application::run()`. Inside this callback, you can create a new window with `App::open_window()`, and register your first root view. See [gpui.rs](https://www.gpui.rs/) for a complete example.
+Everything in GPUI starts with an `Application`. You can create one with `gpui_ce_platform::application()`, and kick off your application by passing a callback to `Application::run()`. Inside this callback, you can create a new window with `App::open_window()`, and register your first root view. See [gpui.rs](https://www.gpui.rs/) for a complete example.
 
 ### Usage
 

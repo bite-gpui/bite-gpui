@@ -552,7 +552,7 @@ impl Render for InteractiveElementsExample {
 }
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui_ce_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(700.), px(650.)), cx);
         cx.open_window(
             WindowOptions {

@@ -261,7 +261,7 @@ fn section(colors: &Colors, title: &'static str, content: impl IntoElement) -> i
 }
 
 fn main() {
-    gpui_platform::application()
+    gpui_ce_platform::application()
         .with_assets(Assets {})
         .run(|cx: &mut App| {
             let bounds = Bounds::centered(None, gpui_size(px(500.), px(650.)), cx);

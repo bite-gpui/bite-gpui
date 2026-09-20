@@ -14,7 +14,7 @@ mod custom_gpu {
         WindowBounds, WindowOptions, div, px, size,
     };
     use gpui_ce_wgpu::{WgpuContextHandle, WgpuRenderTarget};
-    use gpui_platform::application;
+    use gpui_ce_platform::application;
     use wgpu::util::DeviceExt;
 
     const SHADER: &str = r#"

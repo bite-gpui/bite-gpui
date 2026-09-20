@@ -464,7 +464,7 @@ fn section(
 }
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui_ce_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(550.), px(800.)), cx);
         cx.open_window(
             WindowOptions {

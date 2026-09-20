@@ -407,7 +407,7 @@ impl Render for HelloWeb {
 // Entry point
 // ---------------------------------------------------------------------------
 
-fn requested_backend() -> gpui_platform::WebBackendPreference {
+fn requested_backend() -> gpui_ce_platform::WebBackendPreference {
     let search = web_sys::window()
         .and_then(|window| window.location().search().ok())
         .unwrap_or_default();
@@ -416,21 +416,21 @@ fn requested_backend() -> gpui_platform::WebBackendPreference {
         .split('&')
         .any(|parameter| parameter == "backend=webgpu")
     {
-        gpui_platform::WebBackendPreference::WebGpu
+        gpui_ce_platform::WebBackendPreference::WebGpu
     } else if search
         .trim_start_matches('?')
         .split('&')
         .any(|parameter| parameter == "backend=webgl")
     {
-        gpui_platform::WebBackendPreference::WebGl
+        gpui_ce_platform::WebBackendPreference::WebGl
     } else {
-        gpui_platform::WebBackendPreference::Auto
+        gpui_ce_platform::WebBackendPreference::Auto
     }
 }
 
 fn main() {
-    gpui_platform::web_init();
-    gpui_platform::application_with_web_backend(requested_backend()).run(|cx: &mut App| {
+    gpui_ce_platform::web_init();
+    gpui_ce_platform::application_with_web_backend(requested_backend()).run(|cx: &mut App| {
         if let Err(error) = cx
             .text_system()
             .add_fonts(vec![Cow::Borrowed(include_bytes!(

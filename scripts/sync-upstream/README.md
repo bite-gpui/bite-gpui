@@ -53,13 +53,13 @@ identical paths here. The script uses a **vendor-branch 3-way merge** (a general
 
 ### Tracked crates (fork dir ← upstream dir; dirs, not package names)
 
-Synced 1:1 (same dir): `gpui`, `gpui_linux`, `gpui_macos`, `gpui_macros`, `gpui_platform`,
+Synced 1:1 (same dir): `gpui`, `gpui_linux`, `gpui_macos`, `gpui_macros`,
 `gpui_shared_string`, `gpui_tokio`, `gpui_web`, `gpui_wgpu`, `gpui_windows`.
 
 Synced with **path remapping** — vendored + renamed by the fork (PR #91 removed the git sources):
 `gpui_collections`←`collections`, `gpui_sum_tree`←`sum_tree`, `gpui_refineable`←`refineable`,
 `gpui_derive_refineable`←`refineable/derive_refineable`, `gpui_scheduler`←`scheduler`,
-`gpui_media`←`media`, `gpui_zed_util`←`util`, `gpui_ce_util`←`gpui_util`, `gpui_path`←`path`.
+`gpui_media`←`media`, `gpui_zed_util`←`util`, `gpui_ce_util`←`gpui_util`, `gpui_path`←`path`, `gpui_ce_platform`←`gpui_platform`.
 Packaging is orthogonal to directories: every fork package is `gpui_ce_*` (main crate `gpui-ce`
 with a hyphen), each with `[lib] name` preserving the upstream crate name and a
 `[workspace.dependencies]` alias mapping the upstream name back (e.g.

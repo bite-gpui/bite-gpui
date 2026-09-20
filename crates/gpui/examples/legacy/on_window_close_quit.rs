@@ -7,7 +7,7 @@ use gpui::{
     App, Bounds, Context, FocusHandle, KeyBinding, Window, WindowBounds, WindowOptions, actions,
     div, prelude::*, px, rgb, size,
 };
-use gpui_platform::application;
+use gpui_ce_platform::application;
 
 actions!(example, [CloseWindow]);
 
@@ -99,6 +99,6 @@ fn main() {
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn start() {
-    gpui_platform::web_init();
+    gpui_ce_platform::web_init();
     run_example();
 }

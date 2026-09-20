@@ -10,7 +10,7 @@ use gpui::{
     SystemNotificationAction, SystemNotificationResponse, Window, WindowBounds, WindowOptions, div,
     prelude::*, px, rgb, size,
 };
-use gpui_platform::application;
+use gpui_ce_platform::application;
 
 const NOTIFICATION_TAG: &str = "gpui-system-notification-example";
 
@@ -150,6 +150,6 @@ fn main() {
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn start() {
-    gpui_platform::web_init();
+    gpui_ce_platform::web_init();
     run_example();
 }

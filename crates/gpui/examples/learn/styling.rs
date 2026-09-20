@@ -480,7 +480,7 @@ fn color_swatch(colors: &Colors, name: &'static str, color: Rgba) -> impl IntoEl
 }
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui_ce_platform::application().run(|cx: &mut App| {
         cx.activate(true);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([

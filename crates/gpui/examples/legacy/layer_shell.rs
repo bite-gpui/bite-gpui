@@ -59,7 +59,7 @@ mod example {
     }
 
     pub fn main() {
-        gpui_platform::application().run(|cx: &mut App| {
+        gpui_ce_platform::application().run(|cx: &mut App| {
             cx.open_window(
                 WindowOptions {
                     titlebar: None,

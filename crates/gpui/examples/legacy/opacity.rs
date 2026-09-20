@@ -10,7 +10,7 @@ use gpui::{
     App, AssetSource, Bounds, BoxShadow, ClickEvent, Context, SharedString, Task, Window,
     WindowBounds, WindowOptions, div, hsla, img, prelude::*, px, rgb, size, svg,
 };
-use gpui_platform::application;
+use gpui_ce_platform::application;
 
 struct Assets {
     base: PathBuf,
@@ -190,6 +190,6 @@ fn main() {
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn start() {
-    gpui_platform::web_init();
+    gpui_ce_platform::web_init();
     run_example();
 }

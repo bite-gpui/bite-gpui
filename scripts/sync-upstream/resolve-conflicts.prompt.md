@@ -5,14 +5,14 @@ monorepo (`zed-industries/zed`). Two groups:
 
 **Same relative path** (upstream dir == fork dir; dirs, not package names — packages are
 `gpui-ce` / `gpui_ce_*`): `crates/gpui`, `crates/gpui_linux`,
-`crates/gpui_macos`, `crates/gpui_macros`, `crates/gpui_platform`, `crates/gpui_shared_string`,
+`crates/gpui_macos`, `crates/gpui_macros`, `crates/gpui_shared_string`,
 `crates/gpui_tokio`, `crates/gpui_web`, `crates/gpui_wgpu`, `crates/gpui_windows`.
 
 **Vendored + renamed** (upstream dir → fork dir; dirs, not package names), formerly pulled as
 `zed-industries/zed` git deps but now vendored in-tree by the fork:
 `collections`→`gpui_collections`, `sum_tree`→`gpui_sum_tree`, `refineable`→`gpui_refineable`,
 `refineable/derive_refineable`→`gpui_derive_refineable`, `scheduler`→`gpui_scheduler`,
-`media`→`gpui_media`, `util`→`gpui_zed_util`, `gpui_util`→`gpui_ce_util`, `path`→`gpui_path`.
+`media`→`gpui_media`, `util`→`gpui_zed_util`, `gpui_util`→`gpui_ce_util`, `path`→`gpui_path`, `gpui_platform`→`gpui_ce_platform`.
 (Packaging is orthogonal: every fork package is `gpui_ce_*` — main crate `gpui-ce` with a hyphen —
 with `[lib] name` preserving the upstream crate name so `use` sites are unchanged.) The sync remaps upstream's
 content into these fork dirs, so a conflict here is upstream's version of the crate vs. the fork's

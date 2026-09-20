@@ -318,7 +318,7 @@ impl Render for HapticFeedbackExample {
 }
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui_ce_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(520.), px(520.)), cx);
         cx.open_window(
             WindowOptions {

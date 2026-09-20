@@ -154,9 +154,9 @@ fn run_example() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
     #[cfg(not(target_family = "wasm"))]
-    let app = gpui_platform::application();
+    let app = gpui_ce_platform::application();
     #[cfg(target_family = "wasm")]
-    let app = gpui_platform::application();
+    let app = gpui_ce_platform::application();
     app.with_assets(Assets {
         base: manifest_dir.join("examples/legacy"),
     })
@@ -214,6 +214,6 @@ fn main() {
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn start() {
-    gpui_platform::web_init();
+    gpui_ce_platform::web_init();
     run_example();
 }

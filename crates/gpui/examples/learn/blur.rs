@@ -290,7 +290,7 @@ impl Render for BlurExample {
 }
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui_ce_platform::application().run(|cx: &mut App| {
         cx.activate(true);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {

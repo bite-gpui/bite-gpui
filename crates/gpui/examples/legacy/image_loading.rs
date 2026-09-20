@@ -11,7 +11,7 @@ use gpui::{
     Resource, SharedString, Window, WindowBounds, WindowOptions, black, div, img, prelude::*,
     pulsating_between, px, red, size,
 };
-use gpui_platform::application;
+use gpui_ce_platform::application;
 
 struct Assets {}
 
@@ -230,6 +230,6 @@ fn main() {
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn start() {
-    gpui_platform::web_init();
+    gpui_ce_platform::web_init();
     run_example();
 }

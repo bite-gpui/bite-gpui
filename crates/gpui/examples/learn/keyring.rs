@@ -158,7 +158,7 @@ fn button(
 }
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui_ce_platform::application().run(|cx: &mut App| {
         cx.set_keyring_label("gpui-ce-keyring-example");
 
         let bounds = Bounds::centered(None, size(px(500.), px(360.)), cx);
