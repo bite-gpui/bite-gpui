@@ -15,6 +15,8 @@
 /// Upstream GPUI color types (`Hsla`, `Rgba`, `Background`, ...).
 pub mod color;
 mod geometry;
+mod input;
+mod keyboard;
 mod layout;
 mod math;
 mod scene;
@@ -25,6 +27,8 @@ mod lyon_bridge;
 
 pub use color::*;
 pub use geometry::*;
+pub use input::*;
+pub use keyboard::*;
 pub use layout::*;
 pub use math::*;
 pub use scene::*;
