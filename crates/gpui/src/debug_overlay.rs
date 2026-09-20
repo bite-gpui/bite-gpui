@@ -222,7 +222,7 @@ fn solid_quad(
         bounds,
         content_mask: *content_mask,
         background: color.into(),
-        border_color: transparent_black().into(),
+        border_color: transparent_black(),
         corner_radii: Corners::default(),
         border_widths: Edges::default(),
     }
