@@ -543,9 +543,6 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     }
 }
 
-#[doc(hidden)]
-pub type TimerResolutionGuard = gpui_util::Deferred<Box<dyn FnOnce() + Send>>;
-
 /// This type is public so that our test macro can generate and use it, but it should not
 /// be considered part of our public API.
 #[doc(hidden)]

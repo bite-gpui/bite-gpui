@@ -40,6 +40,7 @@ gpui_types.workspace = true
 gpui_util.workspace = true
 image.workspace = true
 parking_lot.workspace = true
+rand.workspace = true
 scheduler.workspace = true
 schemars.workspace = true
 seahash = "4.1"

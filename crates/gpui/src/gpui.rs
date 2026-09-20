@@ -44,8 +44,7 @@ pub mod profiler;
     feature = "test-support",
     feature = "bench-support"
 ))]
-#[expect(missing_docs)]
-pub mod queue;
+pub use gpui_platform::queue;
 mod shared_uri;
 mod spring;
 mod style;

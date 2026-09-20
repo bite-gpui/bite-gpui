@@ -7,7 +7,7 @@ use std::{
 
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 
-use crate::Priority;
+use scheduler::Priority;
 
 struct PriorityQueues<T> {
     high_priority: VecDeque<T>,
@@ -226,7 +226,7 @@ impl<T> PriorityQueueReceiver<T> {
     }
 
     /// Returns the number of queued elements across all priorities.
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         let queues = self.state.queues.lock();
         queues.high_priority.len() + queues.medium_priority.len() + queues.low_priority.len()
     }

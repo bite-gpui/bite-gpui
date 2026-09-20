@@ -44,6 +44,16 @@ mod platform;
 mod popup;
 mod profiler;
 mod prompt;
+#[cfg(any(
+    test,
+    target_os = "windows",
+    target_os = "linux",
+    target_family = "wasm",
+    feature = "test-support",
+    feature = "bench-support"
+))]
+#[expect(missing_docs)]
+pub mod queue;
 mod screen_capture;
 mod text_input;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
