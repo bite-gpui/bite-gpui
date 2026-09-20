@@ -1,5 +1,5 @@
 use crate::{
-    AssetRegistry, DevicePixels, IsZero, RenderImage, Result, SharedString, Size,
+    AssetRegistry, AssetSource, DevicePixels, IsZero, RenderImage, Result, SharedString, Size,
     swap_rgba_pa_to_bgra,
 };
 use image::Frame;
@@ -7,7 +7,6 @@ use resvg::tiny_skia::Pixmap;
 use skrifa::{FontRef, MetadataProvider};
 use smallvec::SmallVec;
 use std::{
-    hash::Hash,
     sync::{Arc, LazyLock, OnceLock},
 };
 
@@ -81,12 +80,9 @@ fn select_emoji_font(
 /// When rendering SVGs, we render them at twice the size to get a higher-quality result.
 pub const SMOOTH_SVG_SCALE_FACTOR: f32 = 2.;
 
-#[derive(Clone, PartialEq, Hash, Eq)]
-#[expect(missing_docs)]
-pub struct RenderSvgParams {
-    pub path: SharedString,
-    pub size: Size<DevicePixels>,
-}
+// `RenderSvgParams` moved down into `gpui_engine`; re-export it so this module keeps
+// providing the name it used to define.
+pub use gpui_engine::RenderSvgParams;
 
 #[derive(Clone)]
 /// A struct holding everything necessary to render SVGs.

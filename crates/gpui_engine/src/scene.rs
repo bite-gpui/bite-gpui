@@ -4,9 +4,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels,
-    Point, Radians, ScaledFilter, ScaledPixels, Size, bounds_tree::BoundsTree, point,
+use crate::{AtlasTextureId, AtlasTile, ScaledFilter, bounds_tree::BoundsTree};
+use gpui_types::{
+    Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels, Point, Radians, ScaledPixels,
+    Size, point,
 };
 use smallvec::SmallVec;
 
@@ -107,7 +108,8 @@ impl Scene {
         self.insert_primitive_with_surface_opacity(primitive.into(), None);
     }
 
-    pub(crate) fn insert_surface(&mut self, surface: PaintSurface, opacity: f32) {
+    /// Inserts a surface primitive with an associated opacity multiplier.
+    pub fn insert_surface(&mut self, surface: PaintSurface, opacity: f32) {
         self.insert_primitive_with_surface_opacity(Primitive::Surface(surface), Some(opacity));
     }
 
@@ -802,7 +804,7 @@ impl From<Shadow> for Primitive {
 
 /// A backdrop filter blurs (and may otherwise filter) the content already rendered behind
 /// `bounds`, compositing the result into a rounded rectangle — the frosted-glass effect.
-/// Emitted by [`crate::Window::paint_backdrop_filter`]; produces the CSS `backdrop-filter` effect.
+/// Emitted by `Window::paint_backdrop_filter`; produces the CSS `backdrop-filter` effect.
 #[derive(Default, Debug, Clone)]
 #[expect(missing_docs)]
 pub struct BackdropFilter {
@@ -1238,7 +1240,8 @@ impl PathVertex<Pixels> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AtlasTextureKind, DevicePixels, Point, ShaderBool, Size, SurfaceSource, TileId};
+    use crate::{AtlasTextureKind, SurfaceSource, TileId};
+    use gpui_types::{DevicePixels, Point, Size};
 
     fn sp(value: f32) -> ScaledPixels {
         ScaledPixels(value)

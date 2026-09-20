@@ -2,7 +2,8 @@
 //! so private fields are checked too, without exposing them to renderer implementations.
 
 use super::*;
-use crate::{AtlasTextureId, DevicePixels, Hsla, LinearColorStop, Size};
+use crate::AtlasTextureId;
+use gpui_types::{DevicePixels, Hsla, LinearColorStop, Size};
 
 #[doc(hidden)]
 pub struct SceneBufferLayout {

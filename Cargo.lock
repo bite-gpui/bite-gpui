@@ -2314,6 +2314,7 @@ dependencies = [
  "gpui_ce_sum_tree",
  "gpui_ce_types",
  "gpui_ce_util",
+ "gpui_engine",
  "gpui_types",
  "hdrhistogram",
  "heapless",
@@ -2780,6 +2781,24 @@ dependencies = [
  "walkdir",
  "which",
  "windows 0.62.2",
+]
+
+[[package]]
+name = "gpui_engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "core-video",
+ "etagere",
+ "gpui_ce_shared_string",
+ "gpui_ce_types",
+ "gpui_types",
+ "image",
+ "rand",
+ "schemars",
+ "serde",
+ "smallvec",
+ "windows 0.61.3",
 ]
 
 [[package]]

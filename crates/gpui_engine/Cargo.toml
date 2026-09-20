@@ -1,0 +1,47 @@
+[package]
+name = "gpui_engine"
+version = "0.1.0"
+publish.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_engine.rs"
+doctest = false
+
+[features]
+default = []
+# Forwarded from `gpui`/`gpui-ce`, which is where consumers turn these on.
+#
+# `screen-capture` and `custom-gpu` are read by `surface.rs`'s cfgs: without them
+# the signatures that `gpui`'s screen-capture stream and the wasm GPU path call
+# here would be compiled out.
+custom-gpu = []
+screen-capture = []
+test-support = []
+bench-support = ["test-support"]
+
+[dependencies]
+anyhow.workspace = true
+etagere.workspace = true
+gpui_ce_types.workspace = true
+gpui_shared_string.workspace = true
+gpui_types.workspace = true
+image.workspace = true
+schemars.workspace = true
+serde.workspace = true
+smallvec.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The macOS `SurfaceSource` payload.
+core-video.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# The D3D11 texture behind `WindowsScreenCaptureFrame`.
+windows-061.workspace = true

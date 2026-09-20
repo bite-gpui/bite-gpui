@@ -13,7 +13,6 @@ mod app;
 mod arena;
 mod asset_cache;
 mod assets;
-mod bounds_tree;
 /// The default colors used by GPUI.
 pub mod colors;
 #[cfg(feature = "profiler")]
@@ -47,7 +46,6 @@ pub mod profiler;
 ))]
 #[expect(missing_docs)]
 pub mod queue;
-mod scene;
 mod shared_uri;
 mod spring;
 mod style;
@@ -159,7 +157,6 @@ pub use profiler::*;
 #[cfg(any(target_os = "windows", target_os = "linux", target_family = "wasm"))]
 pub use queue::{PriorityQueueReceiver, PriorityQueueSender};
 pub use refineable::*;
-pub use scene::*;
 pub use shared_uri::*;
 use std::{any::Any, future::Future};
 pub use style::*;
@@ -173,6 +170,9 @@ use taffy::TaffyLayoutEngine;
 #[cfg(any(test, feature = "test-support"))]
 pub use test::*;
 pub use text_system::*;
+// Deliberately the last of the globs: the modules above re-export names it also carries, and a
+// glob placed before them makes their re-exports look unused.
+pub use gpui_engine::*;
 pub use transition::*;
 pub use util::{FutureExt, Timeout};
 pub use view::*;

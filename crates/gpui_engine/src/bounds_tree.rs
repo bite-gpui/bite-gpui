@@ -1,4 +1,4 @@
-use crate::{Bounds, Half};
+use gpui_types::{Bounds, Half};
 use std::{
     cmp,
     fmt::Debug,
@@ -403,7 +403,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Bounds, Point, Size};
+    use gpui_types::{Bounds, Point, Size};
     use rand::{Rng, SeedableRng};
 
     #[test]

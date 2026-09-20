@@ -1,5 +1,5 @@
 use crate::{
-    Bounds, DevicePixels, Hsla, Pixels, PlatformTextSystem, Point, Result, SharedString, Size,
+    Bounds, DevicePixels, Hsla, Pixels, PlatformTextSystem, Result, SharedString, Size,
     StrikethroughStyle, TextRenderingMode, UnderlineStyle, px,
 };
 use anyhow::{Context as _, anyhow};
@@ -32,10 +32,9 @@ pub use line::*;
 pub use line_layout::*;
 pub use line_wrapper::*;
 
-/// An opaque identifier for a specific font.
-#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
-#[repr(C)]
-pub struct FontId(pub usize);
+// `FontId` and `RenderGlyphParams` moved down into `gpui_engine`; re-export
+// them so this module keeps providing the names it used to define.
+pub use gpui_engine::{FontId, RenderGlyphParams};
 
 /// An opaque identifier for a specific font family.
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
@@ -1062,44 +1061,6 @@ impl TextRun {
         let mut this = self.clone();
         this.len = len;
         this
-    }
-}
-
-/// An identifier for a specific glyph, as returned by [`WindowTextSystem::layout_line`].
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-#[repr(C)]
-pub struct GlyphId(pub u32);
-
-/// Parameters for rendering a glyph, used as cache keys for raster bounds.
-///
-/// This struct identifies a specific glyph rendering configuration including
-/// font, size, subpixel positioning, and scale factor. It's used to look up
-/// cached raster bounds and sprite atlas entries.
-#[derive(Clone, Debug, PartialEq)]
-#[expect(missing_docs)]
-pub struct RenderGlyphParams {
-    pub font_id: FontId,
-    pub glyph_id: GlyphId,
-    pub font_size: Pixels,
-    pub subpixel_variant: Point<u8>,
-    pub scale_factor: f32,
-    pub is_emoji: bool,
-    pub subpixel_rendering: bool,
-    pub dilation: u8,
-}
-
-impl Eq for RenderGlyphParams {}
-
-impl Hash for RenderGlyphParams {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.font_id.0.hash(state);
-        self.glyph_id.0.hash(state);
-        self.font_size.0.to_bits().hash(state);
-        self.subpixel_variant.hash(state);
-        self.scale_factor.to_bits().hash(state);
-        self.is_emoji.hash(state);
-        self.subpixel_rendering.hash(state);
-        self.dilation.hash(state);
     }
 }
 

@@ -1,99 +1,13 @@
-#[cfg(target_os = "windows")]
-use crate::WindowsScreenCaptureFrame;
 use crate::{
-    App, Bounds, DevicePixels, Element, ElementId, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, ObjectFit, Pixels, Size, Style, StyleRefinement, Styled, Window,
+    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
+    ObjectFit, Pixels, Style, StyleRefinement, Styled, Window,
 };
-#[cfg(target_os = "macos")]
-use core_video::pixel_buffer::CVPixelBuffer;
 use refineable::Refineable;
 
-/// A source of a surface's content.
-#[derive(Clone)]
-pub enum SurfaceSource {
-    /// A macOS image buffer from CoreVideo
-    #[cfg(target_os = "macos")]
-    Surface(CVPixelBuffer),
-    /// A GPU texture handle (type-erased to avoid depending on wgpu)
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "freebsd",
-        all(target_family = "wasm", feature = "custom-gpu")
-    ))]
-    Texture {
-        /// The GPU texture, type-erased (expected to be `Arc<wgpu::Texture>`)
-        #[cfg(not(target_family = "wasm"))]
-        texture: std::sync::Arc<dyn std::any::Any + Send + Sync>,
-        /// The GPU texture, type-erased (expected to be `Arc<wgpu::Texture>`).
-        ///
-        /// WGPU handles are intentionally thread-local in browser builds.
-        #[cfg(target_family = "wasm")]
-        texture: std::sync::Arc<dyn std::any::Any>,
-        /// Dimensions of the texture in device pixels
-        size: Size<DevicePixels>,
-    },
-    /// A native Windows Graphics Capture texture.
-    #[cfg(target_os = "windows")]
-    WindowsCapture(WindowsScreenCaptureFrame),
-    /// A placeholder for platforms that cannot import native surfaces.
-    #[doc(hidden)]
-    Unsupported(Size<DevicePixels>),
-}
-
-impl std::fmt::Debug for SurfaceSource {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            #[cfg(target_os = "macos")]
-            SurfaceSource::Surface(ref buf) => _f.debug_tuple("Surface").field(buf).finish(),
-            #[cfg(any(
-                target_os = "linux",
-                target_os = "freebsd",
-                all(target_family = "wasm", feature = "custom-gpu")
-            ))]
-            SurfaceSource::Texture { size, .. } => _f
-                .debug_struct("Texture")
-                .field("size", &size)
-                .finish_non_exhaustive(),
-            #[cfg(target_os = "windows")]
-            SurfaceSource::WindowsCapture(ref frame) => frame.fmt(_f),
-            SurfaceSource::Unsupported(size) => _f.debug_tuple("Unsupported").field(&size).finish(),
-        }
-    }
-}
-
-impl SurfaceSource {
-    fn size(&self) -> Size<DevicePixels> {
-        match self {
-            #[cfg(target_os = "macos")]
-            SurfaceSource::Surface(buffer) => {
-                crate::size(buffer.get_width().into(), buffer.get_height().into())
-            }
-            #[cfg(any(
-                target_os = "linux",
-                target_os = "freebsd",
-                all(target_family = "wasm", feature = "custom-gpu")
-            ))]
-            SurfaceSource::Texture { size, .. } => *size,
-            #[cfg(target_os = "windows")]
-            SurfaceSource::WindowsCapture(frame) => frame.size(),
-            SurfaceSource::Unsupported(size) => *size,
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl From<CVPixelBuffer> for SurfaceSource {
-    fn from(value: CVPixelBuffer) -> Self {
-        SurfaceSource::Surface(value)
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl From<WindowsScreenCaptureFrame> for SurfaceSource {
-    fn from(value: WindowsScreenCaptureFrame) -> Self {
-        SurfaceSource::WindowsCapture(value)
-    }
-}
+// `SurfaceSource` (and the native handle types its variants carry) moved down into
+// `gpui_engine`, where the `PaintSurface` it feeds lives; re-export it so this module keeps
+// providing the name it used to define.
+pub use gpui_engine::SurfaceSource;
 
 #[cfg(all(target_os = "windows", feature = "screen-capture"))]
 impl From<crate::ScreenCaptureFrame> for SurfaceSource {
