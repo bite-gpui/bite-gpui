@@ -1,0 +1,451 @@
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+use anyhow::{Result, bail};
+use gpui_types::{Edges, Pixels, Size, px, size};
+
+/// Which part of the window to resize
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeEdge {
+    /// The top edge
+    Top,
+    /// The top right corner
+    TopRight,
+    /// The right edge
+    Right,
+    /// The bottom right corner
+    BottomRight,
+    /// The bottom edge
+    Bottom,
+    /// The bottom left corner
+    BottomLeft,
+    /// The left edge
+    Left,
+    /// The top left corner
+    TopLeft,
+}
+
+/// A type to describe the appearance of a window
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
+pub enum WindowDecorations {
+    #[default]
+    /// Server side decorations
+    Server,
+    /// Client side decorations
+    Client,
+}
+
+/// A type to describe how this window is currently configured
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
+pub enum Decorations {
+    /// The window is configured to use server side decorations
+    #[default]
+    Server,
+    /// The window is configured to use client side decorations
+    Client {
+        /// The edge tiling state
+        tiling: Tiling,
+    },
+}
+
+/// What window controls this platform supports
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct WindowControls {
+    /// Whether this platform supports fullscreen
+    pub fullscreen: bool,
+    /// Whether this platform supports maximize
+    pub maximize: bool,
+    /// Whether this platform supports minimize
+    pub minimize: bool,
+    /// Whether this platform supports a window menu
+    pub window_menu: bool,
+}
+
+impl Default for WindowControls {
+    fn default() -> Self {
+        // Assume that we can do anything, unless told otherwise
+        Self {
+            fullscreen: true,
+            maximize: true,
+            minimize: true,
+            window_menu: true,
+        }
+    }
+}
+
+/// A window control button type used in [`WindowButtonLayout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowButton {
+    /// The minimize button
+    Minimize,
+    /// The maximize button
+    Maximize,
+    /// The close button
+    Close,
+}
+
+impl WindowButton {
+    /// Returns a stable element ID for rendering this button.
+    pub fn id(&self) -> &'static str {
+        match self {
+            WindowButton::Minimize => "minimize",
+            WindowButton::Maximize => "maximize",
+            WindowButton::Close => "close",
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    fn index(&self) -> usize {
+        match self {
+            WindowButton::Minimize => 0,
+            WindowButton::Maximize => 1,
+            WindowButton::Close => 2,
+        }
+    }
+}
+
+/// Maximum number of [`WindowButton`]s per side in the titlebar.
+pub const MAX_BUTTONS_PER_SIDE: usize = 3;
+
+/// Describes which [`WindowButton`]s appear on each side of the titlebar.
+///
+/// On Linux, this is read from the desktop environment's configuration
+/// (e.g. GNOME's `gtk-decoration-layout` gsetting) via [`WindowButtonLayout::parse`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowButtonLayout {
+    /// Buttons on the left side of the titlebar.
+    pub left: [Option<WindowButton>; MAX_BUTTONS_PER_SIDE],
+    /// Buttons on the right side of the titlebar.
+    pub right: [Option<WindowButton>; MAX_BUTTONS_PER_SIDE],
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+impl WindowButtonLayout {
+    /// Returns Zed's built-in fallback button layout for Linux titlebars.
+    pub fn linux_default() -> Self {
+        Self {
+            left: [None; MAX_BUTTONS_PER_SIDE],
+            right: [
+                Some(WindowButton::Minimize),
+                Some(WindowButton::Maximize),
+                Some(WindowButton::Close),
+            ],
+        }
+    }
+
+    /// Parses a GNOME-style `button-layout` string (e.g. `"close,minimize:maximize"`).
+    pub fn parse(layout_string: &str) -> Result<Self> {
+        fn parse_side(
+            s: &str,
+            seen_buttons: &mut [bool; MAX_BUTTONS_PER_SIDE],
+            unrecognized: &mut Vec<String>,
+        ) -> [Option<WindowButton>; MAX_BUTTONS_PER_SIDE] {
+            let mut result = [None; MAX_BUTTONS_PER_SIDE];
+            let mut i = 0;
+            for name in s.split(',') {
+                let trimmed = name.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let button = match trimmed {
+                    "minimize" => Some(WindowButton::Minimize),
+                    "maximize" => Some(WindowButton::Maximize),
+                    "close" => Some(WindowButton::Close),
+                    other => {
+                        unrecognized.push(other.to_string());
+                        None
+                    }
+                };
+                if let Some(button) = button {
+                    if seen_buttons[button.index()] {
+                        continue;
+                    }
+                    if let Some(slot) = result.get_mut(i) {
+                        *slot = Some(button);
+                        seen_buttons[button.index()] = true;
+                        i += 1;
+                    }
+                }
+            }
+            result
+        }
+
+        let (left_str, right_str) = layout_string.split_once(':').unwrap_or(("", layout_string));
+        let mut unrecognized = Vec::new();
+        let mut seen_buttons = [false; MAX_BUTTONS_PER_SIDE];
+        let layout = Self {
+            left: parse_side(left_str, &mut seen_buttons, &mut unrecognized),
+            right: parse_side(right_str, &mut seen_buttons, &mut unrecognized),
+        };
+
+        if !unrecognized.is_empty()
+            && layout.left.iter().all(Option::is_none)
+            && layout.right.iter().all(Option::is_none)
+        {
+            bail!(
+                "button layout string {:?} contains no valid buttons (unrecognized: {})",
+                layout_string,
+                unrecognized.join(", ")
+            );
+        }
+
+        Ok(layout)
+    }
+
+    /// Formats the layout back into a GNOME-style `button-layout` string.
+    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    pub fn format(&self) -> String {
+        fn format_side(buttons: &[Option<WindowButton>; MAX_BUTTONS_PER_SIDE]) -> String {
+            buttons
+                .iter()
+                .flatten()
+                .map(|button| match button {
+                    WindowButton::Minimize => "minimize",
+                    WindowButton::Maximize => "maximize",
+                    WindowButton::Close => "close",
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+
+        format!("{}:{}", format_side(&self.left), format_side(&self.right))
+    }
+}
+
+/// A type to describe which sides of the window are currently tiled in some way
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
+pub struct Tiling {
+    /// Whether the top edge is tiled
+    pub top: bool,
+    /// Whether the left edge is tiled
+    pub left: bool,
+    /// Whether the right edge is tiled
+    pub right: bool,
+    /// Whether the bottom edge is tiled
+    pub bottom: bool,
+}
+
+impl Tiling {
+    /// Initializes a [`Tiling`] type with all sides tiled
+    pub fn tiled() -> Self {
+        Self {
+            top: true,
+            left: true,
+            right: true,
+            bottom: true,
+        }
+    }
+
+    /// Whether any edge is tiled
+    pub fn is_tiled(&self) -> bool {
+        self.top || self.left || self.right || self.bottom
+    }
+}
+
+/// Callbacks for the accessibility adapter.
+pub struct A11yCallbacks {
+    /// Called when the adapter is activated (a screen reader connects).
+    pub activation: Box<dyn Fn() -> Option<accesskit::TreeUpdate> + Send + 'static>,
+    /// Called when an action is requested by the screen reader.
+    pub action: Box<dyn Fn(accesskit::ActionRequest) + Send + 'static>,
+    /// Called when the adapter is deactivated (screen reader disconnects).
+    pub deactivation: Box<dyn Fn() + Send + 'static>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+#[expect(missing_docs)]
+pub struct RequestFrameOptions {
+    /// Whether a presentation is required.
+    pub require_presentation: bool,
+    /// Force refresh of all rendering states when true.
+    pub force_render: bool,
+}
+
+/// Regions of a window that are obscured or reserved by the system.
+///
+/// Mobile applications often share space in their window with system-specific
+/// geometry, from keyboards to camera notches. In GPUI, all this is abstracted
+/// into a single "inset" which should be overlaid on the window's bounds.
+/// It is up to the application develop to determine how to handle these cases.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WindowInsets {
+    /// Regions covered by system UI or hardware: status bar, display
+    /// cutouts/notch, home indicator, navigation bars.
+    /// (iOS: `safeAreaInsets`. Android: `WindowInsets` of types
+    /// `systemBars() | displayCutout()`.)
+    pub safe_area: Edges<Pixels>,
+    /// The region covered by the keyboard, when present.
+    /// (iOS: derived from `keyboardWillShow`/frame-change notifications.
+    /// Android: `WindowInsets.Type.ime()`.)
+    pub ime: Edges<Pixels>,
+}
+
+impl WindowInsets {
+    /// The combined inset content should avoid.
+    pub fn effective(&self) -> Edges<Pixels> {
+        Edges {
+            top: self.safe_area.top.max(self.ime.top),
+            right: self.safe_area.right.max(self.ime.right),
+            bottom: self.safe_area.bottom.max(self.ime.bottom),
+            left: self.safe_area.left.max(self.ime.left),
+        }
+    }
+}
+
+/// A change in the state of the focused text input.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum TextInputStateChange {
+    /// An editable element gained focus.
+    FocusGained,
+    /// The focused editable element lost focus.
+    FocusLost,
+    /// The selection or caret moved
+    SelectionChanged,
+    /// The document content changed outside of platform-initiated edits.
+    ContentChanged,
+}
+
+/// The appearance of the window, as defined by the operating system.
+///
+/// On macOS, this corresponds to named [`NSAppearance`](https://developer.apple.com/documentation/appkit/nsappearance)
+/// values.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum WindowAppearance {
+    /// A light appearance.
+    ///
+    /// On macOS, this corresponds to the `aqua` appearance.
+    #[default]
+    Light,
+
+    /// A light appearance with vibrant colors.
+    ///
+    /// On macOS, this corresponds to the `NSAppearanceNameVibrantLight` appearance.
+    VibrantLight,
+
+    /// A dark appearance.
+    ///
+    /// On macOS, this corresponds to the `darkAqua` appearance.
+    Dark,
+
+    /// A dark appearance with vibrant colors.
+    ///
+    /// On macOS, this corresponds to the `NSAppearanceNameVibrantDark` appearance.
+    VibrantDark,
+}
+
+/// The appearance of the background of the window itself, when there is
+/// no content or the content is transparent.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub enum WindowBackgroundAppearance {
+    /// Opaque.
+    ///
+    /// This lets the window manager know that content behind this
+    /// window does not need to be drawn.
+    ///
+    /// Actual color depends on the system and themes should define a fully
+    /// opaque background color instead.
+    #[default]
+    Opaque,
+    /// Plain alpha transparency.
+    Transparent,
+    /// Transparency, but the contents behind the window are blurred.
+    ///
+    /// Not always supported.
+    Blurred,
+    /// The Mica backdrop material, supported on Windows 11.
+    MicaBackdrop,
+    /// The Mica Alt backdrop material, supported on Windows 11.
+    MicaAltBackdrop,
+}
+
+/// The text rendering mode to use for drawing glyphs.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum TextRenderingMode {
+    /// Use the platform's default text rendering mode.
+    #[default]
+    PlatformDefault,
+    /// Use subpixel (ClearType-style) text rendering.
+    Subpixel,
+    /// Use grayscale text rendering.
+    Grayscale,
+}
+
+/// Default window size used when no explicit size is provided.
+pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(1095.));
+
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+#[allow(missing_docs)]
+pub struct TestAtlasState {
+    next_id: u32,
+    tiles: collections::HashMap<gpui_engine::AtlasKey, gpui_engine::AtlasTile>,
+}
+
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+#[allow(missing_docs)]
+pub struct TestAtlas(parking_lot::Mutex<TestAtlasState>);
+
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+impl TestAtlas {
+    #[allow(missing_docs)]
+    pub fn new() -> Self {
+        TestAtlas(parking_lot::Mutex::new(TestAtlasState {
+            next_id: 0,
+            tiles: collections::HashMap::default(),
+        }))
+    }
+}
+
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+impl gpui_engine::PlatformAtlas for TestAtlas {
+    fn get_or_insert_with<'a>(
+        &self,
+        key: &gpui_engine::AtlasKey,
+        build: &mut dyn FnMut() -> anyhow::Result<
+            Option<(
+                gpui_types::Size<gpui_types::DevicePixels>,
+                std::borrow::Cow<'a, [u8]>,
+            )>,
+        >,
+    ) -> anyhow::Result<Option<gpui_engine::AtlasTile>> {
+        let mut state = self.0.lock();
+        if let Some(&tile) = state.tiles.get(key) {
+            return Ok(Some(tile));
+        }
+        drop(state);
+
+        let Some((size, _)) = build()? else {
+            return Ok(None);
+        };
+
+        let mut state = self.0.lock();
+        state.next_id += 1;
+        let texture_id = state.next_id;
+        state.next_id += 1;
+        let tile_id = state.next_id;
+
+        state.tiles.insert(
+            key.clone(),
+            gpui_engine::AtlasTile {
+                texture_id: gpui_engine::AtlasTextureId {
+                    index: texture_id,
+                    kind: gpui_engine::AtlasTextureKind::Monochrome,
+                },
+                tile_id: gpui_engine::TileId(tile_id),
+                padding: 0,
+                bounds: gpui_types::Bounds {
+                    origin: gpui_types::Point::default(),
+                    size,
+                },
+            },
+        );
+
+        Ok(Some(state.tiles[key]))
+    }
+
+    fn remove(&self, key: &gpui_engine::AtlasKey) {
+        let mut state = self.0.lock();
+        state.tiles.remove(key);
+    }
+
+    fn contains(&self, key: &gpui_engine::AtlasKey) -> bool {
+        self.0.lock().tiles.contains_key(key)
+    }
+}

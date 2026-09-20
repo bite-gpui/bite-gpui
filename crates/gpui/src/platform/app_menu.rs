@@ -1,4 +1,4 @@
-use crate::{Action, App, Platform, SharedString};
+use crate::{Action, App, OsAction, Platform, SharedString};
 
 /// A menu of the application, either a main menu or a submenu
 pub struct Menu {
@@ -303,30 +303,6 @@ impl Clone for OwnedMenuItem {
 // TODO: As part of the global selections refactor, these should
 // be moved to GPUI-provided actions that make this association
 // without leaking the platform details to GPUI users
-
-/// OS actions are actions that are recognized by the operating system
-/// This allows the operating system to provide specialized behavior for
-/// these actions
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub enum OsAction {
-    /// The 'cut' action
-    Cut,
-
-    /// The 'copy' action
-    Copy,
-
-    /// The 'paste' action
-    Paste,
-
-    /// The 'select all' action
-    SelectAll,
-
-    /// The 'undo' action
-    Undo,
-
-    /// The 'redo' action
-    Redo,
-}
 
 pub(crate) fn init_app_menus(platform: &dyn Platform, cx: &App) {
     platform.on_will_open_app_menu(Box::new({

@@ -2315,6 +2315,7 @@ dependencies = [
  "gpui_ce_types",
  "gpui_ce_util",
  "gpui_engine",
+ "gpui_platform",
  "gpui_types",
  "hdrhistogram",
  "heapless",
@@ -2799,6 +2800,33 @@ dependencies = [
  "serde",
  "smallvec",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "gpui_platform"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "anyhow",
+ "async-task",
+ "bitflags 2.13.1",
+ "core-video",
+ "futures",
+ "gpui_ce_collections",
+ "gpui_ce_scheduler",
+ "gpui_ce_shared_string",
+ "gpui_ce_util",
+ "gpui_engine",
+ "gpui_types",
+ "image",
+ "parking_lot",
+ "schemars",
+ "seahash",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "thiserror 2.0.20",
+ "uuid",
 ]
 
 [[package]]

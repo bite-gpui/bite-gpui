@@ -78,8 +78,9 @@ use crate::util::{
 };
 pub use prompts::*;
 
-/// Default window size used when no explicit size is provided.
-pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(1095.));
+// `DEFAULT_WINDOW_SIZE` moved down into `gpui_platform`. Re-exported so
+// `crate::DEFAULT_WINDOW_SIZE` and `gpui::DEFAULT_WINDOW_SIZE` keep resolving.
+pub use gpui_platform::DEFAULT_WINDOW_SIZE;
 
 /// A 6:5 aspect ratio minimum window size to be used for functional,
 /// additional-to-main-Zed windows, like the settings and rules library windows.

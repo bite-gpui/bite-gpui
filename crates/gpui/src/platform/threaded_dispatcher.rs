@@ -11,8 +11,7 @@ use crate::{
     PlatformDispatcher, Priority, RunnableVariant, profiler,
     queue::{PriorityQueueReceiver, PriorityQueueSender},
 };
-
-const MIN_THREADS: usize = 2;
+use gpui_platform::{IdleTracker, MIN_THREADS, TimerEntry, TimerQueue, TimerQueueState};
 
 /// A multithreaded [`PlatformDispatcher`] for tests and benchmarks.
 ///
@@ -32,83 +31,6 @@ pub struct ThreadedDispatcher {
     timers: Arc<TimerQueue>,
     idle: Arc<IdleTracker>,
     main_thread_id: thread::ThreadId,
-}
-
-/// Tracks how many background and timer runnables are queued or running so
-/// [`ThreadedDispatcher::run_until_idle`] knows when to stop waiting.
-#[derive(Default)]
-struct IdleTracker {
-    inflight: Mutex<usize>,
-    condvar: Condvar,
-}
-
-impl IdleTracker {
-    fn increment(&self) {
-        *self.inflight.lock() += 1;
-    }
-
-    fn decrement(&self) {
-        let mut inflight = self.inflight.lock();
-        *inflight -= 1;
-        if *inflight == 0 {
-            self.condvar.notify_all();
-        }
-    }
-
-    /// Returns a guard that decrements the in-flight count when dropped, so
-    /// the count stays correct even if the runnable being executed panics.
-    fn decrement_on_drop(&self) -> impl Drop + '_ {
-        gpui_util::defer(|| self.decrement())
-    }
-
-    /// Notifies waiters while holding the in-flight lock. `run_until_idle`
-    /// re-checks its wake conditions under this lock before waiting, so the
-    /// notification can't slip between its check and its wait and be lost.
-    fn notify_under_lock(&self) {
-        let _inflight = self.inflight.lock();
-        self.condvar.notify_all();
-    }
-}
-
-struct TimerQueue {
-    state: Mutex<TimerQueueState>,
-    condvar: Condvar,
-}
-
-struct TimerQueueState {
-    heap: BinaryHeap<TimerEntry>,
-    next_seq: u64,
-}
-
-struct TimerEntry {
-    due: Instant,
-    seq: u64,
-    runnable: RunnableVariant,
-}
-
-impl PartialEq for TimerEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.due == other.due && self.seq == other.seq
-    }
-}
-
-impl Eq for TimerEntry {}
-
-impl PartialOrd for TimerEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for TimerEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reversed so that the entry with the earliest due time (breaking ties
-        // by insertion order) is at the top of the max-heap.
-        other
-            .due
-            .cmp(&self.due)
-            .then_with(|| other.seq.cmp(&self.seq))
-    }
 }
 
 impl Default for ThreadedDispatcher {

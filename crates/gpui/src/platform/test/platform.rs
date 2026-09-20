@@ -7,12 +7,13 @@ use crate::{
     DummyKeyboardMapper, ForegroundExecutor, Keymap, Platform, PlatformDisplay,
     PlatformHeadlessRenderer, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
     PromptButton, ScreenCaptureFrame, ScreenCaptureSource, ScreenCaptureStream, SharedString,
-    SourceMetadata, SystemNotification, SystemNotificationResponse, Task, TestDisplay, TestWindow,
-    ThermalState, WindowAppearance, WindowParams, size,
+    SourceMetadata, SystemNotification, SystemNotificationResponse, Task, TestDisplay,
+    TestKeyboardLayout, TestSystemNotifications, TestWindow, ThermalState, WindowAppearance,
+    WindowParams, size,
 };
-use anyhow::Result;
 #[cfg(any(test, feature = "test-support"))]
-use collections::VecDeque;
+use crate::{TestPrompt, TestPrompts};
+use anyhow::Result;
 use futures::channel::oneshot;
 use parking_lot::Mutex;
 use std::{
@@ -81,34 +82,6 @@ impl ScreenCaptureStream for TestScreenCaptureStream {
     fn metadata(&self) -> Result<SourceMetadata> {
         TestScreenCaptureSource {}.metadata()
     }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-struct TestPrompt {
-    msg: String,
-    detail: Option<String>,
-    answers: Vec<String>,
-    tx: oneshot::Sender<usize>,
-}
-
-#[derive(Default)]
-pub(crate) struct TestSystemNotifications {
-    pub(crate) app_identity: Option<(SharedString, SharedString)>,
-    pub(crate) shown: Vec<SystemNotification>,
-    pub(crate) delivered: Vec<SystemNotification>,
-    pub(crate) dismissed: Vec<SharedString>,
-    response_callback: Option<Box<dyn FnMut(SystemNotificationResponse)>>,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Default)]
-pub(crate) struct TestPrompts {
-    multiple_choice: VecDeque<TestPrompt>,
-    new_path: VecDeque<(PathBuf, oneshot::Sender<Result<Option<PathBuf>>>)>,
-    paths: VecDeque<(
-        PathPromptOptions,
-        oneshot::Sender<Result<Option<Vec<PathBuf>>>>,
-    )>,
 }
 
 impl TestPlatform {
@@ -660,17 +633,5 @@ impl TestScreenCaptureSource {
     #[cfg(any(test, feature = "test-support"))]
     pub fn new() -> Self {
         Self {}
-    }
-}
-
-struct TestKeyboardLayout;
-
-impl PlatformKeyboardLayout for TestKeyboardLayout {
-    fn id(&self) -> &str {
-        "zed.keyboard.example"
-    }
-
-    fn name(&self) -> &str {
-        "zed.keyboard.example"
     }
 }

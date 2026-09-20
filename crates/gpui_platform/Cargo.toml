@@ -1,0 +1,58 @@
+[package]
+name = "gpui_platform"
+version = "0.1.0"
+publish.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_platform.rs"
+doctest = false
+
+[features]
+default = []
+# Forwarded from `gpui`/`gpui-ce`, which is where consumers turn these on.
+#
+# `test-support`/`bench-support` gate the test doubles (`TestAtlas`, `TestPrompts`,
+# `TestKeyboardLayout`, `TestDisplay`, `TestSystemNotifications`) that `gpui`'s own
+# test modules consume; `wayland`/`x11` select `guess_compositor`'s probe and the
+# `layer_shell` module; `screen-capture` selects the native
+# `PlatformScreenCaptureFrame` alias.
+test-support = ["gpui_engine/test-support"]
+bench-support = ["test-support", "gpui_engine/bench-support"]
+wayland = []
+x11 = []
+screen-capture = []
+
+[dependencies]
+accesskit.workspace = true
+anyhow.workspace = true
+async-task.workspace = true
+bitflags.workspace = true
+collections.workspace = true
+futures.workspace = true
+gpui_engine.workspace = true
+gpui_shared_string.workspace = true
+gpui_types.workspace = true
+gpui_util.workspace = true
+image.workspace = true
+parking_lot.workspace = true
+scheduler.workspace = true
+schemars.workspace = true
+seahash = "4.1"
+serde.workspace = true
+serde_json.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-video.workspace = true
+
+[dev-dependencies]
+# `gpui_engine` gates `PlatformAtlas::contains` behind its own `test-support` feature, which
+# `cfg(test)` in this crate cannot turn on.
+gpui_engine = { workspace = true, features = ["test-support"] }

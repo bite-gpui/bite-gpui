@@ -133,9 +133,9 @@ macro_rules! bench_main {
         criterion::criterion_main!($($tokens)*);
     };
 }
+pub use gpui_ce_types::*;
 pub use gpui_shared_string::*;
 pub use gpui_types::*;
-pub use gpui_ce_types::*;
 
 // `gpui_types` and `gpui_ce_types` both name `Shadow`: upstream's inset flag is a
 // `u32`, this fork's is a `ShaderBool`. An explicit re-export shadows the globs,
@@ -173,6 +173,9 @@ pub use text_system::*;
 // Deliberately the last of the globs: the modules above re-export names it also carries, and a
 // glob placed before them makes their re-exports look unused.
 pub use gpui_engine::*;
+// Placed after `gpui_engine` for the same reason: `gpui_platform` also re-exports the
+// `gpui_types`/`gpui_shared_string` names the modules above carry.
+pub use gpui_platform::*;
 pub use transition::*;
 pub use util::{FutureExt, Timeout};
 pub use view::*;

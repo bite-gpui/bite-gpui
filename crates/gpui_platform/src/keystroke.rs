@@ -4,7 +4,7 @@
 
 pub use gpui_types::{Capslock, KeybindingKeystroke, Keystroke, Modifiers};
 
-use crate::PlatformKeyboardMapper;
+use crate::keyboard::PlatformKeyboardMapper;
 
 /// Compatibility shim for `KeybindingKeystroke::new_with_mapper`.
 ///

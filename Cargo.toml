@@ -15,6 +15,7 @@ members = [
   "./crates/gpui_types/",
   "./crates/gpui_ce_types/",
   "./crates/gpui_engine/",
+  "./crates/gpui_platform/",
   "./crates/gpui_elements/",
   "./crates/gpui_collections/",
   "./crates/gpui_refineable/",
@@ -252,6 +253,7 @@ gpui_shared_string = { path = "./crates/gpui_shared_string/", version = "0.1.0",
 gpui_types = { path = "./crates/gpui_types/", version = "0.1.0" }
 gpui_ce_types = { path = "./crates/gpui_ce_types/", version = "0.1.0" }
 gpui_engine = { path = "./crates/gpui_engine/", version = "0.1.0" }
+gpui_platform = { path = "./crates/gpui_platform/", version = "0.1.0" }
 gpui_tokio = { path = "./crates/gpui_tokio/", version = "0.1.0", package = "gpui_ce_tokio" }
 
 [workspace.dependencies.windows]

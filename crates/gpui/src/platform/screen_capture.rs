@@ -1,12 +1,13 @@
 //! Cross-platform screen capture source discovery and stream adaptation.
 
-use crate::{
-    ForegroundExecutor, ScreenCaptureFrame, ScreenCaptureSource, ScreenCaptureStream,
-    SourceMetadata,
-};
+use crate::{ForegroundExecutor, ScreenCaptureSource};
 use anyhow::Result;
 use futures::channel::oneshot;
 use std::rc::Rc;
+
+// The capture value types moved down into `gpui_platform`; re-exported so the
+// `crate::platform::screen_capture::…` paths keep resolving.
+pub use gpui_platform::{ScreenCaptureFrame, ScreenCaptureStream, SourceMetadata};
 
 #[path = "screen_capture/windows.rs"]
 mod platform;

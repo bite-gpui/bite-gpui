@@ -1,6 +1,6 @@
 use collections::HashMap;
 
-use crate::{KeybindingKeystroke, Keystroke};
+use gpui_types::{KeybindingKeystroke, Keystroke};
 
 /// A trait for platform-specific keyboard layouts
 pub trait PlatformKeyboardLayout {
@@ -37,5 +37,20 @@ impl PlatformKeyboardMapper for DummyKeyboardMapper {
 
     fn get_key_equivalents(&self) -> Option<&HashMap<char, char>> {
         None
+    }
+}
+
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+#[allow(missing_docs)]
+pub struct TestKeyboardLayout;
+
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+impl PlatformKeyboardLayout for TestKeyboardLayout {
+    fn id(&self) -> &str {
+        "zed.keyboard.example"
+    }
+
+    fn name(&self) -> &str {
+        "zed.keyboard.example"
     }
 }

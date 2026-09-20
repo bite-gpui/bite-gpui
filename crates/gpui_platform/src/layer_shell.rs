@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use thiserror::Error;
 
-use crate::Pixels;
+use gpui_types::Pixels;
 
 /// The layer the surface is rendered on. Multiple surfaces can share a layer, and ordering within
 /// a single layer is undefined.
