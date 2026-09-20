@@ -26,13 +26,16 @@ bench-support = ["test-support"]
 
 [dependencies]
 anyhow.workspace = true
+derive_more.workspace = true
 etagere.workspace = true
 gpui_ce_types.workspace = true
 gpui_shared_string.workspace = true
 gpui_types.workspace = true
 image.workspace = true
+log.workspace = true
 schemars.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 smallvec.workspace = true
 
 [dev-dependencies]

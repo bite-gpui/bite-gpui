@@ -2790,14 +2790,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "core-video",
+ "derive_more",
  "etagere",
  "gpui_ce_shared_string",
  "gpui_ce_types",
  "gpui_types",
  "image",
+ "log",
  "rand",
  "schemars",
  "serde",
+ "serde_json",
  "smallvec",
  "windows 0.61.3",
 ]

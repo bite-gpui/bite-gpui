@@ -1,42 +1,15 @@
 use crate::{
-    App, Bounds, DevicePixels, Half, Hsla, LineLayout, Pixels, Point, RenderGlyphParams, Result,
-    SharedString, StrikethroughStyle, TextAlign, UnderlineStyle, Window, WrapBoundary,
-    WrappedLineLayout, black, fill, point, px, size,
+    App, Bounds, Half, Hsla, LineLayout, Pixels, Point, Result, SharedString, StrikethroughStyle,
+    TextAlign, UnderlineStyle, Window, WrapBoundary, WrappedLineLayout, black, fill, point, px,
+    size,
 };
 use derive_more::{Deref, DerefMut};
 use smallvec::SmallVec;
 use std::sync::Arc;
 
-/// Pre-computed glyph data for efficient painting without per-glyph cache lookups.
-///
-/// This is produced by `ShapedLine::compute_glyph_raster_data` during prepaint
-/// and consumed by `ShapedLine::paint_with_raster_data` during paint.
-#[derive(Clone, Debug)]
-pub struct GlyphRasterData {
-    /// The raster bounds for each glyph, in paint order.
-    pub bounds: Vec<Bounds<DevicePixels>>,
-    /// The render params for each glyph (needed for sprite atlas lookup).
-    pub params: Vec<RenderGlyphParams>,
-}
-
-/// Set the text decoration for a run of text.
-#[derive(Debug, Clone)]
-pub struct DecorationRun {
-    /// The length of the run in utf-8 bytes.
-    pub len: u32,
-
-    /// The color for this run
-    pub color: Hsla,
-
-    /// The background color for this run
-    pub background_color: Option<Hsla>,
-
-    /// The underline style for this run
-    pub underline: Option<UnderlineStyle>,
-
-    /// The strikethrough style for this run
-    pub strikethrough: Option<StrikethroughStyle>,
-}
+// `DecorationRun` and `GlyphRasterData` moved down into `gpui_engine`; re-export
+// them so this module keeps providing the names it used to define.
+pub use gpui_engine::{DecorationRun, GlyphRasterData};
 
 /// A line of text that has been shaped and decorated.
 #[derive(Clone, Default, Debug, Deref, DerefMut)]

@@ -1,4 +1,4 @@
-use crate::{FontId, GlyphId, Pixels, PlatformTextSystem, Point, SharedString, Size, point, px};
+use crate::{FontId, Pixels, PlatformTextSystem, Point, SharedString, Size, point, px};
 use collections::FxHashMap;
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use smallvec::SmallVec;
@@ -10,6 +10,10 @@ use std::{
 };
 
 use super::LineWrapper;
+
+// `FontRun`, `ShapedGlyph`, and `ShapedRun` moved down into `gpui_engine`; re-export
+// them so this module keeps providing the names it used to define.
+pub use gpui_engine::{FontRun, ShapedGlyph, ShapedRun};
 
 /// A laid out and styled line of text
 #[derive(Default, Debug)]
@@ -26,31 +30,6 @@ pub struct LineLayout {
     pub runs: Vec<ShapedRun>,
     /// The length of the line in utf-8 bytes
     pub len: usize,
-}
-
-/// A run of text that has been shaped .
-#[derive(Debug, Clone)]
-pub struct ShapedRun {
-    /// The font id for this run
-    pub font_id: FontId,
-    /// The glyphs that make up this run
-    pub glyphs: Vec<ShapedGlyph>,
-}
-
-/// A single glyph, ready to paint.
-#[derive(Clone, Debug)]
-pub struct ShapedGlyph {
-    /// The ID for this glyph, as determined by the text system.
-    pub id: GlyphId,
-
-    /// The position of this glyph in its containing line.
-    pub position: Point<Pixels>,
-
-    /// The index of this glyph in the original text.
-    pub index: usize,
-
-    /// Whether this glyph is an emoji
-    pub is_emoji: bool,
 }
 
 impl LineLayout {
@@ -868,32 +847,6 @@ fn apply_force_width_to_layout(layout: &mut LineLayout, force_width: Pixels) {
                 glyph.position.x = last_base_actual_x + (shaped_x - last_base_shaped_x);
             }
         }
-    }
-}
-
-/// A run of text with a single font.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[expect(missing_docs)]
-pub struct FontRun {
-    pub len: usize,
-    pub font_id: FontId,
-    pub letter_spacing: Option<Pixels>,
-}
-
-impl Hash for FontRun {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.len.hash(state);
-        self.font_id.hash(state);
-        self.letter_spacing
-            .map(Pixels::as_f32)
-            .map(|value| {
-                if value == 0.0 {
-                    0.0f32.to_bits()
-                } else {
-                    value.to_bits()
-                }
-            })
-            .hash(state);
     }
 }
 
