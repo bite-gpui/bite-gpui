@@ -2317,6 +2317,7 @@ dependencies = [
  "gpui_ce_util",
  "gpui_engine",
  "gpui_platform",
+ "gpui_runtime",
  "gpui_types",
  "hdrhistogram",
  "heapless",
@@ -2923,6 +2924,14 @@ dependencies = [
  "thiserror 2.0.20",
  "uuid",
  "waker-fn",
+]
+
+[[package]]
+name = "gpui_runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui_authoring",
 ]
 
 [[package]]

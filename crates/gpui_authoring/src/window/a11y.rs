@@ -126,7 +126,7 @@ pub(crate) type A11yActionListener =
 pub(crate) struct A11y {
     /// Whether accessibility has been [forcibly disabled] for this window.
     ///
-    /// [forcibly disabled]: crate::Application::new_inaccessible
+    /// [forcibly disabled]: crate::App::set_accessibility_force_disabled
     force_disabled: bool,
     /// Whether the tree is built every frame even with no assistive
     /// technology connected. Set through [`crate::Application::with_accessibility_forced`]

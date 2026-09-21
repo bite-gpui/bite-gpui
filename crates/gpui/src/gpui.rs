@@ -173,6 +173,10 @@ pub use gpui_authoring::{
     AppContext, BorrowAppContext, BoundsExt, EventEmitter, FutureExt, GpuSpecs, LayoutId,
     Reservation, Timeout, VisualContext,
 };
+// The process harness: `Application`, how a host program builds and starts an app. It sits
+// above the authoring layer (which owns everything an app *is* once running) and below this
+// facade, which globs both.
+pub use gpui_runtime::*;
 pub use transition::*;
 pub use view::*;
 pub use window::*;
