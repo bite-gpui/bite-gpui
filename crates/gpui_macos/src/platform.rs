@@ -16,11 +16,11 @@ use core_foundation::{
 use dispatch2::DispatchQueue;
 use futures::channel::oneshot;
 use gpui::{
-    AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
-    MacActivationPolicy, MenuCommandId, PathPromptOptions, Platform, PlatformDisplay,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformOsMenu,
-    PlatformTextSystem, PlatformWindow, Result, SystemMenuType, Task, ThermalState,
-    WindowAppearance, WindowKind, WindowParams, popup::PopupNotSupportedError,
+    BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor, MacActivationPolicy,
+    MenuCommandId, PathPromptOptions, Platform, PlatformDisplay, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformOsMenu, PlatformTextSystem,
+    PlatformWindow, Result, SystemMenuType, Task, ThermalState, WindowAppearance, WindowId,
+    WindowKind, WindowParams, popup::PopupNotSupportedError,
 };
 use gpui_util::{ResultExt, new_std_command};
 use objc2::rc::{Allocated, Retained};
@@ -601,19 +601,19 @@ impl Platform for MacPlatform {
         crate::screen_capture::get_sources()
     }
 
-    fn active_window(&self) -> Option<AnyWindowHandle> {
+    fn active_window(&self) -> Option<WindowId> {
         MacWindow::active_window()
     }
 
     // Returns the windows ordered front-to-back, meaning that the active
     // window is the first one in the returned vec.
-    fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
+    fn window_stack(&self) -> Option<Vec<WindowId>> {
         Some(MacWindow::ordered_windows())
     }
 
     fn open_window(
         &self,
-        handle: AnyWindowHandle,
+        handle: WindowId,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
         // Native popups are not implemented on macOS yet. Rejecting lets callers fall back to

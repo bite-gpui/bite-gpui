@@ -8,12 +8,12 @@ use anyhow::Result;
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
 use gpui::{
-    AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalDragPayload,
-    ExternalPaths, FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PromptButton, PromptLevel, RequestFrameOptions, SharedString, Size, SystemWindowTab,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind,
+    BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalDragPayload, ExternalPaths,
+    FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformAtlas,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
+    PromptLevel, RequestFrameOptions, SharedString, Size, SystemWindowTab, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowId, WindowKind,
     WindowParams, point, px, size,
 };
 #[cfg(any(test, feature = "test-support"))]
@@ -809,7 +809,7 @@ unsafe fn apply_simple_fullscreen_plan(
 }
 
 struct MacWindowState {
-    handle: AnyWindowHandle,
+    handle: WindowId,
     foreground_executor: ForegroundExecutor,
     background_executor: BackgroundExecutor,
     native_window: ObjcId,
@@ -1118,7 +1118,7 @@ pub(crate) struct MacWindow(Arc<Mutex<MacWindowState>>, MainThreadMarker);
 
 impl MacWindow {
     pub fn open(
-        handle: AnyWindowHandle,
+        handle: WindowId,
         WindowParams {
             bounds,
             titlebar,
@@ -1467,7 +1467,7 @@ impl MacWindow {
         }
     }
 
-    pub fn active_window() -> Option<AnyWindowHandle> {
+    pub fn active_window() -> Option<WindowId> {
         unsafe {
             let app: ObjcId = msg_send![class!(NSApplication), sharedApplication];
             let main_window: ObjcId = msg_send![app, mainWindow];
@@ -1485,7 +1485,7 @@ impl MacWindow {
         }
     }
 
-    pub fn ordered_windows() -> Vec<AnyWindowHandle> {
+    pub fn ordered_windows() -> Vec<WindowId> {
         unsafe {
             let app: ObjcId = msg_send![class!(NSApplication), sharedApplication];
             let windows: ObjcId = msg_send![app, orderedWindows];

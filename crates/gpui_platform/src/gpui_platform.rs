@@ -62,6 +62,7 @@ mod test_dispatcher;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 mod threaded_dispatcher;
 mod window;
+mod window_id;
 
 pub use app::*;
 pub use clipboard::*;
@@ -84,6 +85,7 @@ pub use test_dispatcher::*;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub use threaded_dispatcher::*;
 pub use window::*;
+pub use window_id::*;
 
 pub use gpui_shared_string::*;
 pub use gpui_types::*;

@@ -20,7 +20,7 @@ mod windows_screen_capture;
 pub use windows_screen_capture::WindowsScreenCaptureFrame;
 
 use crate::{
-    AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds, BoundsExt,
+    App, AsyncWindowContext, BackgroundExecutor, Bounds, BoundsExt,
     DevicePixels, DispatchEventResult, ExternalDragPayload, Font, FontId, FontMetrics, FontRun,
     ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, LineLayout, MenuCommandId, Pixels,
     PlatformGestures, PlatformInput, PlatformMenu, PlatformMenuItem, Point, Priority,
@@ -95,8 +95,8 @@ pub trait Platform: 'static {
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>>;
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;
-    fn active_window(&self) -> Option<AnyWindowHandle>;
-    fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
+    fn active_window(&self) -> Option<WindowId>;
+    fn window_stack(&self) -> Option<Vec<WindowId>> {
         None
     }
 
@@ -118,7 +118,7 @@ pub trait Platform: 'static {
 
     fn open_window(
         &self,
-        handle: AnyWindowHandle,
+        handle: WindowId,
         options: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>>;
 

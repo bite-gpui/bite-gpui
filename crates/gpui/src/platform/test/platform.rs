@@ -3,13 +3,13 @@ use crate::NoopTextSystem;
 #[cfg(any(test, feature = "test-support"))]
 use crate::PathPromptOptions;
 use crate::{
-    AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DevicePixels,
-    DummyKeyboardMapper, ForegroundExecutor, MenuCommandId, Platform, PlatformDisplay,
-    PlatformHeadlessRenderer, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu,
-    PlatformMenuItem, PlatformTextSystem, PromptButton, ScreenCaptureFrame, ScreenCaptureSource,
-    ScreenCaptureStream, SharedString, SourceMetadata, SystemNotification,
-    SystemNotificationResponse, Task, TestDisplay, TestKeyboardLayout, TestSystemNotifications,
-    TestWindow, ThermalState, WindowAppearance, WindowParams, size,
+    BackgroundExecutor, ClipboardItem, CursorStyle, DevicePixels, DummyKeyboardMapper,
+    ForegroundExecutor, MenuCommandId, Platform, PlatformDisplay, PlatformHeadlessRenderer,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem,
+    PlatformTextSystem, PromptButton, ScreenCaptureFrame, ScreenCaptureSource, ScreenCaptureStream,
+    SharedString, SourceMetadata, SystemNotification, SystemNotificationResponse, Task,
+    TestDisplay, TestKeyboardLayout, TestSystemNotifications, TestWindow, ThermalState,
+    WindowAppearance, WindowId, WindowParams, size,
 };
 #[cfg(any(test, feature = "test-support"))]
 use crate::{TestPrompt, TestPrompts};
@@ -402,7 +402,7 @@ impl Platform for TestPlatform {
         rx
     }
 
-    fn active_window(&self) -> Option<crate::AnyWindowHandle> {
+    fn active_window(&self) -> Option<WindowId> {
         self.active_window
             .borrow()
             .as_ref()
@@ -411,7 +411,7 @@ impl Platform for TestPlatform {
 
     fn open_window(
         &self,
-        handle: AnyWindowHandle,
+        handle: WindowId,
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn crate::PlatformWindow>> {
         let renderer = self.headless_renderer_factory.as_ref().and_then(|f| f());

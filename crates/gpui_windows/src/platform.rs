@@ -567,7 +567,7 @@ impl Platform for WindowsPlatform {
         gpui::screen_capture::screen_sources(&self.foreground_executor)
     }
 
-    fn active_window(&self) -> Option<AnyWindowHandle> {
+    fn active_window(&self) -> Option<WindowId> {
         let active_window_hwnd = unsafe { GetActiveWindow() };
         self.window_from_hwnd(active_window_hwnd)
             .map(|inner| inner.handle)
@@ -575,7 +575,7 @@ impl Platform for WindowsPlatform {
 
     fn open_window(
         &self,
-        handle: AnyWindowHandle,
+        handle: WindowId,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
         let window = WindowsWindow::new(handle, options, self.generate_creation_info())?;
