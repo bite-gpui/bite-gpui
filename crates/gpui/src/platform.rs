@@ -25,7 +25,7 @@ use crate::{
     ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, LineLayout, MenuCommandId, Pixels,
     PlatformGestures, PlatformInput, PlatformMenu, PlatformMenuItem, Point,
     RenderGlyphParams, RenderImage, Scene, ShapedGlyph, ShapedRun, SharedString, Size, SvgRenderer,
-    SystemWindowTab, Task, Window, WindowControlArea, hash, point, px, size,
+    SystemWindowTab, Task, Window, WindowControlArea, point, px, size,
 };
 use anyhow::Result;
 use futures::channel::oneshot;
@@ -35,10 +35,8 @@ use image::RgbaImage;
 use image::codecs::gif::GifDecoder;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 pub use scheduler::RunnableMeta;
-use serde::Serialize;
 use smallvec::SmallVec;
 use std::borrow::Cow;
-use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::time::Duration;
 use std::{
@@ -1381,220 +1379,36 @@ pub enum WindowKind {
     Dialog,
 }
 
-/// A clipboard item that should be copied to the clipboard
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClipboardItem {
-    /// The entries in this clipboard item.
-    pub entries: Vec<ClipboardEntry>,
-}
-
-/// An error produced by [`Platform::read_from_clipboard_async`].
+/// Window- and app-coupled extensions on [`Image`].
 ///
-/// Callers surface these failures to users, so the variants distinguish
-/// conditions that call for different user-facing guidance.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ClipboardReadError {
-    /// The platform clipboard is not available in this context, e.g. the
-    /// browser does not expose the async clipboard API or the page is not a
-    /// secure context.
-    Unavailable,
-    /// The platform refused access, e.g. the user declined the browser's
-    /// clipboard permission prompt or paste confirmation.
-    Denied(String),
-    /// The clipboard contents could not be converted into a
-    /// [`ClipboardItem`].
-    UnsupportedContent,
-}
-
-impl std::fmt::Display for ClipboardReadError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unavailable => formatter.write_str("the clipboard is unavailable"),
-            Self::Denied(message) => {
-                write!(formatter, "clipboard access was denied: {message}")
-            }
-            Self::UnsupportedContent => {
-                formatter.write_str("the clipboard contents are unsupported")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ClipboardReadError {}
-
-/// Either a ClipboardString or a ClipboardImage
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ClipboardEntry {
-    /// A string entry
-    String(ClipboardString),
-    /// An image entry
-    Image(Image),
-    /// A file entry
-    ExternalPaths(crate::ExternalPaths),
-}
-
-impl ClipboardItem {
-    /// Create a new ClipboardItem::String with no associated metadata
-    pub fn new_string(text: String) -> Self {
-        Self {
-            entries: vec![ClipboardEntry::String(ClipboardString::new(text))],
-        }
-    }
-
-    /// Create a new ClipboardItem::String with the given text and associated metadata
-    pub fn new_string_with_metadata(text: String, metadata: String) -> Self {
-        Self {
-            entries: vec![ClipboardEntry::String(ClipboardString {
-                text,
-                metadata: Some(metadata),
-            })],
-        }
-    }
-
-    /// Create a new ClipboardItem::String with the given text and associated metadata
-    pub fn new_string_with_json_metadata<T: Serialize>(text: String, metadata: T) -> Self {
-        Self {
-            entries: vec![ClipboardEntry::String(
-                ClipboardString::new(text).with_json_metadata(metadata),
-            )],
-        }
-    }
-
-    /// Create a new ClipboardItem::Image with the given image with no associated metadata
-    pub fn new_image(image: &Image) -> Self {
-        Self {
-            entries: vec![ClipboardEntry::Image(image.clone())],
-        }
-    }
-
-    /// Concatenates together all the ClipboardString entries in the item.
-    /// Returns None if there were no ClipboardString entries.
-    pub fn text(&self) -> Option<String> {
-        let mut answer = String::new();
-
-        for entry in self.entries.iter() {
-            if let ClipboardEntry::String(ClipboardString { text, metadata: _ }) = entry {
-                answer.push_str(text);
-            }
-        }
-
-        if answer.is_empty() {
-            for entry in self.entries.iter() {
-                if let ClipboardEntry::ExternalPaths(paths) = entry {
-                    for path in &paths.0 {
-                        use std::fmt::Write as _;
-                        _ = write!(answer, "{}", path.display());
-                    }
-                }
-            }
-        }
-
-        if !answer.is_empty() {
-            Some(answer)
-        } else {
-            None
-        }
-    }
-
-    /// If this item is one ClipboardEntry::String, returns its metadata.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    pub fn metadata(&self) -> Option<&String> {
-        match self.entries().first() {
-            Some(ClipboardEntry::String(clipboard_string)) if self.entries.len() == 1 => {
-                clipboard_string.metadata.as_ref()
-            }
-            _ => None,
-        }
-    }
-
-    /// Get the item's entries
-    pub fn entries(&self) -> &[ClipboardEntry] {
-        &self.entries
-    }
-
-    /// Get owned versions of the item's entries
-    pub fn into_entries(self) -> impl Iterator<Item = ClipboardEntry> {
-        self.entries.into_iter()
-    }
-}
-
-impl From<ClipboardString> for ClipboardEntry {
-    fn from(value: ClipboardString) -> Self {
-        Self::String(value)
-    }
-}
-
-impl From<String> for ClipboardEntry {
-    fn from(value: String) -> Self {
-        Self::from(ClipboardString::from(value))
-    }
-}
-
-impl From<Image> for ClipboardEntry {
-    fn from(value: Image) -> Self {
-        Self::Image(value)
-    }
-}
-
-impl From<ClipboardEntry> for ClipboardItem {
-    fn from(value: ClipboardEntry) -> Self {
-        Self {
-            entries: vec![value],
-        }
-    }
-}
-
-impl From<String> for ClipboardItem {
-    fn from(value: String) -> Self {
-        Self::from(ClipboardEntry::from(value))
-    }
-}
-
-impl From<Image> for ClipboardItem {
-    fn from(value: Image) -> Self {
-        Self::from(ClipboardEntry::from(value))
-    }
-}
-
-/// An image, with a format and certain bytes
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Image {
-    /// The image format the bytes represent (e.g. PNG)
-    pub format: ImageFormat,
-    /// The raw image bytes
-    pub bytes: Vec<u8>,
-    /// The unique ID for the image
-    pub id: u64,
-}
-
-impl Hash for Image {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.id);
-    }
-}
-
-impl Image {
-    /// An empty image containing no data
-    pub fn empty() -> Self {
-        Self::from_bytes(ImageFormat::Png, Vec::new())
-    }
-
-    /// Create an image from a format and bytes
-    pub fn from_bytes(format: ImageFormat, bytes: Vec<u8>) -> Self {
-        Self {
-            id: hash(&bytes),
-            format,
-            bytes,
-        }
-    }
-
-    /// Get this image's ID
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
+/// These methods need a `Window` or an `App`, so they cannot live on the leaf's
+/// [`Image`](gpui_platform::Image); as a trait, method-call syntax is unchanged wherever
+/// it is in scope, and `gpui` re-exports it, so `image.use_render_image(..)` keeps working.
+pub trait ImageExt: Sized {
     /// Use the GPUI `use_asset` API to make this image renderable
-    pub fn use_render_image(
+    fn use_render_image(
+        self: Arc<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Arc<RenderImage>>;
+    /// Use the GPUI `get_asset` API to make this image renderable
+    fn get_render_image(
+        self: Arc<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Arc<RenderImage>>;
+    /// Use the GPUI `remove_asset` API to drop this image, if possible.
+    fn remove_asset(self: Arc<Self>, cx: &mut App);
+    /// Check whether this image is present in GPUI's asset cache, without fetching it.
+    #[cfg(any(test, feature = "test-support"))]
+    fn is_asset_cached(self: &Arc<Self>, cx: &App) -> bool;
+    /// Convert the clipboard image to an `ImageData` object.
+    fn to_image_data(&self, svg_renderer: SvgRenderer) -> Result<Arc<RenderImage>>;
+}
+
+impl ImageExt for Image {
+    /// Use the GPUI `use_asset` API to make this image renderable
+    fn use_render_image(
         self: Arc<Self>,
         window: &mut Window,
         cx: &mut App,
@@ -1605,7 +1419,7 @@ impl Image {
     }
 
     /// Use the GPUI `get_asset` API to make this image renderable
-    pub fn get_render_image(
+    fn get_render_image(
         self: Arc<Self>,
         window: &mut Window,
         cx: &mut App,
@@ -1616,19 +1430,19 @@ impl Image {
     }
 
     /// Use the GPUI `remove_asset` API to drop this image, if possible.
-    pub fn remove_asset(self: Arc<Self>, cx: &mut App) {
+    fn remove_asset(self: Arc<Self>, cx: &mut App) {
         ImageSource::Image(self).remove_asset(cx);
     }
 
     /// Check whether this image is present in GPUI's asset cache (loading or
     /// loaded), without fetching it.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn is_asset_cached(self: &Arc<Self>, cx: &App) -> bool {
+    fn is_asset_cached(self: &Arc<Self>, cx: &App) -> bool {
         ImageSource::Image(self.clone()).is_asset_cached(cx)
     }
 
     /// Convert the clipboard image to an `ImageData` object.
-    pub fn to_image_data(&self, svg_renderer: SvgRenderer) -> Result<Arc<RenderImage>> {
+    fn to_image_data(&self, svg_renderer: SvgRenderer) -> Result<Arc<RenderImage>> {
         let frames = match self.format {
             ImageFormat::Gif => {
                 let decoder = GifDecoder::new(Cursor::new(&self.bytes))?;
@@ -1670,16 +1484,6 @@ impl Image {
         };
 
         Ok(Arc::new(RenderImage::new(frames)))
-    }
-
-    /// Get the format of the clipboard image
-    pub fn format(&self) -> ImageFormat {
-        self.format
-    }
-
-    /// Get the raw bytes of the clipboard image
-    pub fn bytes(&self) -> &[u8] {
-        self.bytes.as_slice()
     }
 }
 

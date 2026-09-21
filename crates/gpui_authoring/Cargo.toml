@@ -1,0 +1,22 @@
+[package]
+name = "gpui_authoring"
+version = "0.1.0"
+publish.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_authoring.rs"
+doctest = false
+
+[features]
+default = []
+
+[dependencies]
+gpui_platform.workspace = true
+gpui_types.workspace = true
+scheduler.workspace = true
+smallvec.workspace = true

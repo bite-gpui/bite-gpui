@@ -2305,6 +2305,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "getrandom 0.3.4",
+ "gpui_authoring",
  "gpui_ce_collections",
  "gpui_ce_macros",
  "gpui_ce_platform",
@@ -2366,6 +2367,16 @@ dependencies = [
  "windows 0.62.2",
  "windows-capture",
  "zed-font-kit",
+]
+
+[[package]]
+name = "gpui_authoring"
+version = "0.1.0"
+dependencies = [
+ "gpui_ce_scheduler",
+ "gpui_platform",
+ "gpui_types",
+ "smallvec",
 ]
 
 [[package]]
