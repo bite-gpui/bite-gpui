@@ -50,14 +50,14 @@ use crate::{
     Action, ActionBuildError, ActionRegistry, Any, AnyView, AnyWindowHandle, AppContext, Arena,
     ArenaBox, Asset, AssetSource, BackgroundExecutor, Bounds, ClipboardItem, ClipboardReadError,
     CursorStyle, DispatchPhase, DisplayId, EventEmitter, ExternalDragPayload, FocusHandle, FocusMap,
-    ForegroundExecutor, Global, HapticFeedbackStyle, KeyBinding, KeyContext, Keymap, Keystroke,
-    LayoutId, Menu, MenuCommandId, MenuItem, OwnedMenu, OwnedMenuItem, PathPromptOptions, Pixels,
-    Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point, Priority,
-    PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render, RenderImage,
-    RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString, SubscriberSet,
-    Subscription, SvgRenderer, SystemNotification, SystemNotificationResponse, Task,
-    TextRenderingMode, TextSystem, ThermalState, Window, WindowAppearance, WindowButtonLayout,
-    WindowHandle, WindowId, WindowInvalidator,
+    ForegroundExecutor, FramePipeline, Global, HapticFeedbackStyle, KeyBinding, KeyContext, Keymap,
+    Keystroke, LayoutId, Menu, MenuCommandId, MenuItem, OwnedMenu, OwnedMenuItem, PathPromptOptions,
+    Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point,
+    Priority, PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render, RenderImage,
+    RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString,
+    StandardImmediatePipeline, SubscriberSet, Subscription, SvgRenderer, SystemNotification,
+    SystemNotificationResponse, Task, TextRenderingMode, TextSystem, ThermalState, Window,
+    WindowAppearance, WindowButtonLayout, WindowHandle, WindowId, WindowInvalidator,
     colors::{Colors, GlobalColors},
     hash, init_app_menus, resolve_dock_menu, resolve_menus,
 };
@@ -530,6 +530,10 @@ pub struct App {
     pub(crate) this: Weak<AppCell>,
     pub(crate) platform: Rc<dyn Platform>,
     text_system: Arc<TextSystem>,
+    /// Creates a fresh frame pipeline for each window. Injected at application
+    /// construction so windows draw through the [`FramePipeline`] trait without
+    /// naming an implementation.
+    frame_pipeline_factory: Rc<dyn Fn(WindowId) -> Box<dyn FramePipeline>>,
 
     pub(crate) actions: Rc<ActionRegistry>,
     pub(crate) active_drag: Option<AnyDrag>,
@@ -631,6 +635,11 @@ pub struct App {
 }
 
 impl App {
+    /// Creates the frame pipeline for a newly opened window.
+    pub(crate) fn new_frame_pipeline(&self, window_id: WindowId) -> Box<dyn FramePipeline> {
+        (self.frame_pipeline_factory)(window_id)
+    }
+
     #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new_app(
         platform: Rc<dyn Platform>,
@@ -660,6 +669,7 @@ impl App {
                 this: this.clone(),
                 platform: platform.clone(),
                 text_system,
+                frame_pipeline_factory: Rc::new(|_| Box::new(StandardImmediatePipeline)),
                 text_rendering_mode: Rc::new(Cell::new(TextRenderingMode::default())),
                 mode: GpuiMode::Production,
                 actions: Rc::new(ActionRegistry::default()),
@@ -1614,7 +1624,7 @@ impl App {
                     .values()
                     .filter_map(|window| {
                         let window = window.as_deref()?;
-                        window.invalidator.is_dirty().then_some(window.handle)
+                        window.should_render_frame().then_some(window.handle)
                     })
                     .collect::<Vec<_>>()
                 {
@@ -2722,6 +2732,15 @@ impl App {
     pub fn set_asset_source(&mut self, asset_source: Arc<AssetRegistry>) {
         self.asset_registry = asset_source.clone();
         self.svg_renderer = SvgRenderer::new(asset_source);
+    }
+
+    /// Replaces the factory that creates each window's frame pipeline.
+    #[doc(hidden)]
+    pub fn set_frame_pipeline_factory(
+        &mut self,
+        factory: Rc<dyn Fn(WindowId) -> Box<dyn FramePipeline>>,
+    ) {
+        self.frame_pipeline_factory = factory;
     }
 
     /// Sets the arguments to pass when restarting the application.

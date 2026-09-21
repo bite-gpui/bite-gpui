@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use gpui_authoring::{
-    App, AppCell, AssetSource, AsyncApp, BackgroundExecutor, ForegroundExecutor, Platform,
-    QuitMode, TextSystem, http_client::HttpClient,
+    App, AppCell, AssetSource, AsyncApp, BackgroundExecutor, ForegroundExecutor, FramePipeline,
+    Platform, QuitMode, TextSystem, WindowId, http_client::HttpClient,
 };
 #[cfg(target_os = "macos")]
 use gpui_authoring::MacActivationPolicy;
@@ -87,6 +87,21 @@ impl Application {
     /// Sets the HTTP client for the application.
     pub fn with_http_client(self, http_client: Arc<dyn HttpClient>) -> Self {
         self.0.borrow_mut().set_http_client(http_client);
+        self
+    }
+
+    /// Sets the factory that creates each window's frame pipeline.
+    ///
+    /// Defaults to the immediate-mode pipeline bundled with GPUI, which
+    /// re-evaluates the view tree every frame. Supply a different implementation
+    /// to change how a window draws its frames.
+    pub fn with_frame_pipeline(
+        self,
+        frame_pipeline: impl Fn(WindowId) -> Box<dyn FramePipeline> + 'static,
+    ) -> Self {
+        self.0
+            .borrow_mut()
+            .set_frame_pipeline_factory(Rc::new(frame_pipeline));
         self
     }
 

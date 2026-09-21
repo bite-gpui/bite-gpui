@@ -69,6 +69,7 @@ mod test_dispatcher;
 mod threaded_dispatcher;
 mod window;
 mod window_id;
+mod window_metrics;
 
 pub use app::*;
 pub use clipboard::*;
@@ -97,6 +98,7 @@ pub use test_dispatcher::*;
 pub use threaded_dispatcher::*;
 pub use window::*;
 pub use window_id::*;
+pub use window_metrics::*;
 
 pub use gpui_shared_string::*;
 pub use gpui_types::*;

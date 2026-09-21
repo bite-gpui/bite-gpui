@@ -120,6 +120,8 @@ pub use proptest;
 
 #[cfg(doc)]
 pub mod _accessibility;
+/// Frame pipeline guide: how to write and install one.
+pub mod _frame_pipeline;
 #[cfg(doc)]
 pub mod _ownership_and_data_flow;
 
