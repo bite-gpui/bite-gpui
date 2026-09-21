@@ -12,5 +12,7 @@
 #![allow(unused_mut)] // The harness keeps the authoring layer's `mut` callback bindings verbatim.
 
 mod application;
+mod pipeline;
 
 pub use application::{Application, ApplicationHandle};
+pub use pipeline::{FramePipelineExt, InstrumentedPipeline, PhaseMetrics, ThrottledPipeline};
