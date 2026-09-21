@@ -16,14 +16,13 @@ use core_foundation::{
 use dispatch2::DispatchQueue;
 use futures::channel::oneshot;
 use gpui::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
-    KeyContext, Keymap, MacActivationPolicy, Menu, MenuItem, OsMenu, OwnedMenu, PathPromptOptions,
-    Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PlatformWindow, Result, SystemMenuType, Task, ThermalState, WindowAppearance, WindowKind,
-    WindowParams, popup::PopupNotSupportedError,
+    AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
+    MacActivationPolicy, MenuCommandId, PathPromptOptions, Platform, PlatformDisplay,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformOsMenu,
+    PlatformTextSystem, PlatformWindow, Result, SystemMenuType, Task, ThermalState,
+    WindowAppearance, WindowKind, WindowParams, popup::PopupNotSupportedError,
 };
 use gpui_util::{ResultExt, new_std_command};
-use itertools::Itertools;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -50,7 +49,7 @@ use std::{
     ptr,
     rc::Rc,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -204,15 +203,13 @@ pub(crate) struct MacPlatformState {
     on_system_wake: Option<Box<dyn FnMut()>>,
     system_wake_observer_registered: bool,
     quit: Option<Box<dyn FnMut() -> bool>>,
-    menu_command: Option<Box<dyn FnMut(&dyn Action)>>,
-    validate_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
+    menu_command: Option<Box<dyn FnMut(MenuCommandId)>>,
+    validate_menu_command: Option<Box<dyn FnMut(MenuCommandId) -> bool>>,
     will_open_menu: Option<Box<dyn FnMut()>>,
-    menu_actions: Vec<Box<dyn Action>>,
     open_urls: Option<Box<dyn FnMut(Vec<String>)>>,
     finish_launching: Option<Box<dyn FnOnce()>>,
     dock_menu: Option<Retained<NSMenu>>,
     app_delegate: Option<Retained<GPUIApplicationDelegate>>,
-    menus: Option<Vec<OwnedMenu>>,
     keyboard_mapper: Rc<MacKeyboardMapper>,
     /// Mirrors `[NSCursor setHiddenUntilMouseMoves:]` state, which AppKit doesn't expose.
     cursor_visible: Arc<AtomicBool>,
@@ -256,7 +253,6 @@ impl MacPlatform {
             menu_command: None,
             validate_menu_command: None,
             will_open_menu: None,
-            menu_actions: Default::default(),
             open_urls: None,
             finish_launching: None,
             dock_menu: None,
@@ -265,7 +261,6 @@ impl MacPlatform {
             on_thermal_state_change: None,
             on_system_wake: None,
             system_wake_observer_registered: false,
-            menus: None,
             keyboard_mapper,
             cursor_visible: Arc::new(AtomicBool::new(true)),
             system_notifications: crate::system_notifications::SystemNotificationState::new(),
@@ -276,10 +271,8 @@ impl MacPlatform {
 
     fn create_menu_bar(
         &self,
-        menus: &Vec<Menu>,
+        menus: &[PlatformMenu],
         delegate: &GPUIApplicationDelegate,
-        actions: &mut Vec<Box<dyn Action>>,
-        keymap: &Keymap,
     ) -> Retained<NSMenu> {
         let delegate = ProtocolObject::from_ref(delegate);
         let application_menu = NSMenu::new(self.1);
@@ -292,13 +285,7 @@ impl MacPlatform {
             menu.setDelegate(Some(&delegate));
 
             for item_config in &menu_config.items {
-                menu.addItem(&Self::create_menu_item(
-                    item_config,
-                    &delegate,
-                    actions,
-                    keymap,
-                    self.1,
-                ));
+                menu.addItem(&Self::create_menu_item(item_config, &delegate, self.1));
             }
 
             let menu_item = NSMenuItem::new(self.1);
@@ -317,67 +304,33 @@ impl MacPlatform {
 
     fn create_dock_menu(
         &self,
-        menu_items: Vec<MenuItem>,
+        menu_items: Vec<PlatformMenuItem>,
         delegate: &GPUIApplicationDelegate,
-        actions: &mut Vec<Box<dyn Action>>,
-        keymap: &Keymap,
     ) -> Retained<NSMenu> {
         let delegate = ProtocolObject::from_ref(delegate);
         let dock_menu = NSMenu::new(self.1);
         dock_menu.setDelegate(Some(&delegate));
         for item_config in menu_items {
-            dock_menu.addItem(&Self::create_menu_item(
-                &item_config,
-                &delegate,
-                actions,
-                keymap,
-                self.1,
-            ));
+            dock_menu.addItem(&Self::create_menu_item(&item_config, &delegate, self.1));
         }
         dock_menu
     }
 
     fn create_menu_item(
-        item: &MenuItem,
+        item: &PlatformMenuItem,
         delegate: &ProtocolObject<dyn NSMenuDelegate>,
-        actions: &mut Vec<Box<dyn Action>>,
-        keymap: &Keymap,
         marker: MainThreadMarker,
     ) -> Retained<NSMenuItem> {
-        static DEFAULT_CONTEXT: OnceLock<Vec<KeyContext>> = OnceLock::new();
-
         match item {
-            MenuItem::Separator => NSMenuItem::separatorItem(marker),
-            MenuItem::Action {
+            PlatformMenuItem::Separator => NSMenuItem::separatorItem(marker),
+            PlatformMenuItem::Action {
                 name,
-                action,
+                command_id,
+                keystroke,
                 os_action,
                 checked,
                 disabled,
             } => {
-                // Note that this is intentionally using earlier bindings, whereas typically
-                // later ones take display precedence. See the discussion on
-                // https://github.com/zed-industries/zed/issues/23621
-                let keystrokes = keymap
-                    .bindings_for_action(action.as_ref())
-                    .find_or_first(|binding| {
-                        binding.predicate().is_none_or(|predicate| {
-                            predicate.eval(DEFAULT_CONTEXT.get_or_init(|| {
-                                let mut workspace_context = KeyContext::new_with_defaults();
-                                workspace_context.add("Workspace");
-                                let mut pane_context = KeyContext::new_with_defaults();
-                                pane_context.add("Pane");
-                                let mut editor_context = KeyContext::new_with_defaults();
-                                editor_context.add("Editor");
-
-                                pane_context.extend(&editor_context);
-                                workspace_context.extend(&pane_context);
-                                vec![workspace_context]
-                            }))
-                        })
-                    })
-                    .map(|binding| binding.keystrokes());
-
                 let selector = match os_action {
                     Some(gpui::OsAction::Cut) => Some(objc2::sel!(cut:)),
                     Some(gpui::OsAction::Copy) => Some(objc2::sel!(copy:)),
@@ -390,71 +343,54 @@ impl MacPlatform {
                     None => Some(objc2::sel!(handleGPUIMenuItem:)),
                 };
 
-                let item;
-                if let Some(keystrokes) = keystrokes {
-                    if keystrokes.len() == 1 {
-                        let keystroke = &keystrokes[0];
-                        let mut mask = NSEventModifierFlags::empty();
-                        for (modifier, flag) in &[
-                            (
-                                keystroke.modifiers().platform,
-                                NSEventModifierFlags::Command,
-                            ),
-                            (keystroke.modifiers().control, NSEventModifierFlags::Control),
-                            (keystroke.modifiers().alt, NSEventModifierFlags::Option),
-                            (keystroke.modifiers().shift, NSEventModifierFlags::Shift),
-                        ] {
-                            if *modifier {
-                                mask |= *flag;
-                            }
+                let item = if let Some(keystroke) = keystroke {
+                    let mut mask = NSEventModifierFlags::empty();
+                    for (modifier, flag) in &[
+                        (keystroke.modifiers().platform, NSEventModifierFlags::Command),
+                        (keystroke.modifiers().control, NSEventModifierFlags::Control),
+                        (keystroke.modifiers().alt, NSEventModifierFlags::Option),
+                        (keystroke.modifiers().shift, NSEventModifierFlags::Shift),
+                    ] {
+                        if *modifier {
+                            mask |= *flag;
                         }
+                    }
 
-                        item = unsafe {
-                            NSMenuItem::initWithTitle_action_keyEquivalent(
-                                NSMenuItem::alloc(marker),
-                                &ns_string(name),
-                                selector,
-                                &ns_string(key_to_native(keystroke.key()).as_ref()),
-                            )
-                        };
-                        if Self::os_version() >= Version::new(12, 0, 0) {
-                            let _: () = unsafe {
-                                msg_send![&*item, setAllowsAutomaticKeyEquivalentLocalization: false]
-                            };
-                        }
-                        item.setKeyEquivalentModifierMask(mask);
-                    } else {
-                        item = unsafe {
-                            NSMenuItem::initWithTitle_action_keyEquivalent(
-                                NSMenuItem::alloc(marker),
-                                &ns_string(name),
-                                selector,
-                                &ns_string(""),
-                            )
+                    let item = unsafe {
+                        NSMenuItem::initWithTitle_action_keyEquivalent(
+                            NSMenuItem::alloc(marker),
+                            &ns_string(name),
+                            selector,
+                            &ns_string(key_to_native(keystroke.key()).as_ref()),
+                        )
+                    };
+                    if Self::os_version() >= Version::new(12, 0, 0) {
+                        let _: () = unsafe {
+                            msg_send![&*item, setAllowsAutomaticKeyEquivalentLocalization: false]
                         };
                     }
+                    item.setKeyEquivalentModifierMask(mask);
+                    item
                 } else {
-                    item = unsafe {
+                    unsafe {
                         NSMenuItem::initWithTitle_action_keyEquivalent(
                             NSMenuItem::alloc(marker),
                             &ns_string(name),
                             selector,
                             &ns_string(""),
                         )
-                    };
-                }
+                    }
+                };
 
                 if *checked {
                     item.setState(NSControlStateValueOn);
                 }
                 item.setEnabled(!*disabled);
 
-                let tag = actions.len() as NSInteger;
-                item.setTag(tag);
-                actions.push(action.boxed_clone());
+                item.setTag(*command_id as NSInteger);
                 item
             }
-            MenuItem::Submenu(Menu {
+            PlatformMenuItem::Submenu(PlatformMenu {
                 name,
                 items,
                 disabled,
@@ -463,16 +399,14 @@ impl MacPlatform {
                 let submenu = NSMenu::new(marker);
                 submenu.setDelegate(Some(delegate));
                 for item in items {
-                    submenu.addItem(&Self::create_menu_item(
-                        item, delegate, actions, keymap, marker,
-                    ));
+                    submenu.addItem(&Self::create_menu_item(item, delegate, marker));
                 }
                 item.setSubmenu(Some(&submenu));
                 item.setEnabled(!*disabled);
                 item.setTitle(&ns_string(name));
                 item
             }
-            MenuItem::SystemMenu(OsMenu { name, menu_type }) => {
+            PlatformMenuItem::SystemMenu(PlatformOsMenu { name, menu_type }) => {
                 let item = NSMenuItem::new(marker);
                 let submenu = NSMenu::new(marker);
                 submenu.setDelegate(Some(delegate));
@@ -971,7 +905,7 @@ impl Platform for MacPlatform {
         self.0.lock().on_keyboard_layout_change = Some(callback);
     }
 
-    fn on_app_menu_action(&self, callback: Box<dyn FnMut(&dyn Action)>) {
+    fn on_app_menu_action(&self, callback: Box<dyn FnMut(MenuCommandId)>) {
         self.0.lock().menu_command = Some(callback);
     }
 
@@ -979,7 +913,7 @@ impl Platform for MacPlatform {
         self.0.lock().will_open_menu = Some(callback);
     }
 
-    fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(&dyn Action) -> bool>) {
+    fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(MenuCommandId) -> bool>) {
         self.0.lock().validate_menu_command = Some(callback);
     }
 
@@ -1046,33 +980,26 @@ impl Platform for MacPlatform {
         Ok(PathBuf::from(bundle.bundlePath().to_string()))
     }
 
-    fn set_menus(&self, menus: Vec<Menu>, keymap: &Keymap) {
+    fn set_menus(&self, menus: Vec<PlatformMenu>) {
         let app: Retained<GPUIApplication> =
             unsafe { msg_send![GPUIApplication::class(), sharedApplication] };
-        let mut state = self.0.lock();
+        let state = self.0.lock();
         let delegate = state
             .app_delegate
             .clone()
             .expect("app delegate not initialized");
-        let actions = &mut state.menu_actions;
-        let menu = self.create_menu_bar(&menus, &delegate, actions, keymap);
+        let menu = self.create_menu_bar(&menus, &delegate);
         drop(state);
         app.as_super().setMainMenu(Some(&menu));
-        self.0.lock().menus = Some(menus.into_iter().map(|menu| menu.owned()).collect());
     }
 
-    fn get_menus(&self) -> Option<Vec<OwnedMenu>> {
-        self.0.lock().menus.clone()
-    }
-
-    fn set_dock_menu(&self, menu: Vec<MenuItem>, keymap: &Keymap) {
+    fn set_dock_menu(&self, menu: Vec<PlatformMenuItem>) {
         let mut state = self.0.lock();
         let delegate = state
             .app_delegate
             .clone()
             .expect("app delegate not initialized");
-        let actions = &mut state.menu_actions;
-        let new = self.create_dock_menu(menu, &delegate, actions, keymap);
+        let new = self.create_dock_menu(menu, &delegate);
         state.dock_menu = Some(new);
     }
 
@@ -1455,12 +1382,9 @@ fn handle_menu_item(this: &GPUIApplicationDelegate, item: &NSMenuItem) {
     let platform = get_mac_platform(this);
     let mut lock = platform.0.lock();
     if let Some(mut callback) = lock.menu_command.take() {
-        let index = item.tag() as usize;
-        if let Some(action) = lock.menu_actions.get(index) {
-            let action = action.boxed_clone();
-            drop(lock);
-            callback(&*action);
-        }
+        let command_id = item.tag() as MenuCommandId;
+        drop(lock);
+        callback(command_id);
         platform.0.lock().menu_command.get_or_insert(callback);
     }
 }
@@ -1470,12 +1394,9 @@ fn validate_menu_item(this: &GPUIApplicationDelegate, item: &NSMenuItem) -> bool
     let platform = get_mac_platform(this);
     let mut lock = platform.0.lock();
     if let Some(mut callback) = lock.validate_menu_command.take() {
-        let index = item.tag() as usize;
-        if let Some(action) = lock.menu_actions.get(index) {
-            let action = action.boxed_clone();
-            drop(lock);
-            result = callback(action.as_ref());
-        }
+        let command_id = item.tag() as MenuCommandId;
+        drop(lock);
+        result = callback(command_id);
         platform
             .0
             .lock()

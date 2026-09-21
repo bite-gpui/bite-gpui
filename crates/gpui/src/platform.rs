@@ -20,12 +20,12 @@ mod windows_screen_capture;
 pub use windows_screen_capture::WindowsScreenCaptureFrame;
 
 use crate::{
-    Action, AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds, BoundsExt,
+    AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds, BoundsExt,
     DevicePixels, DispatchEventResult, ExternalDragPayload, Font, FontId, FontMetrics, FontRun,
-    ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, Keymap, LineLayout, Pixels,
-    PlatformGestures, PlatformInput, Point, Priority, RenderGlyphParams, RenderImage, Scene,
-    ShapedGlyph, ShapedRun, SharedString, Size, SvgRenderer, SystemWindowTab, Task, Window,
-    WindowControlArea, hash, point, px, size,
+    ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, LineLayout, MenuCommandId, Pixels,
+    PlatformGestures, PlatformInput, PlatformMenu, PlatformMenuItem, Point, Priority,
+    RenderGlyphParams, RenderImage, Scene, ShapedGlyph, ShapedRun, SharedString, Size, SvgRenderer,
+    SystemWindowTab, Task, Window, WindowControlArea, hash, point, px, size,
 };
 use anyhow::Result;
 use futures::channel::oneshot;
@@ -186,24 +186,21 @@ pub trait Platform: 'static {
         None
     }
 
-    fn set_menus(&self, menus: Vec<Menu>, keymap: &Keymap);
-    fn get_menus(&self) -> Option<Vec<OwnedMenu>> {
-        None
-    }
+    fn set_menus(&self, menus: Vec<PlatformMenu>);
 
-    fn set_dock_menu(&self, menu: Vec<MenuItem>, keymap: &Keymap);
+    fn set_dock_menu(&self, menu: Vec<PlatformMenuItem>);
     fn perform_dock_menu_action(&self, _action: usize) {}
     fn add_recent_document(&self, _path: &Path) {}
     fn update_jump_list(
         &self,
-        _menus: Vec<MenuItem>,
+        _menus: Vec<PlatformMenuItem>,
         _entries: Vec<SmallVec<[PathBuf; 2]>>,
     ) -> Task<Vec<SmallVec<[PathBuf; 2]>>> {
         Task::ready(Vec::new())
     }
-    fn on_app_menu_action(&self, callback: Box<dyn FnMut(&dyn Action)>);
+    fn on_app_menu_action(&self, callback: Box<dyn FnMut(MenuCommandId)>);
     fn on_will_open_app_menu(&self, callback: Box<dyn FnMut()>);
-    fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(&dyn Action) -> bool>);
+    fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(MenuCommandId) -> bool>);
 
     fn thermal_state(&self) -> ThermalState;
     fn on_thermal_state_change(&self, callback: Box<dyn FnMut()>);

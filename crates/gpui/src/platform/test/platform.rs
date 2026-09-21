@@ -4,12 +4,12 @@ use crate::NoopTextSystem;
 use crate::PathPromptOptions;
 use crate::{
     AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DevicePixels,
-    DummyKeyboardMapper, ForegroundExecutor, Keymap, Platform, PlatformDisplay,
-    PlatformHeadlessRenderer, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PromptButton, ScreenCaptureFrame, ScreenCaptureSource, ScreenCaptureStream, SharedString,
-    SourceMetadata, SystemNotification, SystemNotificationResponse, Task, TestDisplay,
-    TestKeyboardLayout, TestSystemNotifications, TestWindow, ThermalState, WindowAppearance,
-    WindowParams, size,
+    DummyKeyboardMapper, ForegroundExecutor, MenuCommandId, Platform, PlatformDisplay,
+    PlatformHeadlessRenderer, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu,
+    PlatformMenuItem, PlatformTextSystem, PromptButton, ScreenCaptureFrame, ScreenCaptureSource,
+    ScreenCaptureStream, SharedString, SourceMetadata, SystemNotification,
+    SystemNotificationResponse, Task, TestDisplay, TestKeyboardLayout, TestSystemNotifications,
+    TestWindow, ThermalState, WindowAppearance, WindowParams, size,
 };
 #[cfg(any(test, feature = "test-support"))]
 use crate::{TestPrompt, TestPrompts};
@@ -546,16 +546,16 @@ impl Platform for TestPlatform {
         self.system_notifications.borrow_mut().response_callback = Some(callback);
     }
 
-    fn set_menus(&self, _menus: Vec<crate::Menu>, _keymap: &Keymap) {}
-    fn set_dock_menu(&self, _menu: Vec<crate::MenuItem>, _keymap: &Keymap) {}
+    fn set_menus(&self, _menus: Vec<PlatformMenu>) {}
+    fn set_dock_menu(&self, _menu: Vec<PlatformMenuItem>) {}
 
     fn add_recent_document(&self, _paths: &Path) {}
 
-    fn on_app_menu_action(&self, _callback: Box<dyn FnMut(&dyn crate::Action)>) {}
+    fn on_app_menu_action(&self, _callback: Box<dyn FnMut(MenuCommandId)>) {}
 
     fn on_will_open_app_menu(&self, _callback: Box<dyn FnMut()>) {}
 
-    fn on_validate_app_menu_command(&self, _callback: Box<dyn FnMut(&dyn crate::Action) -> bool>) {}
+    fn on_validate_app_menu_command(&self, _callback: Box<dyn FnMut(MenuCommandId) -> bool>) {}
 
     fn app_path(&self) -> Result<std::path::PathBuf> {
         unimplemented!()
