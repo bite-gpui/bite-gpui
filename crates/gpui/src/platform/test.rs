@@ -2,7 +2,6 @@ mod dispatcher;
 mod platform;
 mod window;
 
-pub use dispatcher::*;
 pub(crate) use platform::*;
 pub(crate) use window::*;
 

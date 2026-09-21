@@ -1,6 +1,7 @@
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use anyhow::{Result, bail};
-use gpui_types::{Edges, Pixels, Size, px, size};
+use gpui_shared_string::SharedString;
+use gpui_types::{Edges, Pixels, Point, Size, px, size};
 
 /// Which part of the window to resize
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,6 +289,20 @@ impl WindowInsets {
             left: self.safe_area.left.max(self.ime.left),
         }
     }
+}
+
+/// The options that can be configured for a window's titlebar
+#[derive(Debug, Default)]
+pub struct TitlebarOptions {
+    /// The initial title of the window
+    pub title: Option<SharedString>,
+
+    /// Should the default system titlebar be hidden to allow for a custom-drawn titlebar? (macOS and Windows only)
+    /// Refer to `WindowOptions::window_decorations` on Linux
+    pub appears_transparent: bool,
+
+    /// The position of the macOS traffic light buttons
+    pub traffic_light_position: Option<Point<Pixels>>,
 }
 
 /// A change in the state of the focused text input.

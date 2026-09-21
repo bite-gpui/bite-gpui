@@ -413,3 +413,26 @@ impl TextRun {
         this
     }
 }
+
+/// A boundary at which a line was wrapped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WrapBoundary {
+    /// The index in the run just before the line was wrapped
+    pub run_ix: usize,
+    /// The index of the glyph just before the line was wrapped
+    pub glyph_ix: usize,
+}
+
+/// A saved position in a line-layout cache, used to reuse or truncate the layouts
+/// produced during a frame.
+#[derive(Clone, Default)]
+pub struct LineLayoutIndex {
+    /// The number of shaped lines retained at this position.
+    pub lines_index: usize,
+    /// The number of wrapped lines retained at this position.
+    pub wrapped_lines_index: usize,
+    /// The number of content-hashed shaped lines retained at this position.
+    pub lines_by_hash_index: usize,
+    /// The number of content-hashed wrapped lines retained at this position.
+    pub wrapped_lines_by_hash_index: usize,
+}

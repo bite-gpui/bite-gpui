@@ -14,7 +14,8 @@
 //! Module names follow the layered reference layout (`app`, `clipboard`, `cursor`,
 //! `display`, `executor`, `input_handler`, `keyboard`, `layer_shell`, `menu`,
 //! `notification`, `platform`, `popup`, `profiler`, `prompt`, `screen_capture`,
-//! `text_input`, `window`). Two of them are transitional groupings rather than reference
+//! `test_dispatcher`, `text_input`, `window`). Two of them are transitional groupings
+//! rather than reference
 //! modules: the test doubles taken from ce's `platform/test/` (`TestAtlas`,
 //! `TestAtlasState`, `TestDisplay`, `TestKeyboardLayout`, `TestPrompt`, `TestPrompts`,
 //! `TestSystemNotifications`) are folded into the module of their subject, and
@@ -57,6 +58,8 @@ pub mod queue;
 mod screen_capture;
 mod text_input;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+mod test_dispatcher;
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 mod threaded_dispatcher;
 mod window;
 
@@ -76,6 +79,8 @@ pub use profiler::*;
 pub use prompt::*;
 pub use screen_capture::*;
 pub use text_input::*;
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+pub use test_dispatcher::*;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub use threaded_dispatcher::*;
 pub use window::*;

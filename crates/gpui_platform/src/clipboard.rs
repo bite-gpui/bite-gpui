@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
+use strum::EnumIter;
 
 #[allow(missing_docs)]
 pub fn decode_static_image(
@@ -94,6 +95,83 @@ impl From<String> for ClipboardString {
         Self {
             text: value,
             metadata: None,
+        }
+    }
+}
+
+/// One of the editor's supported image formats (e.g. PNG, JPEG) - used when dealing with images in the clipboard
+#[derive(Clone, Copy, Debug, Eq, PartialEq, EnumIter, Hash)]
+pub enum ImageFormat {
+    // Sorted from most to least likely to be pasted into an editor,
+    // which matters when we iterate through them trying to see if
+    // clipboard content matches them.
+    /// .png
+    Png,
+    /// .jpeg or .jpg
+    Jpeg,
+    /// .webp
+    Webp,
+    /// .gif
+    Gif,
+    /// .svg
+    Svg,
+    /// .bmp
+    Bmp,
+    /// .tif or .tiff
+    Tiff,
+    /// .ico
+    Ico,
+    /// Netpbm image formats (.pbm, .ppm, .pgm).
+    Pnm,
+}
+
+impl ImageFormat {
+    /// Returns the mime type for the ImageFormat
+    pub const fn mime_type(self) -> &'static str {
+        match self {
+            ImageFormat::Png => "image/png",
+            ImageFormat::Jpeg => "image/jpeg",
+            ImageFormat::Webp => "image/webp",
+            ImageFormat::Gif => "image/gif",
+            ImageFormat::Svg => "image/svg+xml",
+            ImageFormat::Bmp => "image/bmp",
+            ImageFormat::Tiff => "image/tiff",
+            ImageFormat::Ico => "image/ico",
+            ImageFormat::Pnm => "image/x-portable-anymap",
+        }
+    }
+
+    /// Returns the file extension for this image format (without leading dot).
+    pub const fn extension(self) -> &'static str {
+        match self {
+            ImageFormat::Png => "png",
+            ImageFormat::Jpeg => "jpg",
+            ImageFormat::Webp => "webp",
+            ImageFormat::Gif => "gif",
+            ImageFormat::Svg => "svg",
+            ImageFormat::Bmp => "bmp",
+            ImageFormat::Tiff => "tiff",
+            ImageFormat::Ico => "ico",
+            ImageFormat::Pnm => "pnm",
+        }
+    }
+
+    /// Returns the ImageFormat for the given mime type, including known aliases.
+    pub fn from_mime_type(mime_type: &str) -> Option<Self> {
+        use strum::IntoEnumIterator;
+        Self::iter()
+            .find(|format| format.mime_type() == mime_type)
+            .or_else(|| Self::from_mime_type_alias(mime_type))
+    }
+
+    /// Non-canonical mime types that some producers use in the wild.
+    /// Unlike `mime_type()` which returns the single canonical form,
+    /// these are legacy or shortened variants we still need to recognize.
+    fn from_mime_type_alias(mime_type: &str) -> Option<Self> {
+        match mime_type {
+            "image/jpg" => Some(Self::Jpeg),
+            "image/tif" => Some(Self::Tiff),
+            _ => None,
         }
     }
 }

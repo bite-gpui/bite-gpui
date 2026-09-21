@@ -1,13 +1,13 @@
 use crate::{FontId, Pixels, PlatformTextSystem, Point, SharedString, Size, point, px};
+// The line-layout and line-wrap vocabulary moved down into `gpui_engine`; re-export the
+// names this module used to define, and import the (otherwise private) cache keys that
+// the cache staying behind still builds.
+pub use gpui_engine::{LineLayoutIndex, WrapBoundary};
+use gpui_engine::{AsCacheKeyRef, CacheKey, CacheKeyRef, HashedCacheKey, HashedCacheKeyRef};
 use collections::FxHashMap;
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use smallvec::SmallVec;
-use std::{
-    borrow::Borrow,
-    hash::{Hash, Hasher},
-    ops::Range,
-    sync::Arc,
-};
+use std::{ops::Range, sync::Arc};
 
 use super::LineWrapper;
 
@@ -261,15 +261,6 @@ pub struct WrappedLineLayout {
     pub wrap_width: Option<Pixels>,
 }
 
-/// A boundary at which a line was wrapped
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct WrapBoundary {
-    /// The index in the run just before the line was wrapped
-    pub run_ix: usize,
-    /// The index of the glyph just before the line was wrapped
-    pub glyph_ix: usize,
-}
-
 impl WrappedLineLayout {
     /// The length of the underlying text, in utf8 bytes.
     #[allow(clippy::len_without_is_empty)]
@@ -453,14 +444,6 @@ struct FrameCache {
     wrapped_lines_by_hash: FxHashMap<Arc<HashedCacheKey>, Arc<WrappedLineLayout>>,
     used_lines_by_hash: Vec<Arc<HashedCacheKey>>,
     used_wrapped_lines_by_hash: Vec<Arc<HashedCacheKey>>,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct LineLayoutIndex {
-    lines_index: usize,
-    wrapped_lines_index: usize,
-    lines_by_hash_index: usize,
-    wrapped_lines_by_hash_index: usize,
 }
 
 impl LineLayoutCache {
@@ -847,146 +830,6 @@ fn apply_force_width_to_layout(layout: &mut LineLayout, force_width: Pixels) {
                 glyph.position.x = last_base_actual_x + (shaped_x - last_base_shaped_x);
             }
         }
-    }
-}
-
-trait AsCacheKeyRef {
-    fn as_cache_key_ref(&self) -> CacheKeyRef<'_>;
-}
-
-#[derive(Clone, Debug, Eq)]
-struct CacheKey {
-    text: SharedString,
-    font_size: Pixels,
-    runs: SmallVec<[FontRun; 1]>,
-    wrap_width: Option<Pixels>,
-    force_width: Option<Pixels>,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-struct CacheKeyRef<'a> {
-    text: &'a str,
-    font_size: Pixels,
-    runs: &'a [FontRun],
-    wrap_width: Option<Pixels>,
-    force_width: Option<Pixels>,
-}
-
-#[derive(Clone, Debug)]
-struct HashedCacheKey {
-    text_hash: u64,
-    text_len: usize,
-    font_size: Pixels,
-    runs: SmallVec<[FontRun; 1]>,
-    wrap_width: Option<Pixels>,
-    force_width: Option<Pixels>,
-}
-
-#[derive(Copy, Clone)]
-struct HashedCacheKeyRef<'a> {
-    text_hash: u64,
-    text_len: usize,
-    font_size: Pixels,
-    runs: &'a [FontRun],
-    wrap_width: Option<Pixels>,
-    force_width: Option<Pixels>,
-}
-
-impl PartialEq for dyn AsCacheKeyRef + '_ {
-    fn eq(&self, other: &dyn AsCacheKeyRef) -> bool {
-        self.as_cache_key_ref() == other.as_cache_key_ref()
-    }
-}
-
-impl PartialEq for HashedCacheKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.text_hash == other.text_hash
-            && self.text_len == other.text_len
-            && self.font_size == other.font_size
-            && self.runs.as_slice() == other.runs.as_slice()
-            && self.wrap_width == other.wrap_width
-            && self.force_width == other.force_width
-    }
-}
-
-impl Eq for HashedCacheKey {}
-
-impl Hash for HashedCacheKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.text_hash.hash(state);
-        self.text_len.hash(state);
-        self.font_size.hash(state);
-        self.runs.as_slice().hash(state);
-        self.wrap_width.hash(state);
-        self.force_width.hash(state);
-    }
-}
-
-impl PartialEq for HashedCacheKeyRef<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        self.text_hash == other.text_hash
-            && self.text_len == other.text_len
-            && self.font_size == other.font_size
-            && self.runs == other.runs
-            && self.wrap_width == other.wrap_width
-            && self.force_width == other.force_width
-    }
-}
-
-impl Eq for HashedCacheKeyRef<'_> {}
-
-impl Hash for HashedCacheKeyRef<'_> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.text_hash.hash(state);
-        self.text_len.hash(state);
-        self.font_size.hash(state);
-        self.runs.hash(state);
-        self.wrap_width.hash(state);
-        self.force_width.hash(state);
-    }
-}
-
-impl Eq for dyn AsCacheKeyRef + '_ {}
-
-impl Hash for dyn AsCacheKeyRef + '_ {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.as_cache_key_ref().hash(state)
-    }
-}
-
-impl AsCacheKeyRef for CacheKey {
-    fn as_cache_key_ref(&self) -> CacheKeyRef<'_> {
-        CacheKeyRef {
-            text: &self.text,
-            font_size: self.font_size,
-            runs: self.runs.as_slice(),
-            wrap_width: self.wrap_width,
-            force_width: self.force_width,
-        }
-    }
-}
-
-impl PartialEq for CacheKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_cache_key_ref().eq(&other.as_cache_key_ref())
-    }
-}
-
-impl Hash for CacheKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.as_cache_key_ref().hash(state);
-    }
-}
-
-impl<'a> Borrow<dyn AsCacheKeyRef + 'a> for Arc<CacheKey> {
-    fn borrow(&self) -> &(dyn AsCacheKeyRef + 'a) {
-        self.as_ref() as &dyn AsCacheKeyRef
-    }
-}
-
-impl AsCacheKeyRef for CacheKeyRef<'_> {
-    fn as_cache_key_ref(&self) -> CacheKeyRef<'_> {
-        *self
     }
 }
 

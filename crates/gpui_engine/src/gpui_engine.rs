@@ -12,6 +12,10 @@
 //! `gpui` re-exports everything in this crate, so `gpui::Scene` and
 //! `gpui_engine::Scene` name the same type and consumers do not need to know this crate
 //! exists.
+//!
+//! This crate also stands in for the reference's `gpui_engine_default`: the line-layout
+//! cache keys, whose reference home is that crate, are absorbed here because it does not
+//! exist yet.
 
 #![warn(missing_docs)]
 // Mirrors `gpui`: the moved code carries a few `mut` bindings that only some platform
@@ -25,6 +29,8 @@ mod bounds_tree;
 pub mod filter;
 mod font_fallbacks;
 mod font_features;
+mod line_layout;
+mod line_wrapper;
 mod render;
 mod renderer;
 mod scene;
@@ -35,6 +41,8 @@ pub use atlas::*;
 pub use filter::*;
 pub use font_fallbacks::*;
 pub use font_features::*;
+pub use line_layout::*;
+pub use line_wrapper::*;
 pub use render::*;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub use renderer::*;
