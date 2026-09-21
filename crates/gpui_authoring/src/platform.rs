@@ -1,0 +1,1717 @@
+mod app_menu;
+
+/// Types for configuring parent-anchored popup windows such as menus, dropdowns and tooltips.
+pub mod popup;
+
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+mod threaded_dispatcher;
+
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+mod test;
+
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+mod visual_test;
+
+#[cfg(all(feature = "screen-capture", target_os = "windows"))]
+pub mod screen_capture;
+#[cfg(target_os = "windows")]
+mod windows_screen_capture;
+#[cfg(target_os = "windows")]
+pub use windows_screen_capture::WindowsScreenCaptureFrame;
+
+use crate::{
+    App, AsyncWindowContext, BackgroundExecutor, Bounds, BoundsExt,
+    DevicePixels, DispatchEventResult, ExternalDragPayload, Font, FontId, FontMetrics, FontRun,
+    ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, LineLayout, MenuCommandId, Pixels,
+    PlatformGestures, PlatformInput, PlatformMenu, PlatformMenuItem, Point,
+    RenderGlyphParams, RenderImage, Scene, ShapedGlyph, ShapedRun, SharedString, Size, SvgRenderer,
+    SystemWindowTab, Task, Window, WindowControlArea, point, px, size,
+};
+use anyhow::Result;
+use futures::channel::oneshot;
+use image::AnimationDecoder as _;
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+use image::RgbaImage;
+use image::codecs::gif::GifDecoder;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+pub use scheduler::RunnableMeta;
+use smallvec::SmallVec;
+use std::borrow::Cow;
+use std::io::Cursor;
+use std::time::Duration;
+use std::{
+    ffi::OsString,
+    fmt::Debug,
+    ops::Range,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+};
+
+pub use app_menu::*;
+
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+pub(crate) use test::*;
+
+#[cfg(any(test, feature = "test-support"))]
+pub use test::{TestScreenCaptureSource, TestScreenCaptureStream};
+
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+pub use threaded_dispatcher::{PlatformDispatcherExt, ThreadedDispatcher};
+
+#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+pub use visual_test::VisualTestPlatform;
+
+// The scene and atlas vocabulary moved down into `gpui_engine`. Re-export it so the
+// `crate::platform::…` paths this module used to provide keep resolving.
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+pub use gpui_engine::PlatformHeadlessRenderer;
+pub use gpui_engine::{
+    AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTextureList, AtlasTile, PlatformAtlas, TileId,
+    get_gamma_correction_ratios,
+};
+
+// The platform SPI value types and traits moved down into `gpui_platform`; imported so the
+// pinned traits below keep resolving them. `gpui.rs` re-exports the leaf at the crate root.
+use gpui_platform::*;
+
+#[expect(missing_docs)]
+pub trait Platform: 'static {
+    fn background_executor(&self) -> BackgroundExecutor;
+    fn foreground_executor(&self) -> ForegroundExecutor;
+    fn text_system(&self) -> Arc<dyn PlatformTextSystem>;
+
+    fn set_mac_activation_policy(&self, _policy: MacActivationPolicy) {}
+    fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>);
+    fn quit(&self);
+    fn restart(&self, binary_path: Option<PathBuf>, arguments: Vec<OsString>);
+    fn activate(&self, ignoring_other_apps: bool);
+    fn hide(&self);
+    fn hide_other_apps(&self);
+    fn unhide_other_apps(&self);
+
+    fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>>;
+    fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;
+    fn active_window(&self) -> Option<WindowId>;
+    fn window_stack(&self) -> Option<Vec<WindowId>> {
+        None
+    }
+
+    fn is_screen_capture_supported(&self) -> bool {
+        false
+    }
+
+    fn screen_capture_sources(
+        &self,
+    ) -> oneshot::Receiver<anyhow::Result<Vec<Rc<dyn ScreenCaptureSource>>>> {
+        let (sources_tx, sources_rx) = oneshot::channel();
+        sources_tx
+            .send(Err(anyhow::anyhow!(
+                "gpui was compiled without the screen-capture feature"
+            )))
+            .ok();
+        sources_rx
+    }
+
+    fn open_window(
+        &self,
+        handle: WindowId,
+        options: WindowParams,
+    ) -> anyhow::Result<Box<dyn PlatformWindow>>;
+
+    /// Returns the appearance of the application's windows.
+    fn window_appearance(&self) -> WindowAppearance;
+
+    /// Overrides the appearance (light/dark) applied to the app's windows, independent
+    /// of the OS-wide setting. Pass `None` to clear the override and follow the system
+    /// again. The override is reflected by [`Platform::window_appearance`].
+    ///
+    /// Currently only implemented on macOS, where it sets `NSApplication.appearance` so
+    /// the native window chrome (the window border and titlebar) of every window matches
+    /// a dark app theme even when the system is in light mode (or vice versa). A no-op on
+    /// other platforms.
+    fn set_window_appearance(&self, _appearance: Option<WindowAppearance>) {}
+
+    /// Returns the window button layout configuration when supported.
+    fn button_layout(&self) -> Option<WindowButtonLayout> {
+        None
+    }
+
+    fn open_url(&self, url: &str);
+    fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>);
+    fn register_url_scheme(&self, url: &str) -> Task<Result<()>>;
+
+    fn prompt_for_paths(
+        &self,
+        options: PathPromptOptions,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>>;
+    fn prompt_for_new_path(
+        &self,
+        directory: &Path,
+        suggested_name: Option<&str>,
+    ) -> oneshot::Receiver<Result<Option<PathBuf>>>;
+    fn can_select_mixed_files_and_dirs(&self) -> bool;
+    fn reveal_path(&self, path: &Path);
+    fn open_with_system(&self, path: &Path);
+
+    fn on_quit(&self, callback: Box<dyn FnMut() -> bool>);
+    fn on_reopen(&self, callback: Box<dyn FnMut()>);
+    fn on_system_wake(&self, callback: Box<dyn FnMut()>);
+
+    // Mobile platform methods. On mobile the OS owns the application
+    // lifecycle: apps are backgrounded, foregrounded, and killed at the
+    // system's discretion, and must react rather than decide.
+
+    /// Registers a callback invoked whenever the application's lifecycle
+    /// phase changes. See [`AppLifecyclePhase`] for the phase vocabulary and
+    /// its mapping onto iOS and Android.
+    ///
+    /// Desktop platforms never invoke this.
+    fn on_app_lifecycle(&self, _callback: Box<dyn FnMut(AppLifecyclePhase)>) {}
+
+    /// Registers a callback invoked when the OS signals memory pressure
+    /// (iOS `didReceiveMemoryWarning`, Android `onTrimMemory`).
+    ///
+    /// Desktop platforms never invoke this.
+    fn on_memory_warning(&self, _callback: Box<dyn FnMut()>) {}
+
+    /// The platform's gesture recognition services, if it provides any
+    /// beyond gpui's portable recognizers. See
+    /// [`PlatformGestures`].
+    fn gestures(&self) -> Option<Rc<dyn PlatformGestures>> {
+        None
+    }
+
+    fn set_menus(&self, menus: Vec<PlatformMenu>);
+
+    fn set_dock_menu(&self, menu: Vec<PlatformMenuItem>);
+    fn perform_dock_menu_action(&self, _action: usize) {}
+    fn add_recent_document(&self, _path: &Path) {}
+    fn update_jump_list(
+        &self,
+        _menus: Vec<PlatformMenuItem>,
+        _entries: Vec<SmallVec<[PathBuf; 2]>>,
+    ) -> Task<Vec<SmallVec<[PathBuf; 2]>>> {
+        Task::ready(Vec::new())
+    }
+    fn on_app_menu_action(&self, callback: Box<dyn FnMut(MenuCommandId)>);
+    fn on_will_open_app_menu(&self, callback: Box<dyn FnMut()>);
+    fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(MenuCommandId) -> bool>);
+
+    fn thermal_state(&self) -> ThermalState;
+    fn on_thermal_state_change(&self, callback: Box<dyn FnMut()>);
+
+    /// Sets the application's process-wide identity and user-visible name.
+    ///
+    /// The identifier is used for platform identity mechanisms such as the
+    /// Windows AppUserModelID. The name is used wherever the operating system
+    /// presents the application to the user. Call this once, early in startup,
+    /// before opening windows or posting notifications.
+    fn set_app_identity(&self, identifier: &str, name: &str) {
+        _ = (identifier, name);
+    }
+
+    /// Posts a notification to the operating system's notification center.
+    ///
+    /// Posting a notification whose [`SystemNotification::tag`] matches an
+    /// earlier one replaces that notification where the platform supports it.
+    /// No-op on platforms without notification support, or when delivery is
+    /// unavailable (e.g. authorization was denied).
+    fn show_system_notification(&self, notification: SystemNotification) {
+        _ = notification;
+    }
+
+    /// Removes the delivered or pending notification with this tag.
+    ///
+    /// Best-effort: some platforms cannot retract a notification once shown,
+    /// in which case it ages out of the notification center on its own.
+    fn dismiss_system_notification(&self, tag: &str) {
+        _ = tag;
+    }
+
+    /// Registers the callback invoked when the user activates a system
+    /// notification, either by clicking its body or one of its action
+    /// buttons.
+    ///
+    /// Implementations must invoke the callback on the main thread.
+    fn on_system_notification_response(
+        &self,
+        callback: Box<dyn FnMut(SystemNotificationResponse)>,
+    ) {
+        _ = callback;
+    }
+
+    fn compositor_name(&self) -> &'static str {
+        ""
+    }
+    fn app_path(&self) -> Result<PathBuf>;
+    fn path_for_auxiliary_executable(&self, name: &str) -> Result<PathBuf>;
+
+    fn set_cursor_style(&self, style: CursorStyle);
+
+    /// Hides the mouse cursor until the user moves the mouse over one of
+    /// this application's windows.
+    fn hide_cursor_until_mouse_moves(&self);
+
+    /// Returns whether the mouse cursor is currently visible.
+    fn is_cursor_visible(&self) -> bool;
+
+    fn should_auto_hide_scrollbars(&self) -> bool;
+
+    fn read_from_clipboard(&self) -> Option<ClipboardItem>;
+    fn write_to_clipboard(&self, item: ClipboardItem);
+
+    /// Reads the clipboard, resolving once its contents are available.
+    ///
+    /// Most platforms read synchronously and return a ready task. Platforms
+    /// whose clipboard access is inherently asynchronous and permission-gated
+    /// (e.g. the browser's async clipboard API) override this method; on those
+    /// platforms [`Platform::read_from_clipboard`] cannot return the clipboard
+    /// contents, so callers that can await should prefer this method.
+    fn read_from_clipboard_async(&self) -> Task<Result<Option<ClipboardItem>, ClipboardReadError>> {
+        Task::ready(Ok(self.read_from_clipboard()))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    fn read_from_primary(&self) -> Option<ClipboardItem>;
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    fn write_to_primary(&self, item: ClipboardItem);
+
+    #[cfg(target_os = "macos")]
+    fn read_from_find_pasteboard(&self) -> Option<ClipboardItem>;
+    #[cfg(target_os = "macos")]
+    fn write_to_find_pasteboard(&self, item: ClipboardItem);
+
+    fn write_credentials(&self, url: &str, username: &str, password: &[u8]) -> Task<Result<()>>;
+    fn read_credentials(&self, url: &str) -> Task<Result<Option<(String, Vec<u8>)>>>;
+    fn delete_credentials(&self, url: &str) -> Task<Result<()>>;
+
+    fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout>;
+    fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper>;
+    fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>);
+
+    /// Register additional GPU device requirements (features, limits) before
+    /// the first window is opened.  The concrete type inside the `Box` must be
+    /// `gpui_wgpu::WgpuDeviceRequirements`.
+    fn set_gpu_requirements(&self, _requirements: Box<dyn std::any::Any>) {}
+
+    /// Sets the label applied to credentials stored in the system keyring.
+    /// Only Linux/FreeBSD use this label.
+    fn set_keyring_label(&self, _label: SharedString) {}
+
+    /// Whether the current platform supports haptic feedback.
+    fn supports_haptic_feedback(&self) -> bool {
+        false
+    }
+
+    /// Play a haptic feedback of the given style.
+    ///
+    /// No-op on platforms that don't support haptic feedback.
+    fn play_haptic_feedback(&self, _style: HapticFeedbackStyle) {}
+}
+
+/// A source of on-screen video content that can be captured.
+pub trait ScreenCaptureSource {
+    /// Returns metadata for this source.
+    fn metadata(&self) -> Result<SourceMetadata>;
+
+    /// Start capture video from this source, invoking the given callback
+    /// with each frame.
+    fn stream(
+        &self,
+        foreground_executor: &ForegroundExecutor,
+        frame_callback: Box<dyn Fn(ScreenCaptureFrame) + Send>,
+    ) -> oneshot::Receiver<Result<Box<dyn ScreenCaptureStream>>>;
+}
+
+#[expect(missing_docs)]
+pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+    fn bounds(&self) -> Bounds<Pixels>;
+    fn is_maximized(&self) -> bool;
+    fn window_bounds(&self) -> WindowBounds;
+    fn content_size(&self) -> Size<Pixels>;
+    fn resize(&mut self, size: Size<Pixels>);
+    fn scale_factor(&self) -> f32;
+    fn appearance(&self) -> WindowAppearance;
+    fn display(&self) -> Option<Rc<dyn PlatformDisplay>>;
+    fn mouse_position(&self) -> Point<Pixels>;
+    fn modifiers(&self) -> Modifiers;
+    fn capslock(&self) -> Capslock;
+    fn set_input_handler(&mut self, input_handler: PlatformInputHandler);
+    fn take_input_handler(&mut self) -> Option<PlatformInputHandler>;
+    /// Apply the focused text region's [`TextInputConfiguration`] to the
+    /// platform's text input session (e.g. attributes of the hidden editable
+    /// element on web). Called only when the configuration changes, because
+    /// reconfiguring a live input session can restart the IME connection.
+    fn set_text_input_configuration(&mut self, _configuration: TextInputConfiguration) {}
+    fn prompt(
+        &self,
+        level: PromptLevel,
+        msg: &str,
+        detail: Option<&str>,
+        answers: &[PromptButton],
+    ) -> Option<oneshot::Receiver<usize>>;
+    fn activate(&self);
+    /// Requests that the operating system draw attention to this window.
+    fn request_attention(&self) {}
+    fn is_active(&self) -> bool;
+    fn is_hovered(&self) -> bool;
+    fn background_appearance(&self) -> WindowBackgroundAppearance;
+    fn set_title(&mut self, title: &str);
+    fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
+    /// Show or hide the window without explicitly requesting focus.
+    ///
+    /// The default implementation does nothing for platforms that do not support
+    /// changing window visibility at runtime.
+    fn set_visible(&self, _visible: bool) {}
+    fn minimize(&self);
+    fn zoom(&self);
+    fn toggle_fullscreen(&self);
+    fn is_fullscreen(&self) -> bool;
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        None
+    }
+    fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>);
+    fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>);
+    fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>);
+    fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>);
+    fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>);
+    fn on_moved(&self, callback: Box<dyn FnMut()>);
+    fn on_should_close(&self, callback: Box<dyn FnMut() -> bool>);
+    fn on_hit_test_window_control(&self, callback: Box<dyn FnMut() -> Option<WindowControlArea>>);
+    fn on_close(&self, callback: Box<dyn FnOnce()>);
+    fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
+    fn on_button_layout_changed(&self, _callback: Box<dyn FnMut()>) {}
+    fn draw(&self, scene: &Scene);
+    fn schedule_frame(&self) {}
+    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
+    fn is_subpixel_rendering_supported(&self) -> bool;
+
+    // macOS specific methods
+    fn get_title(&self) -> String {
+        String::new()
+    }
+    fn tabbed_windows(&self) -> Option<Vec<SystemWindowTab>> {
+        None
+    }
+    fn tab_bar_visible(&self) -> bool {
+        false
+    }
+    fn set_edited(&mut self, _edited: bool) {}
+    fn set_document_path(&self, _path: Option<&std::path::Path>) {}
+    fn toggle_simple_fullscreen(&self) {}
+    fn is_simple_fullscreen(&self) -> bool {
+        false
+    }
+    #[cfg(target_os = "macos")]
+    fn set_traffic_light_position(&self, _position: Point<Pixels>) {}
+    fn show_character_palette(&self) {}
+    fn titlebar_double_click(&self, _is_resizable: bool, _is_minimizable: bool) {}
+    fn on_move_tab_to_new_window(&self, _callback: Box<dyn FnMut()>) {}
+    fn on_merge_all_windows(&self, _callback: Box<dyn FnMut()>) {}
+    fn on_select_previous_tab(&self, _callback: Box<dyn FnMut()>) {}
+    fn on_select_next_tab(&self, _callback: Box<dyn FnMut()>) {}
+    fn on_toggle_tab_bar(&self, _callback: Box<dyn FnMut()>) {}
+    fn merge_all_windows(&self) {}
+    fn move_tab_to_new_window(&self) {}
+    fn toggle_window_tab_overview(&self) {}
+    fn set_tabbing_identifier(&self, _identifier: Option<String>) {}
+
+    #[cfg(target_os = "windows")]
+    fn get_raw_handle(&self) -> windows::Win32::Foundation::HWND;
+
+    // Linux specific methods
+    fn inner_window_bounds(&self) -> WindowBounds {
+        self.window_bounds()
+    }
+    fn request_decorations(&self, _decorations: WindowDecorations) {}
+    fn show_window_menu(&self, _position: Point<Pixels>) {}
+    fn start_window_move(&self) {}
+    fn can_start_external_drag(&self) -> bool {
+        false
+    }
+    fn start_external_drag(&self, _payload: &ExternalDragPayload) -> bool {
+        false
+    }
+    fn start_window_resize(&self, _edge: ResizeEdge) {}
+    fn set_exclusive_zone(&self, _zone: Pixels) {}
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    fn set_exclusive_edge(&self, _edge: layer_shell::Anchor) {}
+    fn set_input_region(&self, _region: Option<&[Bounds<Pixels>]>) {}
+    fn window_decorations(&self) -> Decorations {
+        Decorations::Server
+    }
+    fn set_app_id(&mut self, _app_id: &str) {}
+    fn map_window(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn window_controls(&self) -> WindowControls {
+        WindowControls::default()
+    }
+    fn set_client_inset(&self, _inset: Pixels) {}
+    fn gpu_specs(&self) -> Option<GpuSpecs>;
+
+    /// Returns the GPU context for this window's renderer.
+    /// The returned `Box` contains `(Arc<wgpu::Device>, Arc<wgpu::Queue>)`.
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))]
+    fn gpu_context(&self) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
+
+    /// Returns typed backend-specific GPU context information for custom
+    /// controls. The value is intentionally type-erased in this crate so the
+    /// core UI crate does not depend on a rendering backend.
+    #[cfg(any(target_family = "wasm", target_os = "linux", target_os = "freebsd"))]
+    fn gpu_context_info(&self) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
+
+    /// Whether this window's GPU device has been lost (the platform renderer
+    /// recovers it on a subsequent draw). `None` when the backend cannot
+    /// know. Safe to call mid-recovery, unlike `gpu_context`. Embedders that
+    /// captured the device from `gpu_context` should stop submitting while
+    /// this is `Some(true)` and re-acquire the device once it reads
+    /// `Some(false)` again.
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))]
+    fn gpu_device_lost(&self) -> Option<bool> {
+        None
+    }
+
+    fn update_ime_position(&self, _bounds: Bounds<Pixels>);
+
+    // Mobile platform methods.
+
+    /// The regions of this window currently obscured or reserved by the
+    /// system. Zero on platforms without such regions.
+    fn insets(&self) -> WindowInsets {
+        WindowInsets::default()
+    }
+
+    /// Registers a callback invoked whenever [`Self::insets`] change.
+    ///
+    /// Contract: fires continuously during animated transitions (Android
+    /// `WindowInsetsAnimation` progress; on iOS the platform interpolates
+    /// the keyboard animation curve on frame ticks) and is exact at rest.
+    fn on_insets_changed(&self, _callback: Box<dyn FnMut(WindowInsets)>) {}
+
+    /// Sets the handler for the system back action (Android back
+    /// button/gesture; no source on iOS or desktop).
+    fn set_back_handler(&self, _callback: Box<dyn FnMut()>) {}
+
+    /// Declares whether the application would currently handle the system
+    /// back action (e.g. navigation depth > 0).
+    fn set_back_enabled(&self, _enabled: bool) {}
+
+    /// Requests that the soft keyboard be shown.
+    fn show_soft_keyboard(&self) {}
+
+    /// Requests that the soft keyboard be hidden.
+    fn hide_soft_keyboard(&self) {}
+
+    /// Inform the operating system that the text input state has changed
+    fn text_input_state_changed(&self, _change: TextInputStateChange) {}
+
+    fn play_system_bell(&self) {}
+
+    /// Initialize the accessibility adapter with callbacks.
+    fn a11y_init(&self, _callbacks: A11yCallbacks) {}
+
+    /// Provide a TreeUpdate to the accessibility adapter.
+    fn a11y_tree_update(&self, _tree_update: accesskit::TreeUpdate) {}
+
+    /// Inform the adapter of updated window bounds.
+    fn a11y_update_window_bounds(&self) {}
+
+    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    fn as_test(&mut self) -> Option<&mut TestWindow> {
+        None
+    }
+
+    /// Renders the given scene to a texture and returns the pixel data as an RGBA image.
+    /// This does not present the frame to screen - useful for visual testing where we want
+    /// to capture what would be rendered without displaying it or requiring the window to be visible.
+    #[cfg(any(test, feature = "test-support"))]
+    fn render_to_image(&self, _scene: &Scene) -> Result<RgbaImage> {
+        anyhow::bail!("render_to_image not implemented for this platform")
+    }
+}
+
+#[expect(missing_docs)]
+pub trait PlatformTextSystem: Send + Sync {
+    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()>;
+    /// Get all available font names.
+    fn all_font_names(&self) -> Vec<String>;
+    /// Get the font ID for a font descriptor.
+    fn font_id(&self, descriptor: &Font) -> Result<FontId>;
+    /// Prewarm any system font caches needed to shape text.
+    fn prewarm_fonts(&self, _font_ids: &[FontId]) {}
+    /// Get metrics for a font.
+    fn font_metrics(&self, font_id: FontId) -> FontMetrics;
+    /// Get typographic bounds for a glyph.
+    fn typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Bounds<f32>>;
+    /// Get the advance width for a glyph.
+    fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>>;
+    /// Get the glyph ID for a character.
+    fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId>;
+    /// Get raster bounds for a glyph.
+    fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>>;
+    /// Rasterize a glyph.
+    fn rasterize_glyph(
+        &self,
+        params: &RenderGlyphParams,
+        raster_bounds: Bounds<DevicePixels>,
+    ) -> Result<(Size<DevicePixels>, Vec<u8>)>;
+    /// Layout a line of text with the given font runs.
+    fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout;
+    /// Returns the recommended text rendering mode for the given font and size.
+    fn recommended_rendering_mode(&self, _font_id: FontId, _font_size: Pixels)
+    -> TextRenderingMode;
+    /// Returns the dilation level to use for a glyph painted in the given color.
+    fn glyph_dilation_for_color(&self, _color: crate::Hsla) -> u8 {
+        0
+    }
+}
+
+#[expect(missing_docs)]
+pub struct NoopTextSystem;
+
+#[expect(missing_docs)]
+impl NoopTextSystem {
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl PlatformTextSystem for NoopTextSystem {
+    fn add_fonts(&self, _fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
+        Ok(())
+    }
+
+    fn all_font_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn font_id(&self, _descriptor: &Font) -> Result<FontId> {
+        Ok(FontId(1))
+    }
+
+    fn font_metrics(&self, _font_id: FontId) -> FontMetrics {
+        FontMetrics {
+            units_per_em: 1000,
+            ascent: 1025.0,
+            descent: -275.0,
+            line_gap: 0.0,
+            underline_position: -95.0,
+            underline_thickness: 60.0,
+            cap_height: 698.0,
+            x_height: 516.0,
+            bounding_box: Bounds {
+                origin: Point {
+                    x: -260.0,
+                    y: -245.0,
+                },
+                size: Size {
+                    width: 1501.0,
+                    height: 1364.0,
+                },
+            },
+        }
+    }
+
+    fn typographic_bounds(&self, _font_id: FontId, _glyph_id: GlyphId) -> Result<Bounds<f32>> {
+        Ok(Bounds {
+            origin: Point { x: 54.0, y: 0.0 },
+            size: size(392.0, 528.0),
+        })
+    }
+
+    fn advance(&self, _font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>> {
+        Ok(size(600.0 * glyph_id.0 as f32, 0.0))
+    }
+
+    fn glyph_for_char(&self, _font_id: FontId, ch: char) -> Option<GlyphId> {
+        Some(GlyphId(ch.len_utf16() as u32))
+    }
+
+    fn glyph_raster_bounds(&self, _params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+        Ok(Default::default())
+    }
+
+    fn rasterize_glyph(
+        &self,
+        _params: &RenderGlyphParams,
+        raster_bounds: Bounds<DevicePixels>,
+    ) -> Result<(Size<DevicePixels>, Vec<u8>)> {
+        Ok((raster_bounds.size, Vec::new()))
+    }
+
+    fn layout_line(&self, text: &str, font_size: Pixels, font_runs: &[FontRun]) -> LineLayout {
+        let mut position = px(0.);
+        let metrics = self.font_metrics(FontId(0));
+        let em_width = font_size
+            * self
+                .advance(FontId(0), self.glyph_for_char(FontId(0), 'm').unwrap())
+                .unwrap()
+                .width
+            / metrics.units_per_em as f32;
+        let mut glyphs = Vec::new();
+        for (ix, c) in text.char_indices() {
+            if let Some(glyph) = self.glyph_for_char(FontId(0), c) {
+                glyphs.push(ShapedGlyph {
+                    id: glyph,
+                    position: point(position, px(0.)),
+                    index: ix,
+                    is_emoji: glyph.0 == 2,
+                });
+                if glyph.0 == 2 {
+                    position += em_width * 2.0;
+                } else {
+                    position += em_width;
+                }
+            } else {
+                position += em_width
+            }
+        }
+        let mut shaped_runs = Vec::default();
+        if !glyphs.is_empty() {
+            shaped_runs.push(ShapedRun {
+                font_id: FontId(0),
+                glyphs,
+            });
+        } else {
+            position = px(0.);
+        }
+
+        let mut tracking = px(0.);
+        let mut byte_offset = 0usize;
+        for run in font_runs {
+            let end = byte_offset.saturating_add(run.len).min(text.len());
+            let slice = text.get(byte_offset..end).unwrap_or("");
+            let n = slice.chars().count();
+            if n > 1 {
+                if let Some(spacing) = run.letter_spacing {
+                    tracking += spacing * (n - 1) as f32;
+                }
+            }
+            byte_offset = byte_offset.saturating_add(run.len);
+        }
+
+        LineLayout {
+            font_size,
+            width: position + tracking,
+            ascent: font_size * (metrics.ascent / metrics.units_per_em as f32),
+            descent: font_size * (metrics.descent / metrics.units_per_em as f32),
+            runs: shaped_runs,
+            len: text.len(),
+        }
+    }
+
+    fn recommended_rendering_mode(
+        &self,
+        _font_id: FontId,
+        _font_size: Pixels,
+    ) -> TextRenderingMode {
+        TextRenderingMode::Grayscale
+    }
+}
+
+#[expect(missing_docs)]
+pub struct PlatformInputHandler {
+    cx: AsyncWindowContext,
+    handler: Box<dyn InputHandler>,
+}
+
+#[expect(missing_docs)]
+#[cfg_attr(
+    all(
+        any(target_os = "linux", target_os = "freebsd"),
+        not(any(feature = "x11", feature = "wayland"))
+    ),
+    allow(dead_code)
+)]
+impl PlatformInputHandler {
+    pub fn new(cx: AsyncWindowContext, handler: Box<dyn InputHandler>) -> Self {
+        Self { cx, handler }
+    }
+
+    pub fn selected_text_range(&mut self, ignore_disabled_input: bool) -> Option<UTF16Selection> {
+        self.cx
+            .update(|window, cx| {
+                self.handler
+                    .selected_text_range(ignore_disabled_input, window, cx)
+            })
+            .ok()
+            .flatten()
+    }
+
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    pub fn marked_text_range(&mut self) -> Option<Range<usize>> {
+        self.cx
+            .update(|window, cx| self.handler.marked_text_range(window, cx))
+            .ok()
+            .flatten()
+    }
+
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
+        allow(dead_code)
+    )]
+    pub fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        adjusted: &mut Option<Range<usize>>,
+    ) -> Option<String> {
+        self.cx
+            .update(|window, cx| {
+                self.handler
+                    .text_for_range(range_utf16, adjusted, window, cx)
+            })
+            .ok()
+            .flatten()
+    }
+
+    pub fn replace_text_in_range(&mut self, replacement_range: Option<Range<usize>>, text: &str) {
+        self.cx
+            .update(|window, cx| {
+                self.handler
+                    .replace_text_in_range(replacement_range, text, window, cx);
+            })
+            .ok();
+    }
+
+    pub fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range: Option<Range<usize>>,
+    ) {
+        self.cx
+            .update(|window, cx| {
+                self.handler.replace_and_mark_text_in_range(
+                    range_utf16,
+                    new_text,
+                    new_selected_range,
+                    window,
+                    cx,
+                )
+            })
+            .ok();
+    }
+
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    pub fn unmark_text(&mut self) {
+        self.cx
+            .update(|window, cx| self.handler.unmark_text(window, cx))
+            .ok();
+    }
+
+    pub fn paste(&mut self, item: ClipboardItem) {
+        self.cx
+            .update(|window, cx| self.handler.paste(item, window, cx))
+            .ok();
+    }
+
+    pub fn bounds_for_range(&mut self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
+        self.cx
+            .update(|window, cx| self.handler.bounds_for_range(range_utf16, window, cx))
+            .ok()
+            .flatten()
+    }
+
+    #[allow(dead_code)]
+    pub fn apple_press_and_hold_enabled(&mut self) -> bool {
+        self.handler.apple_press_and_hold_enabled()
+    }
+
+    pub fn dispatch_input(&mut self, input: &str, window: &mut Window, cx: &mut App) {
+        self.handler.replace_text_in_range(None, input, window, cx);
+    }
+
+    pub fn compute_ime_candidate_bounds(
+        marked_range: Option<Range<usize>>,
+        selection: &UTF16Selection,
+        mut bounds_for_range: impl FnMut(Range<usize>) -> Option<Bounds<Pixels>>,
+    ) -> Option<Bounds<Pixels>> {
+        if let Some(marked_range) = marked_range {
+            // Default to the start of the marked (composing) range.
+            let mut line_start = marked_range.start;
+
+            // Walk backward from the caret looking for a line break. A change in
+            // the Y coordinate means we crossed into the previous visual line, so
+            // the line start is one position after the break point.
+            let caret = selection.range.end;
+            if let Some(caret_bounds) = bounds_for_range(caret..caret) {
+                for i in (marked_range.start..caret).rev() {
+                    if let Some(b) = bounds_for_range(i..i) {
+                        if (b.origin.y - caret_bounds.origin.y).abs() > px(0.1) {
+                            line_start = i + 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            bounds_for_range(line_start..line_start)
+        } else {
+            // No active composition — use the selection endpoint.
+            let offset = if selection.reversed {
+                selection.range.start
+            } else {
+                selection.range.end
+            };
+            bounds_for_range(offset..offset)
+        }
+    }
+
+    pub fn selected_bounds(&mut self, window: &mut Window, cx: &mut App) -> Option<Bounds<Pixels>> {
+        let marked_range = self.handler.marked_text_range(window, cx);
+        let selection = self.handler.selected_text_range(true, window, cx)?;
+        Self::compute_ime_candidate_bounds(marked_range, &selection, |range| {
+            self.handler.bounds_for_range(range, window, cx)
+        })
+    }
+
+    pub fn ime_candidate_bounds(&mut self) -> Option<Bounds<Pixels>> {
+        let marked_range = self.marked_text_range();
+        let selection = self.selected_text_range(true)?;
+        Self::compute_ime_candidate_bounds(marked_range, &selection, |range| {
+            self.bounds_for_range(range)
+        })
+    }
+
+    #[allow(unused)]
+    pub fn character_index_for_point(&mut self, point: Point<Pixels>) -> Option<usize> {
+        self.cx
+            .update(|window, cx| self.handler.character_index_for_point(point, window, cx))
+            .ok()
+            .flatten()
+    }
+
+    /// See [`InputHandler::set_selected_text_range`].
+    pub fn set_selected_text_range(&mut self, range_utf16: Range<usize>) {
+        self.cx
+            .update(|window, cx| {
+                self.handler
+                    .set_selected_text_range(range_utf16, window, cx)
+            })
+            .ok();
+    }
+
+    /// See [`InputHandler::element_bounds`].
+    pub fn element_bounds(&mut self) -> Option<Bounds<Pixels>> {
+        self.cx
+            .update(|window, cx| self.handler.element_bounds(window, cx))
+            .ok()
+            .flatten()
+    }
+
+    /// See [`InputHandler::text_length_utf16`].
+    pub fn text_length_utf16(&mut self) -> Option<usize> {
+        self.cx
+            .update(|window, cx| self.handler.text_length_utf16(window, cx))
+            .ok()
+            .flatten()
+    }
+
+    #[allow(dead_code)]
+    pub fn accepts_text_input(&mut self, window: &mut Window, cx: &mut App) -> bool {
+        self.handler.accepts_text_input(window, cx)
+    }
+
+    #[allow(dead_code)]
+    pub fn query_accepts_text_input(&mut self) -> bool {
+        self.cx
+            .update(|window, cx| self.handler.accepts_text_input(window, cx))
+            .unwrap_or(true)
+    }
+
+    /// See [`InputHandler::prefers_ime_for_printable_keys`].
+    ///
+    /// This is not a pure delegation to the handler: while a multi-stroke binding is pending this
+    /// returns `false` regardless of the handler's preference, because the next printable key may
+    /// complete a binding whose prefix already bypassed the IME.
+    pub fn query_prefers_ime_for_printable_keys(&mut self) -> bool {
+        self.cx
+            .update(|window, cx| {
+                // The next printable key may complete a chord whose prefix bypassed the IME.
+                !window.has_pending_keystrokes()
+                    && self.handler.prefers_ime_for_printable_keys(window, cx)
+            })
+            .unwrap_or(false)
+    }
+
+    /// See [`InputHandler::text_input_configuration`].
+    pub fn text_input_configuration(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> TextInputConfiguration {
+        self.handler.text_input_configuration(window, cx)
+    }
+
+    /// See [`InputHandler::text_input_editable_range`].
+    pub fn text_input_editable_range(&mut self) -> Option<Range<usize>> {
+        self.cx
+            .update(|window, cx| self.handler.text_input_editable_range(window, cx))
+            .ok()
+            .flatten()
+    }
+}
+
+/// Zed's interface for handling text input from the platform's IME system
+/// This is currently a 1:1 exposure of the NSTextInputClient API:
+///
+/// <https://developer.apple.com/documentation/appkit/nstextinputclient>
+pub trait InputHandler: 'static {
+    /// Get the range of the user's currently selected text, if any
+    /// Corresponds to [selectedRange()](https://developer.apple.com/documentation/appkit/nstextinputclient/1438242-selectedrange)
+    ///
+    /// Return value is in terms of UTF-16 characters, from 0 to the length of the document
+    fn selected_text_range(
+        &mut self,
+        ignore_disabled_input: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<UTF16Selection>;
+
+    /// Get the range of the currently marked text, if any
+    /// Corresponds to [markedRange()](https://developer.apple.com/documentation/appkit/nstextinputclient/1438250-markedrange)
+    ///
+    /// Return value is in terms of UTF-16 characters, from 0 to the length of the document
+    fn marked_text_range(&mut self, window: &mut Window, cx: &mut App) -> Option<Range<usize>>;
+
+    /// Get the text for the given document range in UTF-16 characters
+    /// Corresponds to [attributedSubstring(forProposedRange: actualRange:)](https://developer.apple.com/documentation/appkit/nstextinputclient/1438238-attributedsubstring)
+    ///
+    /// range_utf16 is in terms of UTF-16 characters
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<String>;
+
+    /// Replace the text in the given document range with the given text
+    /// Corresponds to [insertText(_:replacementRange:)](https://developer.apple.com/documentation/appkit/nstextinputclient/1438258-inserttext)
+    ///
+    /// replacement_range is in terms of UTF-16 characters
+    fn replace_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut App,
+    );
+
+    /// Replace the text in the given document range with the given text,
+    /// and mark the given text as part of an IME 'composing' state
+    /// Corresponds to [setMarkedText(_:selectedRange:replacementRange:)](https://developer.apple.com/documentation/appkit/nstextinputclient/1438246-setmarkedtext)
+    ///
+    /// range_utf16 is in terms of UTF-16 characters
+    /// new_selected_range is in terms of UTF-16 characters
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut App,
+    );
+
+    /// Remove the IME 'composing' state from the document
+    /// Corresponds to [unmarkText()](https://developer.apple.com/documentation/appkit/nstextinputclient/1438239-unmarktext)
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut App);
+
+    /// Insert a platform-initiated paste at the current selection.
+    ///
+    /// Platforms that deliver paste as an input event rather than through an
+    /// application-defined action (e.g. the DOM `paste` event on web) call
+    /// this with the full clipboard contents. The default implementation
+    /// inserts only the plain-text portion of the item.
+    fn paste(&mut self, item: ClipboardItem, window: &mut Window, cx: &mut App) {
+        if let Some(text) = item.text() {
+            self.replace_text_in_range(None, &text, window, cx);
+        }
+    }
+
+    /// Get the bounds of the given document range in screen coordinates
+    /// Corresponds to [firstRect(forCharacterRange:actualRange:)](https://developer.apple.com/documentation/appkit/nstextinputclient/1438240-firstrect)
+    ///
+    /// This is used for positioning the IME candidate window
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Bounds<Pixels>>;
+
+    /// Get the character offset for the given point in terms of UTF16 characters
+    ///
+    /// Corresponds to [characterIndexForPoint:](https://developer.apple.com/documentation/appkit/nstextinputclient/characterindex(for:))
+    fn character_index_for_point(
+        &mut self,
+        point: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<usize>;
+
+    /// Set the range of the user's currently selected text.
+    ///
+    /// This is the reverse data-flow direction from [`Self::selected_text_range`]:
+    /// platforms call it when the system text machinery moves the selection on the
+    /// application's behalf — e.g. the user drags a system selection handle or
+    /// invokes Select All from system UI (iOS `UITextInput setSelectedTextRange:`,
+    /// Android `InputConnection.setSelection`).
+    ///
+    /// range_utf16 is in terms of UTF-16 characters, from 0 to the length of the document
+    fn set_selected_text_range(
+        &mut self,
+        _range_utf16: Range<usize>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
+
+    /// Get the bounds of the focused text element in window coordinates, if known.
+    ///
+    /// This is the pull counterpart to the [`PlatformWindow::update_ime_position`]
+    /// push: mobile platforms ask for the focused element's geometry when they
+    /// need it (e.g. to frame system text-interaction UI overlaid on the focused
+    /// element).
+    fn element_bounds(&mut self, _window: &mut Window, _cx: &mut App) -> Option<Bounds<Pixels>> {
+        None
+    }
+
+    /// Get the length of the document in UTF-16 characters, if known.
+    fn text_length_utf16(&mut self, _window: &mut Window, _cx: &mut App) -> Option<usize> {
+        None
+    }
+
+    /// Allows a given input context to opt into getting raw key repeats instead of
+    /// sending these to the platform.
+    /// TODO: Ideally we should be able to set ApplePressAndHoldEnabled in NSUserDefaults
+    /// (which is how iTerm does it) but it doesn't seem to work for me.
+    #[allow(dead_code)]
+    fn apple_press_and_hold_enabled(&mut self) -> bool {
+        true
+    }
+
+    /// Returns whether this handler is accepting text input to be inserted.
+    fn accepts_text_input(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
+        true
+    }
+
+    /// The contiguous range of text, in UTF-16 code units, that platform text
+    /// input may read and edit around the current selection.
+    ///
+    /// Platforms that mirror document text into an IME-editable buffer clamp
+    /// the mirrored window to this range, so multi-step IME edit gestures
+    /// (word deletion, autocorrect rewrites, suggestion picks) cannot reach
+    /// content outside it. The range should contain the current selection;
+    /// when it cannot (a selection spanning a region boundary), platforms
+    /// degrade the mirrored IME context rather than widening the range.
+    /// `None` places no bound.
+    fn text_input_editable_range(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<Range<usize>> {
+        None
+    }
+
+    /// Returns whether printable keys should be routed to the IME before keybinding
+    /// matching when a non-ASCII input source (e.g. Japanese, Korean, Chinese IME)
+    /// is active. This prevents multi-stroke keybindings like `jj` from intercepting
+    /// keys that the IME should compose.
+    ///
+    /// Defaults to `false`. The editor overrides this based on whether it expects
+    /// character input (e.g. Vim insert mode returns `true`, normal mode returns `false`).
+    /// The terminal keeps the default `false` so that raw keys reach the terminal process.
+    fn prefers_ime_for_printable_keys(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
+        false
+    }
+
+    /// Get this handler's preferences for platform text assistance.
+    ///
+    /// GPUI re-queries this every frame and forwards it to the platform window
+    /// only when it changes, so implementations must be cheap and may vary the
+    /// result with application state (e.g. with the cursor's position).
+    fn text_input_configuration(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> TextInputConfiguration {
+        TextInputConfiguration::default()
+    }
+}
+
+/// The variables that can be configured when creating a new window
+#[derive(Debug)]
+pub struct WindowOptions {
+    /// Specifies the state and bounds of the window in screen coordinates.
+    /// - `None`: Inherit the bounds.
+    /// - `Some(WindowBounds)`: Open a window with corresponding state and its restore size.
+    pub window_bounds: Option<WindowBounds>,
+
+    /// The titlebar configuration of the window
+    pub titlebar: Option<TitlebarOptions>,
+
+    /// Whether the window should be focused when created
+    pub focus: bool,
+
+    /// Whether the window should be shown when created
+    pub show: bool,
+
+    /// The kind of window to create
+    pub kind: WindowKind,
+
+    /// Whether the window can be moved by the user. When `false`, the user cannot drag
+    /// the window (on macOS this sets `NSWindow.isMovable`, which also disables the
+    /// Window-menu tiling items); programmatic moves are still allowed.
+    pub is_movable: bool,
+
+    /// Whether the application owns dragging of the (custom) titlebar, rather than
+    /// AppKit. Only has an effect on macOS.
+    ///
+    /// Set this to `true` for windows that draw their own titlebar and move the window
+    /// themselves via [`Window::start_window_move`]. It marks the whole content view as
+    /// app-owned titlebar content, so AppKit neither drags the window from the titlebar
+    /// nor delays titlebar clicks while disambiguating double-clicks (a delay first
+    /// observed on macOS 27). It is independent of `is_movable`, so such windows stay
+    /// user-movable (via their own drag) and keep the Window-menu tiling items enabled.
+    ///
+    /// Leave this `false` for windows that rely on AppKit's native titlebar dragging.
+    pub app_owns_titlebar_drag: bool,
+
+    /// The minimum interval between animation frames while the window is inactive.
+    ///
+    /// Set to `None` to disable inactive-window animation frame throttling.
+    pub inactive_frame_interval: Option<Duration>,
+
+    /// Whether the window should be resizable by the user
+    pub is_resizable: bool,
+
+    /// Whether the window should be minimized by the user
+    pub is_minimizable: bool,
+
+    /// The display to create the window on, if this is None,
+    /// the window will be created on the main display
+    pub display_id: Option<DisplayId>,
+
+    /// The appearance of the window background.
+    pub window_background: WindowBackgroundAppearance,
+
+    /// Application identifier of the window. Can by used by desktop environments to group applications together.
+    pub app_id: Option<String>,
+
+    /// Window minimum size
+    pub window_min_size: Option<Size<Pixels>>,
+
+    /// Whether to use client or server-side decorations on X11 and Wayland.
+    /// The platform may ignore requests it cannot satisfy.
+    pub window_decorations: Option<WindowDecorations>,
+
+    /// Icon image (X11 only)
+    pub icon: Option<Arc<image::RgbaImage>>,
+
+    /// Tab group name, allows opening the window as a native tab on macOS 10.12+. Windows with the same tabbing identifier will be grouped together.
+    pub tabbing_identifier: Option<String>,
+}
+
+/// The variables that can be configured when creating a new window
+#[derive(Debug)]
+#[cfg_attr(
+    all(
+        any(target_os = "linux", target_os = "freebsd"),
+        not(any(feature = "x11", feature = "wayland"))
+    ),
+    allow(dead_code)
+)]
+#[allow(missing_docs)]
+pub struct WindowParams {
+    pub bounds: Bounds<Pixels>,
+
+    /// The titlebar configuration of the window
+    #[cfg_attr(feature = "wayland", allow(dead_code))]
+    pub titlebar: Option<TitlebarOptions>,
+
+    /// The kind of window to create
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    pub kind: WindowKind,
+
+    /// Whether the window should be movable by the user
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    pub is_movable: bool,
+
+    /// Whether the application owns dragging of the (custom) titlebar (macOS only)
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
+        allow(dead_code)
+    )]
+    pub app_owns_titlebar_drag: bool,
+
+    /// Whether the window should be resizable by the user
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    pub is_resizable: bool,
+
+    /// Whether the window should be minimized by the user
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    pub is_minimizable: bool,
+
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
+        allow(dead_code)
+    )]
+    pub focus: bool,
+
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    pub show: bool,
+
+    /// An image to set as the window icon (X11 and Wayland only)
+    /// Wayland requires the xdg-toplevel-icon protocol to be available
+    #[cfg_attr(feature = "wayland", allow(dead_code))]
+    pub icon: Option<Arc<image::RgbaImage>>,
+
+    #[cfg_attr(feature = "wayland", allow(dead_code))]
+    pub display_id: Option<DisplayId>,
+
+    #[cfg_attr(feature = "wayland", allow(dead_code))]
+    pub app_id: Option<String>,
+
+    pub window_min_size: Option<Size<Pixels>>,
+
+    #[cfg(target_os = "macos")]
+    pub tabbing_identifier: Option<String>,
+}
+
+/// Represents the status of how a window should be opened.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum WindowBounds {
+    /// Indicates that the window should open in a windowed state with the given bounds.
+    Windowed(Bounds<Pixels>),
+    /// Indicates that the window should open in a maximized state.
+    /// The bounds provided here represent the restore size of the window.
+    Maximized(Bounds<Pixels>),
+    /// Indicates that the window should open in fullscreen mode.
+    /// The bounds provided here represent the restore size of the window.
+    Fullscreen(Bounds<Pixels>),
+}
+
+impl Default for WindowBounds {
+    fn default() -> Self {
+        WindowBounds::Windowed(Bounds::default())
+    }
+}
+
+impl WindowBounds {
+    /// Retrieve the inner bounds
+    pub fn get_bounds(&self) -> Bounds<Pixels> {
+        match self {
+            WindowBounds::Windowed(bounds) => *bounds,
+            WindowBounds::Maximized(bounds) => *bounds,
+            WindowBounds::Fullscreen(bounds) => *bounds,
+        }
+    }
+
+    /// Creates a new window bounds that centers the window on the screen.
+    pub fn centered(size: Size<Pixels>, cx: &App) -> Self {
+        WindowBounds::Windowed(Bounds::centered(None, size, cx))
+    }
+}
+
+impl Default for WindowOptions {
+    fn default() -> Self {
+        Self {
+            window_bounds: None,
+            titlebar: Some(TitlebarOptions {
+                title: Default::default(),
+                appears_transparent: Default::default(),
+                traffic_light_position: Default::default(),
+            }),
+            focus: true,
+            show: true,
+            kind: WindowKind::Normal,
+            is_movable: true,
+            app_owns_titlebar_drag: false,
+            inactive_frame_interval: Some(Duration::from_micros(33_333)),
+            is_resizable: true,
+            is_minimizable: true,
+            display_id: None,
+            window_background: WindowBackgroundAppearance::default(),
+            icon: None,
+            app_id: None,
+            window_min_size: None,
+            window_decorations: None,
+            tabbing_identifier: None,
+        }
+    }
+}
+
+/// The kind of window to create
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WindowKind {
+    /// A normal application window
+    Normal,
+
+    /// A window that appears above all other windows, usually used for alerts or popups
+    /// use sparingly!
+    PopUp,
+
+    /// A parent-anchored, platform-native popup window for menus, comboboxes, context menus and
+    /// tooltips. Unlike [`WindowKind::PopUp`], it is positioned relative to a parent window.
+    ///
+    /// The popup's size comes from [`WindowOptions::window_bounds`], whose origin is ignored.
+    /// See [`popup::PopupOptions`] for the placement options. Platforms without a native
+    /// implementation reject it with [`popup::PopupNotSupportedError`].
+    AnchoredPopup(popup::PopupOptions),
+
+    /// A floating window that appears on top of its parent window
+    Floating,
+
+    /// A Wayland LayerShell window, used to draw overlays or backgrounds for applications such as
+    /// docks, notifications or wallpapers.
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    LayerShell(layer_shell::LayerShellOptions),
+
+    /// A window that appears on top of its parent window and blocks interaction with it
+    /// until the modal window is closed
+    Dialog,
+}
+
+/// Window- and app-coupled extensions on [`Image`].
+///
+/// These methods need a `Window` or an `App`, so they cannot live on the leaf's
+/// [`Image`]; as a trait, method-call syntax is unchanged wherever
+/// it is in scope, and `gpui` re-exports it, so `image.use_render_image(..)` keeps working.
+pub trait ImageExt: Sized {
+    /// Use the GPUI `use_asset` API to make this image renderable
+    fn use_render_image(
+        self: Arc<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Arc<RenderImage>>;
+    /// Use the GPUI `get_asset` API to make this image renderable
+    fn get_render_image(
+        self: Arc<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Arc<RenderImage>>;
+    /// Use the GPUI `remove_asset` API to drop this image, if possible.
+    fn remove_asset(self: Arc<Self>, cx: &mut App);
+    /// Check whether this image is present in GPUI's asset cache, without fetching it.
+    #[cfg(any(test, feature = "test-support"))]
+    fn is_asset_cached(self: &Arc<Self>, cx: &App) -> bool;
+    /// Convert the clipboard image to an `ImageData` object.
+    fn to_image_data(&self, svg_renderer: SvgRenderer) -> Result<Arc<RenderImage>>;
+}
+
+impl ImageExt for Image {
+    /// Use the GPUI `use_asset` API to make this image renderable
+    fn use_render_image(
+        self: Arc<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Arc<RenderImage>> {
+        ImageSource::Image(self)
+            .use_data(None, window, cx)
+            .and_then(|result| result.ok())
+    }
+
+    /// Use the GPUI `get_asset` API to make this image renderable
+    fn get_render_image(
+        self: Arc<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Arc<RenderImage>> {
+        ImageSource::Image(self)
+            .get_data(None, window, cx)
+            .and_then(|result| result.ok())
+    }
+
+    /// Use the GPUI `remove_asset` API to drop this image, if possible.
+    fn remove_asset(self: Arc<Self>, cx: &mut App) {
+        ImageSource::Image(self).remove_asset(cx);
+    }
+
+    /// Check whether this image is present in GPUI's asset cache (loading or
+    /// loaded), without fetching it.
+    #[cfg(any(test, feature = "test-support"))]
+    fn is_asset_cached(self: &Arc<Self>, cx: &App) -> bool {
+        ImageSource::Image(self.clone()).is_asset_cached(cx)
+    }
+
+    /// Convert the clipboard image to an `ImageData` object.
+    fn to_image_data(&self, svg_renderer: SvgRenderer) -> Result<Arc<RenderImage>> {
+        let frames = match self.format {
+            ImageFormat::Gif => {
+                let decoder = GifDecoder::new(Cursor::new(&self.bytes))?;
+                let mut frames = SmallVec::new();
+
+                for frame in decoder.into_frames() {
+                    match frame {
+                        Ok(mut frame) => {
+                            // Convert from RGBA to BGRA.
+                            for pixel in frame.buffer_mut().chunks_exact_mut(4) {
+                                pixel.swap(0, 2);
+                            }
+                            frames.push(frame);
+                        }
+                        Err(err) => {
+                            log::debug!("Skipping GIF frame due to decode error: {err}");
+                        }
+                    }
+                }
+
+                if frames.is_empty() {
+                    anyhow::bail!("GIF could not be decoded: all frames failed");
+                }
+
+                frames
+            }
+            ImageFormat::Png => decode_static_image(&self.bytes, image::ImageFormat::Png)?,
+            ImageFormat::Jpeg => decode_static_image(&self.bytes, image::ImageFormat::Jpeg)?,
+            ImageFormat::Webp => decode_static_image(&self.bytes, image::ImageFormat::WebP)?,
+            ImageFormat::Bmp => decode_static_image(&self.bytes, image::ImageFormat::Bmp)?,
+            ImageFormat::Tiff => decode_static_image(&self.bytes, image::ImageFormat::Tiff)?,
+            ImageFormat::Ico => decode_static_image(&self.bytes, image::ImageFormat::Ico)?,
+            ImageFormat::Svg => {
+                return svg_renderer
+                    .render_single_frame(&self.bytes, 1.0)
+                    .map_err(Into::into);
+            }
+            ImageFormat::Pnm => decode_static_image(&self.bytes, image::ImageFormat::Pnm)?,
+        };
+
+        Ok(Arc::new(RenderImage::new(frames)))
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use crate::AssetRegistry;
+
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_image_to_image_data_applies_exif_orientation() {
+        let image = Image::from_bytes(
+            ImageFormat::Jpeg,
+            include_bytes!("../../gpui/examples/legacy/image/exif-orientation-rotate-180.jpg")
+                .to_vec(),
+        );
+
+        let render_image = image
+            .to_image_data(SvgRenderer::new(Arc::new(AssetRegistry::default())))
+            .unwrap();
+
+        assert_eq!(render_image.size(0), size(16.into(), 32.into()));
+
+        let bytes = render_image.as_bytes(0).unwrap();
+        assert_eq!(&bytes[..4], &[255, 255, 255, 255]);
+        assert_eq!(&bytes[(16 * 32 - 1) * 4..], &[0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn test_svg_image_to_image_data_converts_to_bgra() {
+        let image = Image::from_bytes(
+            ImageFormat::Svg,
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">
+<rect width="1" height="1" fill="#38BDF8"/>
+</svg>"##
+                .to_vec(),
+        );
+
+        let render_image = image
+            .to_image_data(SvgRenderer::new(Arc::new(AssetRegistry::default())))
+            .unwrap();
+        let bytes = render_image.as_bytes(0).unwrap();
+
+        for pixel in bytes.chunks_exact(4) {
+            assert_eq!(pixel, &[0xF8, 0xBD, 0x38, 0xFF]);
+        }
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_window_button_layout_parse_standard() {
+        let layout = WindowButtonLayout::parse("close,minimize:maximize").unwrap();
+        assert_eq!(
+            layout.left,
+            [
+                Some(WindowButton::Close),
+                Some(WindowButton::Minimize),
+                None
+            ]
+        );
+        assert_eq!(layout.right, [Some(WindowButton::Maximize), None, None]);
+    }
+
+    #[test]
+    fn test_window_button_layout_parse_right_only() {
+        let layout = WindowButtonLayout::parse("minimize,maximize,close").unwrap();
+        assert_eq!(layout.left, [None, None, None]);
+        assert_eq!(
+            layout.right,
+            [
+                Some(WindowButton::Minimize),
+                Some(WindowButton::Maximize),
+                Some(WindowButton::Close)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_window_button_layout_parse_left_only() {
+        let layout = WindowButtonLayout::parse("close,minimize,maximize:").unwrap();
+        assert_eq!(
+            layout.left,
+            [
+                Some(WindowButton::Close),
+                Some(WindowButton::Minimize),
+                Some(WindowButton::Maximize)
+            ]
+        );
+        assert_eq!(layout.right, [None, None, None]);
+    }
+
+    #[test]
+    fn test_window_button_layout_parse_with_whitespace() {
+        let layout = WindowButtonLayout::parse(" close , minimize : maximize ").unwrap();
+        assert_eq!(
+            layout.left,
+            [
+                Some(WindowButton::Close),
+                Some(WindowButton::Minimize),
+                None
+            ]
+        );
+        assert_eq!(layout.right, [Some(WindowButton::Maximize), None, None]);
+    }
+
+    #[test]
+    fn test_window_button_layout_parse_empty() {
+        let layout = WindowButtonLayout::parse("").unwrap();
+        assert_eq!(layout.left, [None, None, None]);
+        assert_eq!(layout.right, [None, None, None]);
+    }
+
+    #[test]
+    fn test_window_button_layout_parse_intentionally_empty() {
+        let layout = WindowButtonLayout::parse(":").unwrap();
+        assert_eq!(layout.left, [None, None, None]);
+        assert_eq!(layout.right, [None, None, None]);
+    }
+
+    #[test]
+    fn test_window_button_layout_parse_invalid_buttons() {
+        let layout = WindowButtonLayout::parse("close,invalid,minimize:maximize,foo").unwrap();
+        assert_eq!(
+            layout.left,
+            [
+                Some(WindowButton::Close),
+                Some(WindowButton::Minimize),
+                None
+            ]
+        );
+        assert_eq!(layout.right, [Some(WindowButton::Maximize), None, None]);
+    }
+
+    #[test]
+    fn test_window_button_layout_parse_deduplicates_same_side_buttons() {
+        let layout = WindowButtonLayout::parse("close,close,minimize").unwrap();
+        assert_eq!(
+            layout.right,
+            [
+                Some(WindowButton::Close),
+                Some(WindowButton::Minimize),
+                None
+            ]
+        );
+        assert_eq!(layout.format(), ":close,minimize");
+    }
+
+    #[test]
+    fn test_window_button_layout_parse_deduplicates_buttons_across_sides() {
+        let layout = WindowButtonLayout::parse("close:maximize,close,minimize").unwrap();
+        assert_eq!(layout.left, [Some(WindowButton::Close), None, None]);
+        assert_eq!(
+            layout.right,
+            [
+                Some(WindowButton::Maximize),
+                Some(WindowButton::Minimize),
+                None
+            ]
+        );
+
+        let button_ids: Vec<_> = layout
+            .left
+            .iter()
+            .chain(layout.right.iter())
+            .flatten()
+            .map(WindowButton::id)
+            .collect();
+        let unique_button_ids = button_ids.iter().copied().collect::<HashSet<_>>();
+        assert_eq!(unique_button_ids.len(), button_ids.len());
+        assert_eq!(layout.format(), "close:maximize,minimize");
+    }
+
+    #[test]
+    fn test_window_button_layout_parse_gnome_style() {
+        let layout = WindowButtonLayout::parse("close").unwrap();
+        assert_eq!(layout.left, [None, None, None]);
+        assert_eq!(layout.right, [Some(WindowButton::Close), None, None]);
+    }
+
+    #[test]
+    fn test_window_button_layout_parse_elementary_style() {
+        let layout = WindowButtonLayout::parse("close:maximize").unwrap();
+        assert_eq!(layout.left, [Some(WindowButton::Close), None, None]);
+        assert_eq!(layout.right, [Some(WindowButton::Maximize), None, None]);
+    }
+
+    #[test]
+    fn test_window_button_layout_round_trip() {
+        let cases = [
+            "close:minimize,maximize",
+            "minimize,maximize,close:",
+            ":close",
+            "close:",
+            "close:maximize",
+            ":",
+        ];
+
+        for case in cases {
+            let layout = WindowButtonLayout::parse(case).unwrap();
+            assert_eq!(layout.format(), case, "Round-trip failed for: {}", case);
+        }
+    }
+
+    #[test]
+    fn test_window_button_layout_linux_default() {
+        let layout = WindowButtonLayout::linux_default();
+        assert_eq!(layout.left, [None, None, None]);
+        assert_eq!(
+            layout.right,
+            [
+                Some(WindowButton::Minimize),
+                Some(WindowButton::Maximize),
+                Some(WindowButton::Close)
+            ]
+        );
+
+        let round_tripped = WindowButtonLayout::parse(&layout.format()).unwrap();
+        assert_eq!(round_tripped, layout);
+    }
+
+    #[test]
+    fn test_window_button_layout_parse_all_invalid() {
+        assert!(WindowButtonLayout::parse("asdfghjkl").is_err());
+    }
+}

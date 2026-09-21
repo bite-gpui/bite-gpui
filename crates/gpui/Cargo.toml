@@ -25,6 +25,7 @@ wgpu-surfaces = []
 test-support = [
   "leak-detection",
   "collections/test-support",
+  "gpui_authoring/test-support",
   "gpui_engine/test-support",
   "gpui_platform/test-support",
   "wayland",
@@ -34,24 +35,25 @@ test-support = [
 bench-support = [
   "profiler",
   "dep:criterion",
+  "gpui_authoring/bench-support",
   "gpui_engine/bench-support",
   "gpui_platform/bench-support",
 ]
 # Preserve the published feature name while consumers migrate to `bench-support`.
 bench = ["bench-support"]
-inspector = ["gpui_macros/inspector"]
-leak-detection = ["backtrace"]
-wayland = ["gpui_platform/wayland"]
-x11 = ["gpui_platform/x11"]
+inspector = ["gpui_authoring/inspector", "gpui_macros/inspector"]
+leak-detection = ["backtrace", "gpui_authoring/leak-detection"]
+wayland = ["gpui_authoring/wayland", "gpui_platform/wayland"]
+x11 = ["gpui_authoring/x11", "gpui_platform/x11"]
 screen-capture = [
   "dep:windows-capture",
+  "gpui_authoring/screen-capture",
   "gpui_engine/screen-capture",
   "gpui_platform/screen-capture",
 ]
 windows-manifest = ["dep:embed-resource"]
-profiler = ["dep:hdrhistogram", "gpui_platform/profiler"]
-stacker = ["dep:stacksafe"]
-embedded-assets = ["dep:rust-embed"]
+profiler = ["dep:hdrhistogram", "gpui_authoring/profiler", "gpui_platform/profiler"]
+stacker = ["dep:stacksafe", "gpui_authoring/stacker"]
 
 [lib]
 name = "gpui"
