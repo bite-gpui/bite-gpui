@@ -23,6 +23,9 @@ default = []
 # `PlatformScreenCaptureFrame` alias.
 test-support = ["gpui_engine/test-support"]
 bench-support = ["test-support", "gpui_engine/bench-support"]
+# Forwarded from `gpui`/`gpui-ce`, which is where consumers turn this on. Gates the
+# executor's foreground-runnable counting (`foreground_runnable_counter`).
+profiler = []
 wayland = []
 x11 = []
 screen-capture = []
@@ -32,6 +35,7 @@ accesskit.workspace = true
 anyhow.workspace = true
 async-task.workspace = true
 bitflags.workspace = true
+chrono.workspace = true
 collections.workspace = true
 futures.workspace = true
 gpui_engine.workspace = true
@@ -39,6 +43,9 @@ gpui_shared_string.workspace = true
 gpui_types.workspace = true
 gpui_util.workspace = true
 image.workspace = true
+log.workspace = true
+num_cpus = "1.13"
+parking = "2.0.0"
 parking_lot.workspace = true
 rand.workspace = true
 scheduler.workspace = true
@@ -51,6 +58,7 @@ smallvec.workspace = true
 strum.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+waker-fn = "1.2.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-video.workspace = true

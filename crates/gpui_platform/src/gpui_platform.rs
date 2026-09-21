@@ -12,8 +12,9 @@
 //! ## Layout
 //!
 //! Module names follow the layered reference layout (`app`, `clipboard`, `cursor`,
-//! `display`, `executor`, `input_handler`, `keyboard`, `layer_shell`, `menu`,
-//! `notification`, `platform`, `popup`, `profiler`, `prompt`, `screen_capture`,
+//! `dispatcher`, `display`, `executor`, `executor_runtime`, `input_handler`, `keyboard`,
+//! `layer_shell`, `menu`, `notification`, `platform`, `platform_scheduler`, `popup`,
+//! `profiler`, `prompt`, `screen_capture`,
 //! `test_dispatcher`, `text_input`, `window`). Two of them are transitional groupings
 //! rather than reference
 //! modules: the test doubles taken from ce's `platform/test/` (`TestAtlas`,
@@ -31,8 +32,10 @@
 mod app;
 mod clipboard;
 mod cursor;
+mod dispatcher;
 mod display;
 mod executor;
+mod executor_runtime;
 mod input_handler;
 mod keyboard;
 mod keystroke;
@@ -42,6 +45,7 @@ pub mod layer_shell;
 mod menu;
 mod notification;
 mod platform;
+mod platform_scheduler;
 mod popup;
 mod profiler;
 mod prompt;
@@ -67,14 +71,17 @@ mod window_id;
 pub use app::*;
 pub use clipboard::*;
 pub use cursor::*;
+pub use dispatcher::*;
 pub use display::*;
 pub use executor::*;
+pub use executor_runtime::*;
 pub use input_handler::*;
 pub use keyboard::*;
 pub use keystroke::*;
 pub use menu::*;
 pub use notification::*;
 pub use platform::*;
+pub use platform_scheduler::*;
 pub use popup::*;
 pub use profiler::*;
 pub use prompt::*;

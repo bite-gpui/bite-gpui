@@ -25,6 +25,9 @@ use scheduler::Instant;
 
 use super::{ActionTiming, FrameTiming, PresentTiming, TaskTiming};
 use crate::WindowId;
+use gpui_platform::{
+    ForegroundRunnableCounter, foreground_runnable_counter, foreground_runnable_finished,
+};
 
 /// Task polls shorter than this are folded into a [`PollSummary`] instead of
 /// being recorded individually. This keeps the stream bounded by the number
@@ -354,31 +357,6 @@ impl FrameSnapshot {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct ForegroundRunnableCounter(Arc<AtomicUsize>);
-
-impl ForegroundRunnableCounter {
-    fn new() -> Self {
-        Self(Arc::new(AtomicUsize::new(0)))
-    }
-
-    pub(crate) fn queued(&self) {
-        self.0.fetch_add(1, Ordering::Release);
-    }
-
-    fn finished(&self) {
-        let _ = self
-            .0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                count.checked_sub(1)
-            });
-    }
-
-    fn has_runnables(&self) -> bool {
-        self.0.load(Ordering::Acquire) > 0
-    }
-}
-
 struct ForegroundJournalWriter {
     foreground_runnables: ForegroundRunnableCounter,
     publisher: JournalPublisher,
@@ -522,12 +500,7 @@ impl ForegroundJournalWriter {
 }
 
 thread_local! {
-    static FOREGROUND_RUNNABLES: ForegroundRunnableCounter = ForegroundRunnableCounter::new();
     static FOREGROUND_JOURNAL: RefCell<Option<ForegroundJournalWriter>> = const { RefCell::new(None) };
-}
-
-pub(crate) fn foreground_runnable_counter() -> ForegroundRunnableCounter {
-    FOREGROUND_RUNNABLES.with(Clone::clone)
 }
 
 /// Starts journaling on the calling thread. Called once by `App` construction
@@ -634,7 +607,7 @@ pub(crate) fn end_foreground_turn() {
 }
 
 pub(crate) fn record_task_poll(timing: TaskTiming) {
-    FOREGROUND_RUNNABLES.with(ForegroundRunnableCounter::finished);
+    foreground_runnable_finished();
     with_journal(|journal| {
         if timing.poll_duration() >= TASK_POLL_FLOOR {
             journal.record_event(ForegroundEvent::TaskPoll(timing));

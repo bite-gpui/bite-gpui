@@ -378,9 +378,20 @@ impl PlatformDispatcher for ThreadedDispatcher {
             .spawn(f)
             .expect("failed to spawn threaded dispatcher realtime thread");
     }
+}
 
+/// Access to the concrete [`ThreadedDispatcher`] behind a [`PlatformDispatcher`].
+///
+/// This stays here rather than on the leaf's trait because `ThreadedDispatcher` is a `gpui`
+/// type; the platform scheduler and executors reach the trait through the crate boundary.
+pub trait PlatformDispatcherExt {
+    /// Returns this dispatcher as a [`ThreadedDispatcher`], if it is one.
+    fn as_threaded(&self) -> Option<&ThreadedDispatcher>;
+}
+
+impl PlatformDispatcherExt for dyn PlatformDispatcher {
     fn as_threaded(&self) -> Option<&ThreadedDispatcher> {
-        Some(self)
+        (self as &dyn std::any::Any).downcast_ref::<ThreadedDispatcher>()
     }
 }
 

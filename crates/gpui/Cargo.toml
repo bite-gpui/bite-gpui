@@ -49,7 +49,7 @@ screen-capture = [
   "gpui_platform/screen-capture",
 ]
 windows-manifest = ["dep:embed-resource"]
-profiler = ["dep:hdrhistogram"]
+profiler = ["dep:hdrhistogram", "gpui_platform/profiler"]
 stacker = ["dep:stacksafe"]
 embedded-assets = ["dep:rust-embed"]
 

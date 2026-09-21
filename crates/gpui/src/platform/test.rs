@@ -1,4 +1,3 @@
-mod dispatcher;
 mod platform;
 mod window;
 

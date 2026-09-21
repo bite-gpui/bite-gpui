@@ -1,9 +1,10 @@
 //! A deterministic dispatcher for tests and benchmarks.
 //!
-//! The inherent API lives here; the `gpui` facade implements its `PlatformDispatcher`
-//! trait for it, since that trait has not moved down yet.
+//! Both the inherent API and the `PlatformDispatcher` implementation live here now that
+//! the dispatcher contract has moved down into this crate.
 
-use scheduler::{SessionId, TestScheduler, TestSchedulerConfig, Yield};
+use crate::{PlatformDispatcher, Priority, RunnableVariant};
+use scheduler::{Clock, Instant, Scheduler, SessionId, TestScheduler, TestSchedulerConfig, Yield};
 use std::{
     sync::{
         Arc,
@@ -111,5 +112,41 @@ impl Clone for TestDispatcher {
             scheduler: self.scheduler.clone(),
             num_cpus_override: self.num_cpus_override.clone(),
         }
+    }
+}
+
+impl PlatformDispatcher for TestDispatcher {
+    fn is_main_thread(&self) -> bool {
+        self.scheduler().is_main_thread()
+    }
+
+    fn now(&self) -> Instant {
+        self.scheduler().clock().now()
+    }
+
+    fn dispatch(&self, runnable: RunnableVariant, priority: Priority) {
+        self.scheduler()
+            .schedule_background_with_priority(runnable, priority);
+    }
+
+    fn dispatch_on_main_thread(&self, runnable: RunnableVariant, _priority: Priority) {
+        self.scheduler().schedule_local(self.session_id(), runnable);
+    }
+
+    fn dispatch_after(&self, _duration: Duration, _runnable: RunnableVariant) {
+        panic!(
+            "dispatch_after should not be called in tests. \
+            Use BackgroundExecutor::timer() which uses the scheduler's native timer."
+        );
+    }
+
+    fn as_test(&self) -> Option<&TestDispatcher> {
+        Some(self)
+    }
+
+    fn spawn_realtime(&self, f: Box<dyn FnOnce() + Send>) {
+        std::thread::spawn(move || {
+            f();
+        });
     }
 }

@@ -19,9 +19,9 @@ pub mod colors;
 mod debug_overlay;
 mod element;
 mod elements;
+/// The `TaskExt` extension trait over the leaf's `Task`; the executors themselves moved to
+/// `gpui_platform`.
 mod executor;
-mod platform_scheduler;
-pub(crate) use platform_scheduler::PlatformScheduler;
 mod gestures;
 mod global;
 mod input;
