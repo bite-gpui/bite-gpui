@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
 
@@ -1463,6 +1463,20 @@ impl WgpuRenderer {
                             continue;
                         }
 
+                        // With no multisampling there is nothing to resolve, and
+                        // the target the paths are rasterized into exists only as
+                        // a resolve target: without one it is two passes the size
+                        // of the window — cleared, rasterized and composited — for
+                        // whatever the paths happen to cover, and a progress ring
+                        // pays for the same window a screenful of glyph outlines
+                        // does. The rasterization pipeline already blends into a
+                        // surface-format target, so the paths can simply be drawn
+                        // here, where the batch sits in the frame's order.
+                        if self.resources().path_msaa_view.is_none() && paths_are_drawn_directly() {
+                            self.draw_paths_directly(paths, &mut instance_offset, &mut pass)?;
+                            continue;
+                        }
+
                         drop(pass);
                         let rasterized = self.draw_paths_to_intermediate(
                             &mut encoder,
@@ -1706,26 +1720,11 @@ impl WgpuRenderer {
         paths: &[Path<ScaledPixels>],
         instance_offset: &mut u64,
     ) -> Result<bool> {
-        let mut vertices = Vec::new();
-        for path in paths {
-            let bounds = path.clipped_bounds();
-            vertices.extend(path.vertices.iter().map(|v| PathRasterizationVertex {
-                xy_position: v.xy_position,
-                st_position: v.st_position,
-                color: path.color,
-                bounds,
-            }));
-        }
-
-        if vertices.is_empty() {
+        let Some((vertex_binding, vertex_count)) =
+            self.write_path_vertices(paths, instance_offset)?
+        else {
             return Ok(false);
-        }
-
-        let vertex_binding = self.write_instance_binding(
-            "path_rasterization_bind_group",
-            instance_offset,
-            &vertices,
-        )?;
+        };
 
         let resources = self.resources();
         let Some(path_intermediate_view) = resources.path_intermediate_view.as_ref() else {
@@ -1762,12 +1761,74 @@ impl WgpuRenderer {
             // vertex range here.
             pass.draw(
                 vertex_binding.first_instance
-                    ..vertex_binding.first_instance + vertices.len() as u32,
+                    ..vertex_binding.first_instance + vertex_count,
                 0..1,
             );
         }
 
         Ok(true)
+    }
+
+    /// Draw a batch's paths into the pass that is already open, rather than into
+    /// a target of their own to composite afterwards.
+    ///
+    /// This is for the case with no multisampling, where there is nothing to
+    /// resolve and the rasterization pipeline's own blending puts the paths over
+    /// whatever the pass holds — the same result as compositing the target they
+    /// would otherwise be rasterized into, without the two window-sized passes
+    /// that comes to.
+    fn draw_paths_directly(
+        &mut self,
+        paths: &[Path<ScaledPixels>],
+        instance_offset: &mut u64,
+        pass: &mut wgpu::RenderPass<'_>,
+    ) -> Result<()> {
+        let Some((vertex_binding, vertex_count)) =
+            self.write_path_vertices(paths, instance_offset)?
+        else {
+            return Ok(());
+        };
+
+        let resources = self.resources();
+        pass.set_pipeline(&resources.pipelines.path_rasterization);
+        pass.set_bind_group(0, &resources.path_globals_bind_group, &[]);
+        pass.set_bind_group(1, &vertex_binding.bind_group, &[]);
+        pass.draw(
+            vertex_binding.first_instance..vertex_binding.first_instance + vertex_count,
+            0..1,
+        );
+        Ok(())
+    }
+
+    /// A batch's path vertices, as one binding to draw them with and the number
+    /// of them there are. `None` when the batch covers nothing.
+    fn write_path_vertices(
+        &mut self,
+        paths: &[Path<ScaledPixels>],
+        instance_offset: &mut u64,
+    ) -> Result<Option<(InstanceBinding, u32)>> {
+        let mut vertices = Vec::new();
+        for path in paths {
+            let bounds = path.clipped_bounds();
+            vertices.extend(path.vertices.iter().map(|v| PathRasterizationVertex {
+                xy_position: v.xy_position,
+                st_position: v.st_position,
+                color: path.color,
+                bounds,
+            }));
+        }
+
+        if vertices.is_empty() {
+            return Ok(None);
+        }
+
+        let vertex_count = vertices.len() as u32;
+        let binding = self.write_instance_binding(
+            "path_rasterization_bind_group",
+            instance_offset,
+            &vertices,
+        )?;
+        Ok(Some((binding, vertex_count)))
     }
 
     fn write_instance_binding<T>(
@@ -2211,6 +2272,22 @@ impl RenderingParameters {
             subpixel_enhanced_contrast,
         }
     }
+}
+
+/// Whether the path pass draws straight into the frame when there is no
+/// multisampling to resolve.
+///
+/// It is where the pass's cost comes from on a display the GPU is slow for: a
+/// target the size of the window, cleared and composited every frame, for
+/// whatever the paths cover. Set `ZED_PATH_DIRECT=0` to put the intermediate and
+/// its composite back.
+fn paths_are_drawn_directly() -> bool {
+    static DIRECT: OnceLock<bool> = OnceLock::new();
+    *DIRECT.get_or_init(|| {
+        std::env::var("ZED_PATH_DIRECT")
+            .map(|value| !matches!(value.as_str(), "0" | "false" | "off"))
+            .unwrap_or(true)
+    })
 }
 
 #[cfg(test)]
