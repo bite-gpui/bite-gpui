@@ -100,8 +100,8 @@ pub mod styled;
 pub mod subscription;
 /// The `SvgRenderer` trait and SVG loading.
 pub mod svg_renderer;
+mod engine_layout;
 mod tab_stop;
-mod taffy;
 /// Test-only harnesses: `TestAppContext`, `TestWindow` and the test platform.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test;
@@ -195,14 +195,15 @@ pub use styled::*;
 pub use subscription::*;
 pub use svg_renderer::*;
 pub(crate) use tab_stop::*;
-pub use taffy::LayoutId;
-use taffy::TaffyLayoutEngine;
 #[cfg(any(test, feature = "test-support"))]
 pub use test::*;
 pub use text_system::*;
 // Deliberately the last of the globs: the modules above re-export names it also carries, and a
 // glob placed before them makes their re-exports look unused.
 pub use gpui_engine::*;
+// The default engine sits beside the scene engine: the concrete layout
+// implementation the facade drives through the `gpui_engine` seam.
+pub use gpui_engine_default::*;
 // Placed after `gpui_engine` for the same reason: `gpui_platform` also re-exports the
 // `gpui_types`/`gpui_shared_string` names the modules above carry.
 pub use gpui_platform::*;

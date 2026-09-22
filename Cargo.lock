@@ -2403,6 +2403,7 @@ dependencies = [
  "gpui_ce_types",
  "gpui_ce_util",
  "gpui_engine",
+ "gpui_engine_default",
  "gpui_platform",
  "gpui_types",
  "hdrhistogram",
@@ -2438,7 +2439,6 @@ dependencies = [
  "spin 0.10.1",
  "stacksafe",
  "strum 0.27.2",
- "taffy",
  "thiserror 2.0.20",
  "tracing",
  "unicode-segmentation",
@@ -2878,6 +2878,7 @@ dependencies = [
  "core-video",
  "derive_more",
  "etagere",
+ "gpui_ce_refineable",
  "gpui_ce_shared_string",
  "gpui_ce_types",
  "gpui_types",
@@ -2889,6 +2890,18 @@ dependencies = [
  "serde_json",
  "smallvec",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "gpui_engine_default"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui_ce_collections",
+ "gpui_engine",
+ "gpui_types",
+ "stacksafe",
+ "taffy",
 ]
 
 [[package]]

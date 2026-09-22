@@ -1,0 +1,27 @@
+[package]
+name = "gpui_engine_default"
+version = "0.1.0"
+publish.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_engine_default.rs"
+doctest = false
+
+[features]
+default = []
+stacker = ["dep:stacksafe"]
+test-support = ["gpui_engine/test-support"]
+bench-support = ["test-support", "gpui_engine/bench-support"]
+
+[dependencies]
+anyhow.workspace = true
+collections.workspace = true
+gpui_engine.workspace = true
+gpui_types.workspace = true
+stacksafe = { workspace = true, optional = true }
+taffy = "=0.13.0"

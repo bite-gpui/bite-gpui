@@ -9,16 +9,17 @@ use crate::{
     AsyncWindowContext, AtlasTile, AvailableSpace, BackdropFilter, Background, BorderStyle, Bounds,
     BoxShadow, Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
-    EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId, Global, GlobalElementId,
-    GlyphId, GpuSpecs, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
-    Keystroke, KeystrokeEvent, LayoutId, Lerp, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
+    EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId, FrameSession, Global,
+    GlobalElementId, GlyphId, GpuSpecs, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent,
+    KeyEvent, Keystroke, KeystrokeEvent, LayoutId, Lerp, LineLayoutIndex, MeasureContext,
+    MeasureHandles, Modifiers, ModifiersChangedEvent,
     MonochromeSprite, Motion, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
     RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
     SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledFilter, ScaledPixels, Scene, Shadow,
     SharedString, Size, StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription,
-    SystemWindowTab, SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task,
+    SystemWindowTab, SystemWindowTabController, TabStopMap, Task,
     TextInputConfiguration, TextInputStateChange, TextRenderingMode, TextStyle,
     TextStyleRefinement, ThermalState, TransformationMatrix, Transition, TransitionState,
     Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
@@ -27,6 +28,7 @@ use crate::{
     point, prelude::*, px, rems, size, transparent_black,
 };
 
+use crate::engine_layout::to_engine_layout_style;
 use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
 use crate::TouchEvent;
 use crate::{Hsla, IntoHsla};
@@ -1251,6 +1253,22 @@ impl FramePhase {
     }
 }
 
+/// Gives a measure callback the window and application it needs, erased for the
+/// layout engine to carry.
+struct WindowMeasureContext<'a> {
+    window: &'a mut Window,
+    cx: &'a mut App,
+}
+
+impl MeasureContext for WindowMeasureContext<'_> {
+    fn handles(&mut self) -> MeasureHandles<'_> {
+        MeasureHandles {
+            window: self.window,
+            app: self.cx,
+        }
+    }
+}
+
 /// Holds the state for a specific window.
 pub struct Window {
     pub(crate) handle: AnyWindowHandle,
@@ -1275,7 +1293,7 @@ pub struct Window {
     /// a given rem size.
     rem_size_override_stack: SmallVec<[Pixels; 8]>,
     pub(crate) viewport_size: Size<Pixels>,
-    layout_engine: Option<TaffyLayoutEngine>,
+    layout_session: Rc<FrameSession>,
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
@@ -2014,7 +2032,7 @@ impl Window {
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
             viewport_size: content_size,
-            layout_engine: Some(TaffyLayoutEngine::new()),
+            layout_session: Rc::new(FrameSession::new(cx.new_layout_engine())),
             root: None,
             element_id_stack: SmallVec::default(),
             text_style_stack: Vec::new(),
@@ -3120,7 +3138,7 @@ impl Window {
                 });
         }
 
-        self.layout_engine.as_mut().unwrap().clear();
+        self.layout_session.clear();
         self.text_system().finish_frame();
         self.next_frame.finish(&mut self.rendered_frame);
     }
@@ -3387,9 +3405,7 @@ impl Window {
         // fill the window when their size is `auto`.
         let scale_factor = self.scale_factor();
         let root_layout_id = roots.root.request_layout(self, cx);
-        self.layout_engine
-            .as_mut()
-            .unwrap()
+        self.layout_session
             .stretch_auto_size_to_fill(root_layout_id, root_size, scale_factor);
         roots
             .root
@@ -3404,9 +3420,7 @@ impl Window {
 
         if let Some(prompt) = roots.prompt.as_mut() {
             let prompt_layout_id = prompt.request_layout(self, cx);
-            self.layout_engine
-                .as_mut()
-                .unwrap()
+            self.layout_session
                 .stretch_auto_size_to_fill(prompt_layout_id, root_size, scale_factor);
             prompt.prepaint_as_root(Point::default(), root_size.into(), self, cx);
         } else if let Some((drag, origin)) = roots.drag.as_mut() {
@@ -5195,8 +5209,9 @@ impl Window {
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
 
-        self.layout_engine.as_mut().unwrap().request_layout(
-            style,
+        let engine_style = to_engine_layout_style(&style);
+        self.layout_session.request_layout(
+            &engine_style,
             rem_size,
             scale_factor,
             &cx.layout_id_buffer,
@@ -5220,10 +5235,23 @@ impl Window {
 
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
-        self.layout_engine
-            .as_mut()
-            .unwrap()
-            .request_measured_layout(style, rem_size, scale_factor, measure)
+        let engine_style = to_engine_layout_style(&style);
+        let measure = move |known_dimensions, available_space, context: &mut dyn MeasureContext| {
+            let MeasureHandles { window, app } = context.handles();
+            let window = window
+                .downcast_mut::<Window>()
+                .expect("measure context window handle should be a Window");
+            let cx = app
+                .downcast_mut::<App>()
+                .expect("measure context app should be an App");
+            measure(known_dimensions, available_space, window, cx)
+        };
+        self.layout_session.request_measured_layout(
+            &engine_style,
+            rem_size,
+            scale_factor,
+            Box::new(measure),
+        )
     }
 
     /// Compute the layout for the given id within the given available space.
@@ -5239,9 +5267,17 @@ impl Window {
     ) {
         self.invalidator.debug_assert_prepaint();
 
-        let mut layout_engine = self.layout_engine.take().unwrap();
-        layout_engine.compute_layout(layout_id, available_space, self, cx);
-        self.layout_engine = Some(layout_engine);
+        let scale_factor = self.scale_factor();
+        let layout_session = self.layout_session.clone();
+        layout_session.compute_layout(
+            layout_id,
+            available_space,
+            scale_factor,
+            &mut WindowMeasureContext {
+                window: &mut *self,
+                cx,
+            },
+        );
     }
 
     /// Obtain the bounds computed for the given LayoutId relative to the window. This method will usually be invoked by
@@ -5253,9 +5289,7 @@ impl Window {
 
         let scale_factor = self.scale_factor();
         let mut bounds = self
-            .layout_engine
-            .as_mut()
-            .unwrap()
+            .layout_session
             .layout_bounds(layout_id, scale_factor)
             .map(Into::into);
         let snapped_offset = self.pixel_snap_point(self.element_offset());

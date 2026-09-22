@@ -20,6 +20,7 @@ test-support = [
   "leak-detection",
   "collections/test-support",
   "gpui_engine/test-support",
+  "gpui_engine_default/test-support",
   "gpui_platform/test-support",
   "wayland",
   "x11",
@@ -29,6 +30,7 @@ bench-support = [
   "profiler",
   "dep:criterion",
   "gpui_engine/bench-support",
+  "gpui_engine_default/bench-support",
   "gpui_platform/bench-support",
 ]
 # Preserve the published feature name while consumers migrate to `bench-support`.
@@ -43,7 +45,7 @@ screen-capture = [
   "gpui_platform/screen-capture",
 ]
 profiler = ["dep:hdrhistogram", "gpui_platform/profiler"]
-stacker = ["dep:stacksafe"]
+stacker = ["dep:stacksafe", "gpui_engine_default/stacker"]
 
 [dependencies]
 accesskit.workspace = true
@@ -61,6 +63,7 @@ futures.workspace = true
 futures-concurrency.workspace = true
 gpui_macros.workspace = true
 gpui_engine.workspace = true
+gpui_engine_default.workspace = true
 gpui_platform.workspace = true
 gpui_shared_string.workspace = true
 gpui_types = { workspace = true, features = ["lyon"] }
@@ -100,7 +103,6 @@ async-channel.workspace = true
 stacksafe = { workspace = true, optional = true }
 strum.workspace = true
 sum_tree.workspace = true
-taffy = "=0.13.0"
 thiserror.workspace = true
 tracing.workspace = true
 gpui_util.workspace = true
