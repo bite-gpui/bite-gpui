@@ -25,7 +25,7 @@ use crate::{
     Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
     WindowControls, WindowDecorations, WindowId, WindowMetrics, WindowOptions, WindowParams,
     WindowTextSystem,
-    point, prelude::*, px, rems, size, transparent_black,
+    new_platform_input_handler, point, prelude::*, px, rems, size, transparent_black,
 };
 
 use crate::engine_layout::to_engine_layout_style;
@@ -5423,7 +5423,10 @@ impl Window {
             let cx = self.to_async(cx);
             self.next_frame
                 .input_handlers
-                .push(Some(PlatformInputHandler::new(cx, Box::new(input_handler))));
+                .push(Some(new_platform_input_handler(
+                    cx,
+                    Box::new(input_handler),
+                )));
         }
     }
 
