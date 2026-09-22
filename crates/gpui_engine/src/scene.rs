@@ -877,17 +877,14 @@ impl Path<Pixels> {
         self.vertices.push(PathVertex {
             xy_position: xy.0,
             st_position: st.0,
-            content_mask: Default::default(),
         });
         self.vertices.push(PathVertex {
             xy_position: xy.1,
             st_position: st.1,
-            content_mask: Default::default(),
         });
         self.vertices.push(PathVertex {
             xy_position: xy.2,
             st_position: st.2,
-            content_mask: Default::default(),
         });
     }
 }
@@ -915,7 +912,6 @@ impl From<Path<ScaledPixels>> for Primitive {
 pub struct PathVertex<P: Clone + Debug + Default + PartialEq> {
     pub xy_position: Point<P>,
     pub st_position: Point<f32>,
-    pub content_mask: ContentMask<P>,
 }
 
 #[expect(missing_docs)]
@@ -924,7 +920,6 @@ impl PathVertex<Pixels> {
         PathVertex {
             xy_position: self.xy_position.scale(factor),
             st_position: self.st_position,
-            content_mask: self.content_mask.scale(factor),
         }
     }
 }
