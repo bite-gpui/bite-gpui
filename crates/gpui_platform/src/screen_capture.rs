@@ -1,4 +1,6 @@
+use crate::ForegroundExecutor;
 use anyhow::Result;
+use futures::channel::oneshot;
 use gpui_shared_string::SharedString;
 use gpui_types::{DevicePixels, Size};
 
@@ -32,6 +34,20 @@ pub struct SourceMetadata {
     pub is_main: Option<bool>,
     /// Video resolution of this source.
     pub resolution: Size<DevicePixels>,
+}
+
+/// A source of on-screen video content that can be captured.
+pub trait ScreenCaptureSource {
+    /// Returns metadata for this source.
+    fn metadata(&self) -> Result<SourceMetadata>;
+
+    /// Start capture video from this source, invoking the given callback
+    /// with each frame.
+    fn stream(
+        &self,
+        foreground_executor: &ForegroundExecutor,
+        frame_callback: Box<dyn Fn(ScreenCaptureFrame) + Send>,
+    ) -> oneshot::Receiver<Result<Box<dyn ScreenCaptureStream>>>;
 }
 
 /// A video stream captured from a screen.

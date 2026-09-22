@@ -193,7 +193,7 @@ pub struct ClipboardItem {
     pub entries: Vec<ClipboardEntry>,
 }
 
-/// An error produced by [`Platform::read_from_clipboard_async`].
+/// An error produced by [`Platform::read_from_clipboard_async`](crate::Platform::read_from_clipboard_async).
 ///
 /// Callers surface these failures to users, so the variants distinguish
 /// conditions that call for different user-facing guidance.

@@ -6,5 +6,6 @@ pub use crate::{
     AppContext as _, BackgroundExt, BorrowAppContext, BoundsExt, Context, Element,
     InteractiveElement, IntoElement, ParentElement, PlatformInputHandlerExt, Refineable, Render,
     RenderOnce, StatefulInteractiveElement, Styled, StyledImage, TaskExt as _, VisualContext,
+    WindowBoundsExt,
     util::FluentBuilder,
 };

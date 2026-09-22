@@ -478,7 +478,11 @@ impl<V: 'static + Render> TestAppWindow<V> {
         let window_id = self.handle.window_id();
         let mut app = self.app.borrow_mut();
         if let Some(Some(window)) = app.windows.get_mut(window_id) {
-            if let Some(test_window) = window.platform_window.as_test() {
+            if let Some(test_window) = window
+                .platform_window
+                .as_test()
+                .and_then(|test_window| test_window.downcast_mut::<crate::TestWindow>())
+            {
                 test_window.simulate_resize(size);
             }
         }

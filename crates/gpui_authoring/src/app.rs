@@ -183,26 +183,9 @@ pub enum CursorHideMode {
     OnTypingAndAction,
 }
 
-#[doc(hidden)]
-#[derive(Clone, PartialEq, Eq)]
-pub struct SystemWindowTab {
-    pub id: WindowId,
-    pub title: SharedString,
-    pub handle: WindowId,
-    pub last_active_at: Instant,
-}
-
-impl SystemWindowTab {
-    /// Create a new instance of the window tab.
-    pub fn new(title: SharedString, handle: WindowId) -> Self {
-        Self {
-            id: handle,
-            title,
-            handle,
-            last_active_at: Instant::now(),
-        }
-    }
-}
+// `SystemWindowTab` moved down into `gpui_platform`; re-exported so the
+// `crate::app::SystemWindowTab` path this module used to provide keeps resolving.
+pub use gpui_platform::SystemWindowTab;
 
 /// A controller for managing window tabs.
 #[derive(Default)]
