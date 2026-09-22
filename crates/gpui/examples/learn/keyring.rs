@@ -17,6 +17,8 @@ use gpui::colors::Colors;
 use gpui::{
     App, Bounds, Context, Render, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+use gpui_ce_platform::LinuxAppExt;
 
 /// The URL the credentials are keyed by. The keyring label (Linux/FreeBSD) is a
 /// separate, app-wide identifier set via `cx.set_keyring_label`.
@@ -159,6 +161,7 @@ fn button(
 
 fn main() {
     gpui_ce_platform::application().run(|cx: &mut App| {
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         cx.set_keyring_label("gpui-ce-keyring-example");
 
         let bounds = Bounds::centered(None, size(px(500.), px(360.)), cx);

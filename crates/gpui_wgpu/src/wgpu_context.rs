@@ -455,8 +455,8 @@ fn create_render_target_texture(
 }
 
 /// Extra wgpu features and limits that an application can request on top of
-/// gpui's baseline.  Pass an instance to the platform via
-/// [`gpui::App::set_gpu_requirements`] *before* opening any windows.
+/// gpui's baseline.  Pass an instance to the platform through the Linux
+/// platform's `set_gpu_requirements` escape hatch *before* opening any windows.
 #[derive(Clone, Debug, Default)]
 pub struct WgpuDeviceRequirements {
     /// Additional [`wgpu::Features`] to enable.  These are OR-ed with gpui's

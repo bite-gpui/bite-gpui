@@ -50,14 +50,14 @@ use crate::{
     Action, ActionBuildError, ActionRegistry, Any, AnyView, AnyWindowHandle, AppContext, Arena,
     ArenaBox, Asset, AssetSource, BackgroundExecutor, Bounds, ClipboardItem, ClipboardReadError,
     CursorStyle, DefaultTextSystem, DispatchPhase, DisplayId, EventEmitter, ExternalDragPayload,
-    FocusHandle, FocusMap, ForegroundExecutor, FramePipeline, Global, HapticFeedbackStyle,
-    KeyBinding, KeyContext, Keymap, Keystroke, LayoutEngine, LayoutId, Menu, MenuCommandId,
-    MenuItem, OwnedMenu, OwnedMenuItem, PathPromptOptions, Pixels, Platform, PlatformDisplay,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, Point, Priority, PromptBuilder, PromptButton,
-    PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle, Reservation,
-    ScreenCaptureSource, SharedString, StandardImmediatePipeline, SubscriberSet, Subscription,
-    SvgRenderer, SystemNotification, SystemNotificationResponse, Task, TextRenderingMode,
-    TextSystem, ThermalState, Window, WindowAppearance, WindowButtonLayout, WindowHandle, WindowId,
+    FocusHandle, FocusMap, ForegroundExecutor, FramePipeline, Global, KeyBinding, KeyContext,
+    Keymap, Keystroke, LayoutEngine, LayoutId, Menu, MenuCommandId, MenuItem, OwnedMenu,
+    OwnedMenuItem, PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, Point, Priority, PromptBuilder, PromptButton, PromptHandle,
+    PromptLevel, Render, RenderImage, RenderablePromptHandle, Reservation, ScreenCaptureSource,
+    SharedString, StandardImmediatePipeline, SubscriberSet, Subscription, SvgRenderer,
+    SystemNotification, SystemNotificationResponse, Task, TextRenderingMode, TextSystem,
+    ThermalState, Window, WindowAppearance, WindowButtonLayout, WindowHandle, WindowId,
     WindowInvalidator,
     colors::{Colors, GlobalColors},
     hash, init_app_menus, resolve_dock_menu, resolve_menus,
@@ -1123,19 +1123,6 @@ impl App {
         })
     }
 
-    /// Register additional GPU device requirements (extra features and/or
-    /// limits) before opening any windows.  The `Box` must contain a
-    /// `gpui_wgpu::WgpuDeviceRequirements`.
-    pub fn set_gpu_requirements(&self, requirements: Box<dyn std::any::Any>) {
-        self.platform.set_gpu_requirements(requirements);
-    }
-
-    /// Sets the label applied to credentials stored in the system keyring.
-    /// Call before writing credentials. Only Linux/FreeBSD apply the label.
-    pub fn set_keyring_label(&self, label: impl Into<SharedString>) {
-        self.platform.set_keyring_label(label.into());
-    }
-
     /// Returns a handle to the window that is currently focused at the platform level, if one exists.
     pub fn active_window(&self) -> Option<AnyWindowHandle> {
         self.platform
@@ -1290,21 +1277,6 @@ impl App {
     /// the system. On other platforms this is a no-op.
     pub fn set_window_appearance(&self, appearance: Option<WindowAppearance>) {
         self.platform.set_window_appearance(appearance);
-    }
-
-    /// Whether the current platform supports haptic feedback.
-    pub fn supports_haptic_feedback(&self) -> bool {
-        self.platform.supports_haptic_feedback()
-    }
-
-    /// Play a haptic feedback of the given style.
-    ///
-    /// Must be called from the main thread. This is a no-op on platforms that
-    /// do not support haptic feedback. Styles correspond to
-    /// [`NSHapticFeedbackPattern`](https://developer.apple.com/documentation/appkit/nshapticfeedbackmanager/feedbackpattern)
-    /// values on macOS.
-    pub fn play_haptic_feedback(&self, style: HapticFeedbackStyle) {
-        self.platform.play_haptic_feedback(style)
     }
 
     /// Returns the window button layout configuration when supported.

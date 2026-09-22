@@ -5,8 +5,6 @@ use gpui_authoring::{
     App, AppCell, AssetSource, AsyncApp, BackgroundExecutor, ForegroundExecutor, FramePipeline,
     Platform, QuitMode, TextSystem, WindowId, http_client::HttpClient,
 };
-#[cfg(target_os = "macos")]
-use gpui_authoring::MacActivationPolicy;
 use std::{ffi::OsString, path::PathBuf, rc::Rc, sync::Arc};
 
 /// A reference to a GPUI application, typically constructed in the `main` function of your app.
@@ -112,28 +110,6 @@ impl Application {
         self
     }
 
-    /// Sets the activation policy for the application (macOS only).
-    ///
-    /// This determines how the application appears in the system:
-    /// - `Regular`: Normal app with Dock icon and menu bar
-    /// - `Accessory`: Background app without Dock icon (LSUIElement)
-    /// - `Prohibited`: Runs in background, no UI allowed
-    ///
-    /// This must be called before the application finishes launching to take effect.
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use gpui::Application;
-    /// # fn configure(app: Application) -> Application {
-    /// app.with_activation_policy(gpui::MacActivationPolicy::Accessory)
-    /// # }
-    /// ```
-    #[cfg(target_os = "macos")]
-    pub fn with_activation_policy(self, policy: MacActivationPolicy) -> Self {
-        self.0.borrow().platform().set_mac_activation_policy(policy);
-        self
-    }
-
     /// Start the application. The provided callback will be called once the
     /// app is fully launched.
     pub fn run<F>(self, on_finish_launching: F)
@@ -213,5 +189,15 @@ impl Application {
     /// Returns the file URL of the executable with the specified name in the application bundle
     pub fn path_for_auxiliary_executable(&self, name: &str) -> Result<PathBuf> {
         self.0.borrow().path_for_auxiliary_executable(name)
+    }
+
+    /// The platform this application was built on.
+    ///
+    /// Platform features that only one backend implements live on the concrete
+    /// platform and are reached by downcasting; this accessor is the seam an
+    /// extension trait in a backend crate uses to find it.
+    #[doc(hidden)]
+    pub fn platform(&self) -> Rc<dyn Platform> {
+        self.0.borrow().platform()
     }
 }

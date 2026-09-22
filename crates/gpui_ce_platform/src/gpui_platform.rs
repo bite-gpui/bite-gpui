@@ -3,6 +3,13 @@
 
 pub use gpui::Platform;
 
+// Single-platform escape hatches, re-exported per target so an application can reach
+// the concrete platform's extension traits without naming the backend crate itself.
+#[cfg(target_os = "macos")]
+pub use gpui_macos::{MacActivationPolicy, MacAppExt, MacApplicationExt};
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub use gpui_linux::LinuxAppExt;
+
 use std::rc::Rc;
 
 /// Returns a background executor for the current platform.

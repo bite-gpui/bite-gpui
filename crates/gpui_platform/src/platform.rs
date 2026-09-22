@@ -2,8 +2,8 @@ use crate::{
     AppLifecyclePhase, BackgroundExecutor, ClipboardItem, ClipboardReadError, CursorStyle,
     ForegroundExecutor, MenuCommandId, PathPromptOptions, PlatformDisplay, PlatformGestures,
     PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformWindow,
-    ScreenCaptureSource, SharedString, SystemNotification, SystemNotificationResponse, Task,
-    ThermalState, WindowAppearance, WindowButtonLayout, WindowId, WindowParams,
+    ScreenCaptureSource, SystemNotification, SystemNotificationResponse, Task, ThermalState,
+    WindowAppearance, WindowButtonLayout, WindowId, WindowParams,
 };
 use anyhow::Result;
 use futures::channel::oneshot;
@@ -48,18 +48,6 @@ pub fn guess_compositor() -> &'static str {
     }
 }
 
-/// The activation policy for a macOS application.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MacActivationPolicy {
-    /// The application is an ordinary app that appears in the Dock and may have a user interface.
-    #[default]
-    Regular,
-    /// The application doesn't appear in the Dock and doesn't have a menu bar, but it may be activated programmatically or by clicking on one of its windows.
-    Accessory,
-    /// The application doesn't appear in the Dock and may not create windows or be activated.
-    Prohibited,
-}
-
 /// Styles of haptic feedback that can be played via the platform.
 ///
 /// These correspond directly to [`NSHapticFeedbackPattern`](https://developer.apple.com/documentation/appkit/nshapticfeedbackmanager/feedbackpattern)
@@ -77,11 +65,17 @@ pub enum HapticFeedbackStyle {
 
 #[expect(missing_docs)]
 pub trait Platform: 'static {
+    /// Downcast hook for platform features only one backend implements.
+    ///
+    /// A feature lives on the concrete platform and is reached by downcasting here;
+    /// it never joins this cross-platform contract. See the escape-hatch ruling in
+    /// `ce-rewrites.md`.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     fn background_executor(&self) -> BackgroundExecutor;
     fn foreground_executor(&self) -> ForegroundExecutor;
     fn text_system(&self) -> Arc<dyn PlatformTextSystem>;
 
-    fn set_mac_activation_policy(&self, _policy: MacActivationPolicy) {}
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>);
     fn quit(&self);
     fn restart(&self, binary_path: Option<PathBuf>, arguments: Vec<OsString>);
@@ -289,23 +283,4 @@ pub trait Platform: 'static {
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout>;
     fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper>;
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>);
-
-    /// Register additional GPU device requirements (features, limits) before
-    /// the first window is opened.  The concrete type inside the `Box` must be
-    /// `gpui_wgpu::WgpuDeviceRequirements`.
-    fn set_gpu_requirements(&self, _requirements: Box<dyn std::any::Any>) {}
-
-    /// Sets the label applied to credentials stored in the system keyring.
-    /// Only Linux/FreeBSD use this label.
-    fn set_keyring_label(&self, _label: SharedString) {}
-
-    /// Whether the current platform supports haptic feedback.
-    fn supports_haptic_feedback(&self) -> bool {
-        false
-    }
-
-    /// Play a haptic feedback of the given style.
-    ///
-    /// No-op on platforms that don't support haptic feedback.
-    fn play_haptic_feedback(&self, _style: HapticFeedbackStyle) {}
 }

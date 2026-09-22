@@ -65,6 +65,10 @@ impl VisualTestPlatform {
 }
 
 impl Platform for VisualTestPlatform {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn background_executor(&self) -> BackgroundExecutor {
         self.background_executor.clone()
     }

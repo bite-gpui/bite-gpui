@@ -404,6 +404,10 @@ fn encode_restart_arguments(arguments: &[OsString]) -> OsString {
 }
 
 impl Platform for WindowsPlatform {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn background_executor(&self) -> BackgroundExecutor {
         self.background_executor.clone()
     }

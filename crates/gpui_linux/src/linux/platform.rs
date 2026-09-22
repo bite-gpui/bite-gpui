@@ -22,6 +22,11 @@ use gpui_util::{ResultExt as _, new_std_command};
 #[cfg(any(feature = "wayland", feature = "x11"))]
 use xkbcommon::xkb::{self, Keycode, Keysym, State};
 
+use crate::linux::HeadlessClient;
+#[cfg(feature = "wayland")]
+use crate::linux::WaylandClient;
+#[cfg(feature = "x11")]
+use crate::linux::X11Client;
 use crate::linux::{LinuxDispatcher, PriorityQueueCalloopReceiver};
 use gpui::{
     BackgroundExecutor, ClipboardItem, CursorStyle, DisplayId, ForegroundExecutor, MenuCommandId,
@@ -212,7 +217,105 @@ pub(crate) struct LinuxPlatform<P> {
     pub(crate) inner: P,
 }
 
+impl<P: LinuxClient + 'static> LinuxPlatform<P> {
+    /// Register additional GPU device requirements (features, limits) before
+    /// the first window is opened.  The concrete type inside the `Box` must be
+    /// `gpui_wgpu::WgpuDeviceRequirements`.
+    pub(crate) fn set_gpu_requirements(&self, requirements: Box<dyn std::any::Any>) {
+        self.inner.set_gpu_requirements(requirements);
+    }
+
+    /// Sets the label applied to credentials stored in the system keyring.
+    pub(crate) fn set_keyring_label(&self, label: SharedString) {
+        self.inner
+            .with_common(|common| common.keyring_label = label);
+    }
+}
+
+/// Erased view of the Linux-only escape hatches, so `gpui::App` can reach them
+/// through `Platform::as_any` without naming `LinuxPlatform`'s client type.
+trait LinuxPlatformOps {
+    fn keyring_label(&self, label: SharedString);
+    fn gpu_requirements(&self, requirements: Box<dyn std::any::Any>);
+}
+
+impl<P: LinuxClient + 'static> LinuxPlatformOps for LinuxPlatform<P> {
+    fn keyring_label(&self, label: SharedString) {
+        self.set_keyring_label(label);
+    }
+
+    fn gpu_requirements(&self, requirements: Box<dyn std::any::Any>) {
+        self.set_gpu_requirements(requirements);
+    }
+}
+
+fn as_linux_platform(platform: &dyn Platform) -> Option<&dyn LinuxPlatformOps> {
+    #[cfg(feature = "wayland")]
+    if let Some(platform) = platform
+        .as_any()
+        .downcast_ref::<LinuxPlatform<WaylandClient>>()
+    {
+        return Some(platform);
+    }
+
+    #[cfg(feature = "x11")]
+    if let Some(platform) = platform
+        .as_any()
+        .downcast_ref::<LinuxPlatform<X11Client>>()
+    {
+        return Some(platform);
+    }
+
+    if let Some(platform) = platform
+        .as_any()
+        .downcast_ref::<LinuxPlatform<HeadlessClient>>()
+    {
+        return Some(platform);
+    }
+
+    None
+}
+
+/// Linux escape hatches on `gpui::App`, reached by downcasting to the concrete
+/// Linux platform.
+///
+/// Credential keyring labelling and GPU device requirements are Linux-only
+/// platform features, so they live on the concrete platform rather than on the
+/// cross-platform `Platform` trait. Import this trait to keep calling
+/// `cx.set_keyring_label(..)` and `cx.set_gpu_requirements(..)`.
+pub trait LinuxAppExt {
+    /// Sets the label applied to credentials stored in the system keyring.
+    /// Call before writing credentials.
+    fn set_keyring_label(&self, label: impl Into<SharedString>);
+
+    /// Register additional GPU device requirements (extra features and/or
+    /// limits) before opening any windows.  The `Box` must contain a
+    /// `gpui_wgpu::WgpuDeviceRequirements`.
+    fn set_gpu_requirements(&self, requirements: Box<dyn std::any::Any>);
+}
+
+impl LinuxAppExt for gpui::App {
+    fn set_keyring_label(&self, label: impl Into<SharedString>) {
+        let label = label.into();
+        let platform = self.platform();
+        if let Some(platform) = as_linux_platform(&*platform) {
+            platform.keyring_label(label);
+        }
+    }
+
+    fn set_gpu_requirements(&self, requirements: Box<dyn std::any::Any>) {
+        let platform = self.platform();
+        if let Some(platform) = as_linux_platform(&*platform) {
+            platform.gpu_requirements(requirements);
+        }
+    }
+}
+
 impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn background_executor(&self) -> BackgroundExecutor {
         self.inner
             .with_common(|common| common.background_executor.clone())
@@ -357,15 +460,6 @@ impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
         options: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
         self.inner.open_window(handle, options)
-    }
-
-    fn set_gpu_requirements(&self, requirements: Box<dyn std::any::Any>) {
-        self.inner.set_gpu_requirements(requirements);
-    }
-
-    fn set_keyring_label(&self, label: SharedString) {
-        self.inner
-            .with_common(|common| common.keyring_label = label);
     }
 
     fn open_url(&self, url: &str) {

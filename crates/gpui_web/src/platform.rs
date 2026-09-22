@@ -278,6 +278,10 @@ async fn initialize_graphics(
 }
 
 impl Platform for WebPlatform {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn background_executor(&self) -> BackgroundExecutor {
         self.background_executor.clone()
     }

@@ -16,11 +16,11 @@ use core_foundation::{
 use dispatch2::DispatchQueue;
 use futures::channel::oneshot;
 use gpui::{
-    BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor, MacActivationPolicy,
-    MenuCommandId, PathPromptOptions, Platform, PlatformDisplay, PlatformKeyboardLayout,
-    PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformOsMenu, PlatformTextSystem,
-    PlatformWindow, Result, SystemMenuType, Task, ThermalState, WindowAppearance, WindowId,
-    WindowKind, WindowParams, popup::PopupNotSupportedError,
+    BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor, MenuCommandId,
+    PathPromptOptions, Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper,
+    PlatformMenu, PlatformMenuItem, PlatformOsMenu, PlatformTextSystem, PlatformWindow, Result,
+    SystemMenuType, Task, ThermalState, WindowAppearance, WindowId, WindowKind, WindowParams,
+    popup::PopupNotSupportedError,
 };
 use gpui_util::{ResultExt, new_std_command};
 use objc2::rc::{Allocated, Retained};
@@ -184,6 +184,18 @@ impl GPUIApplicationDelegate {
             Self::alloc(MainThreadMarker::new().unwrap()).set_ivars(PlatformIvars::default());
         unsafe { msg_send![super(this), init] }
     }
+}
+
+/// The activation policy for a macOS application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MacActivationPolicy {
+    /// The application is an ordinary app that appears in the Dock and may have a user interface.
+    #[default]
+    Regular,
+    /// The application doesn't appear in the Dock and doesn't have a menu bar, but it may be activated programmatically or by clicking on one of its windows.
+    Accessory,
+    /// The application doesn't appear in the Dock and may not create windows or be activated.
+    Prohibited,
 }
 
 pub struct MacPlatform(Mutex<MacPlatformState>, MainThreadMarker);
@@ -436,7 +448,82 @@ impl MacPlatform {
     }
 }
 
+impl MacPlatform {
+    /// Stores the activation policy to apply once the application finishes launching.
+    pub fn set_mac_activation_policy(&self, policy: MacActivationPolicy) {
+        self.0.lock().activation_policy = Some(policy);
+    }
+
+    /// Whether the current machine supports haptic feedback.
+    pub fn supports_haptic_feedback(&self) -> bool {
+        self.0.lock().haptics.supported()
+    }
+
+    /// Plays a haptic feedback of the given style.
+    pub fn play_haptic_feedback(&self, style: gpui::HapticFeedbackStyle) {
+        self.0.lock().haptics.play(style)
+    }
+}
+
+/// macOS escape hatches on [`gpui::Application`], reached by downcasting to
+/// [`MacPlatform`].
+///
+/// The activation policy is a macOS-only platform feature, so it lives on the
+/// concrete platform rather than on the cross-platform `Platform` trait. Import this
+/// trait to keep calling `app.with_activation_policy(..)`.
+pub trait MacApplicationExt {
+    /// Sets the activation policy for the application (macOS only).
+    ///
+    /// This determines how the application appears in the system:
+    /// - `Regular`: Normal app with Dock icon and menu bar
+    /// - `Accessory`: Background app without Dock icon (LSUIElement)
+    /// - `Prohibited`: Runs in background, no UI allowed
+    ///
+    /// This must be called before the application finishes launching to take effect.
+    fn with_activation_policy(self, policy: MacActivationPolicy) -> Self;
+}
+
+impl MacApplicationExt for gpui::Application {
+    fn with_activation_policy(self, policy: MacActivationPolicy) -> Self {
+        if let Some(platform) = self.platform().as_any().downcast_ref::<MacPlatform>() {
+            platform.set_mac_activation_policy(policy);
+        }
+        self
+    }
+}
+
+/// macOS escape hatches for haptic feedback, reached from [`gpui::App`] by
+/// downcasting to [`MacPlatform`].
+pub trait MacAppExt {
+    /// Whether the current machine supports haptic feedback.
+    fn supports_haptic_feedback(&self) -> bool;
+
+    /// Plays a haptic feedback of the given style.
+    ///
+    /// Must be called from the main thread.
+    fn play_haptic_feedback(&self, style: gpui::HapticFeedbackStyle);
+}
+
+impl MacAppExt for gpui::App {
+    fn supports_haptic_feedback(&self) -> bool {
+        self.platform()
+            .as_any()
+            .downcast_ref::<MacPlatform>()
+            .is_some_and(|platform| platform.supports_haptic_feedback())
+    }
+
+    fn play_haptic_feedback(&self, style: gpui::HapticFeedbackStyle) {
+        if let Some(platform) = self.platform().as_any().downcast_ref::<MacPlatform>() {
+            platform.play_haptic_feedback(style);
+        }
+    }
+}
+
 impl Platform for MacPlatform {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn background_executor(&self) -> BackgroundExecutor {
         self.0.lock().background_executor.clone()
     }
@@ -447,10 +534,6 @@ impl Platform for MacPlatform {
 
     fn text_system(&self) -> Arc<dyn PlatformTextSystem> {
         self.0.lock().text_system.clone()
-    }
-
-    fn set_mac_activation_policy(&self, policy: MacActivationPolicy) {
-        self.0.lock().activation_policy = Some(policy);
     }
 
     fn run(&self, on_finish_launching: Box<dyn FnOnce()>) {
@@ -1164,14 +1247,6 @@ impl Platform for MacPlatform {
             }
             Ok(())
         })
-    }
-
-    fn supports_haptic_feedback(&self) -> bool {
-        self.0.lock().haptics.supported()
-    }
-
-    fn play_haptic_feedback(&self, style: gpui::HapticFeedbackStyle) {
-        self.0.lock().haptics.play(style)
     }
 }
 

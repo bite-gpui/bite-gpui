@@ -19,6 +19,35 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, colors::Colors, div,
     prelude::*, px, relative, rgb, size,
 };
+#[cfg(target_os = "macos")]
+use gpui_ce_platform::MacAppExt;
+
+/// Whether the current machine supports haptic feedback.
+///
+/// Haptics are a macOS escape hatch reached by downcasting, so off macOS there is
+/// no method to call and this reports `false`.
+fn supports_haptic_feedback(_cx: &App) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        _cx.supports_haptic_feedback()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// Plays a haptic of the given style on platforms that support it; a no-op elsewhere.
+fn play_haptic_feedback(_cx: &App, _style: HapticFeedbackStyle) {
+    #[cfg(target_os = "macos")]
+    {
+        _cx.play_haptic_feedback(_style);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (_cx, _style);
+    }
+}
 
 const SLIDER_MIN: f32 = 0.0;
 const SLIDER_MAX: f32 = 100.0;
@@ -44,7 +73,7 @@ struct HapticFeedbackExample {
 impl HapticFeedbackExample {
     fn new(cx: &mut App) -> Self {
         Self {
-            supported: cx.supports_haptic_feedback(),
+            supported: supports_haptic_feedback(cx),
             slider_value: 0.0,
             slider_prev_step: 0,
             slider_bounds: None,
@@ -86,7 +115,7 @@ impl HapticFeedbackExample {
             )
             .on_hover(move |hovered, _, cx| {
                 if *hovered {
-                    cx.play_haptic_feedback(style);
+                    play_haptic_feedback(cx, style);
                 }
             })
     }
@@ -120,7 +149,7 @@ impl HapticFeedbackExample {
         self.slider_bounds = Some(bounds);
 
         if new_step != self.slider_prev_step {
-            cx.play_haptic_feedback(HapticFeedbackStyle::LevelChange);
+            play_haptic_feedback(cx, HapticFeedbackStyle::LevelChange);
             self.slider_prev_step = new_step;
         }
 

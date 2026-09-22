@@ -38,4 +38,4 @@ pub(crate) use window::*;
 #[cfg(feature = "font-kit")]
 pub(crate) use text_system::*;
 
-pub use platform::MacPlatform;
+pub use platform::{MacActivationPolicy, MacAppExt, MacApplicationExt, MacPlatform};
