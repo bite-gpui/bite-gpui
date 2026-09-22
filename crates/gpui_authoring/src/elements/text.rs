@@ -847,7 +847,10 @@ impl TextLayout {
         window: &mut Window,
         cx: &mut App,
     ) -> (SharedString, Cow<'runs, [TextRun]>) {
-        let mut line_wrapper = cx.text_system().line_wrapper(text_style.font(), font_size);
+        let mut line_wrapper = cx
+            .text_system()
+            .clone()
+            .line_wrapper(text_style.font(), font_size);
         line_wrapper.set_letter_spacing(text_style.letter_spacing);
         if let Some(truncate_width) = truncation.width {
             if let Some(max_lines) = text_style.line_clamp

@@ -2897,9 +2897,15 @@ name = "gpui_engine_default"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
+ "futures",
  "gpui_ce_collections",
+ "gpui_ce_shared_string",
  "gpui_engine",
  "gpui_types",
+ "itertools 0.14.0",
+ "parking_lot",
+ "smallvec",
  "stacksafe",
  "taffy",
 ]

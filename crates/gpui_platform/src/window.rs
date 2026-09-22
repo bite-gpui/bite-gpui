@@ -371,17 +371,9 @@ pub enum WindowBackgroundAppearance {
     MicaAltBackdrop,
 }
 
-/// The text rendering mode to use for drawing glyphs.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub enum TextRenderingMode {
-    /// Use the platform's default text rendering mode.
-    #[default]
-    PlatformDefault,
-    /// Use subpixel (ClearType-style) text rendering.
-    Subpixel,
-    /// Use grayscale text rendering.
-    Grayscale,
-}
+// `TextRenderingMode` moved down into `gpui_engine` with the shaping vocabulary that
+// returns it; re-exported so `gpui_platform::TextRenderingMode` is unchanged.
+pub use gpui_engine::TextRenderingMode;
 
 /// Default window size used when no explicit size is provided.
 pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(1095.));

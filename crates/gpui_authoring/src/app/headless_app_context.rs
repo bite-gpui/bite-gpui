@@ -9,9 +9,10 @@
 
 use crate::{
     AnyView, AnyWindowHandle, App, AppCell, AppContext, AssetRegistry, AssetSource,
-    BackgroundExecutor, Bounds, Context, Entity, EntityId, EventEmitter, ForegroundExecutor,
-    Global, Pixels, PlatformHeadlessRenderer, PlatformTextSystem, Render, Reservation, Size, Task,
-    TestDispatcher, TestPlatform, TextSystem, Window, WindowBounds, WindowHandle, WindowOptions,
+    BackgroundExecutor, Bounds, Context, DefaultTextSystem, Entity, EntityId, EventEmitter,
+    ForegroundExecutor, Global, Pixels, PlatformHeadlessRenderer, PlatformTextSystem, Render,
+    Reservation, Size, Task, TestDispatcher, TestPlatform, TextSystem, Window, WindowBounds,
+    WindowHandle, WindowOptions,
     app::{GpuiBorrow, GpuiMode},
 };
 use anyhow::Result;
@@ -42,7 +43,7 @@ pub struct HeadlessAppContext {
     /// The foreground executor for running tasks on the main thread.
     pub foreground_executor: ForegroundExecutor,
     dispatcher: TestDispatcher,
-    text_system: Arc<TextSystem>,
+    text_system: Arc<dyn TextSystem>,
 }
 
 impl HeadlessAppContext {
@@ -85,7 +86,7 @@ impl HeadlessAppContext {
             Some(renderer_factory),
         );
 
-        let text_system = Arc::new(TextSystem::new(platform_text_system));
+        let text_system = Arc::new(DefaultTextSystem::new(platform_text_system));
         let http_client = crate::http_client::FakeHttpClient::with_404_response();
         let app = App::new_app(
             platform,
@@ -174,7 +175,7 @@ impl HeadlessAppContext {
     }
 
     /// Returns the text system.
-    pub fn text_system(&self) -> &Arc<TextSystem> {
+    pub fn text_system(&self) -> &Arc<dyn TextSystem> {
         &self.text_system
     }
 

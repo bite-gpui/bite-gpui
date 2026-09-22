@@ -206,7 +206,7 @@ impl Application {
     }
 
     /// Returns a reference to the [`TextSystem`] associated with this app.
-    pub fn text_system(&self) -> Arc<TextSystem> {
+    pub fn text_system(&self) -> Arc<dyn TextSystem> {
         self.0.borrow().text_system().clone()
     }
 

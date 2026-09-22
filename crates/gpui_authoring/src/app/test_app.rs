@@ -26,9 +26,10 @@
 
 use crate::{
     AnyWindowHandle, App, AppCell, AppContext, AssetRegistry, AsyncApp, BackgroundExecutor,
-    BorrowAppContext, Bounds, BoundsExt, ClipboardItem, Context, Entity, ForegroundExecutor, Global,
-    InputEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Platform, PlatformTextSystem, Point, Render, Size, Task, TestDispatcher, TestPlatform,
+    BorrowAppContext, Bounds, BoundsExt, ClipboardItem, Context, DefaultTextSystem, Entity,
+    ForegroundExecutor, Global, InputEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Platform, PlatformTextSystem, Point, Render, Size, Task, TestDispatcher,
+    TestPlatform,
     TextSystem, Window, WindowBounds, WindowHandle, WindowOptions, app::GpuiMode,
 };
 use std::{future::Future, rc::Rc, sync::Arc, time::Duration};
@@ -44,7 +45,7 @@ pub struct TestApp {
     foreground_executor: ForegroundExecutor,
     #[allow(dead_code)]
     dispatcher: TestDispatcher,
-    text_system: Arc<TextSystem>,
+    text_system: Arc<dyn TextSystem>,
 }
 
 impl TestApp {
@@ -89,7 +90,7 @@ impl TestApp {
             None => TestPlatform::new(background_executor.clone(), foreground_executor.clone()),
         };
         let http_client = crate::http_client::FakeHttpClient::with_404_response();
-        let text_system = Arc::new(TextSystem::new(
+        let text_system = Arc::new(DefaultTextSystem::new(
             platform_text_system.unwrap_or_else(|| platform.text_system.clone()),
         ));
 
@@ -244,7 +245,7 @@ impl TestApp {
     }
 
     /// Get the text system.
-    pub fn text_system(&self) -> &Arc<TextSystem> {
+    pub fn text_system(&self) -> &Arc<dyn TextSystem> {
         &self.text_system
     }
 

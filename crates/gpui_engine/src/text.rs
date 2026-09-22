@@ -1,21 +1,26 @@
-//! The font and text-run vocabulary that `gpui`'s text machinery and its platform
-//! backends share.
+//! The font, text-run, and line-layout vocabulary that `gpui`'s text machinery
+//! and its platform backends share.
 //!
-//! These are the identifiers, metrics, feature and fallback descriptions, and the
-//! shaped-run primitives that flow across the text-system boundary. Keeping them here
-//! lets a backend name a font, describe a run, or return shaped glyphs without
-//! depending on `gpui` itself.
+//! These are the identifiers, metrics, feature and fallback descriptions, the
+//! shaped-run primitives, and the shaped and wrapped line results that flow across
+//! the text-system boundary. Keeping them here lets a backend name a font, describe
+//! a run, return shaped glyphs, or implement the [`PlatformTextSystem`] shaping SPI
+//! without depending on `gpui` itself.
 
 use crate::{FontFallbacks, FontFeatures, FontId, GlyphId, RenderGlyphParams};
+use anyhow::Result;
 use derive_more::{Add, FromStr, Sub};
 use gpui_shared_string::SharedString;
 use gpui_types::{
-    Bounds, DevicePixels, Hsla, Pixels, Point, StrikethroughStyle, UnderlineStyle, px,
+    Bounds, DevicePixels, Hsla, Pixels, Point, Size, StrikethroughStyle, UnderlineStyle, point, px,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
+use std::borrow::Cow;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 /// Number of subpixel glyph variants along the X axis.
 pub const SUBPIXEL_VARIANTS_X: u8 = 4;
@@ -283,18 +288,6 @@ impl Hash for FontRun {
     }
 }
 
-/// A key pairing a resolved font with the size it was resolved at.
-///
-/// Made `pub` so `gpui`'s text system can key its per-size wrapper pool on it; the
-/// type itself is an internal bookkeeping detail of that pool.
-#[derive(Hash, Eq, PartialEq)]
-pub struct FontIdWithSize {
-    /// The resolved font id.
-    pub font_id: FontId,
-    /// The font size in pixels.
-    pub font_size: Pixels,
-}
-
 /// Set the text decoration for a run of text.
 #[derive(Debug, Clone)]
 pub struct DecorationRun {
@@ -435,4 +428,571 @@ pub struct LineLayoutIndex {
     pub lines_by_hash_index: usize,
     /// The number of content-hashed wrapped lines retained at this position.
     pub wrapped_lines_by_hash_index: usize,
+}
+
+/// The text rendering mode to use for drawing glyphs.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum TextRenderingMode {
+    /// Use the platform's default text rendering mode.
+    #[default]
+    PlatformDefault,
+    /// Use subpixel (ClearType-style) text rendering.
+    Subpixel,
+    /// Use grayscale text rendering.
+    Grayscale,
+}
+
+/// A laid out and styled line of text
+#[derive(Default, Debug)]
+pub struct LineLayout {
+    /// The font size for this line
+    pub font_size: Pixels,
+    /// The width of the line
+    pub width: Pixels,
+    /// The ascent of the line
+    pub ascent: Pixels,
+    /// The descent of the line
+    pub descent: Pixels,
+    /// The shaped runs that make up this line
+    pub runs: Vec<ShapedRun>,
+    /// The length of the line in utf-8 bytes
+    pub len: usize,
+}
+
+impl LineLayout {
+    /// The index for the character at the given x coordinate
+    pub fn index_for_x(&self, x: Pixels) -> Option<usize> {
+        if x >= self.width {
+            None
+        } else {
+            for run in self.runs.iter().rev() {
+                for glyph in run.glyphs.iter().rev() {
+                    if glyph.position.x <= x {
+                        return Some(glyph.index);
+                    }
+                }
+            }
+            Some(0)
+        }
+    }
+
+    /// closest_index_for_x returns the character boundary closest to the given x coordinate
+    /// (e.g. to handle aligning up/down arrow keys)
+    pub fn closest_index_for_x(&self, x: Pixels) -> usize {
+        let mut prev_index = 0;
+        let mut prev_x = px(0.);
+
+        for run in self.runs.iter() {
+            for glyph in run.glyphs.iter() {
+                if glyph.position.x >= x {
+                    if glyph.position.x - x < x - prev_x {
+                        return glyph.index;
+                    } else {
+                        return prev_index;
+                    }
+                }
+                prev_index = glyph.index;
+                prev_x = glyph.position.x;
+            }
+        }
+
+        if self.len == 1 {
+            if x > self.width / 2. {
+                return 1;
+            } else {
+                return 0;
+            }
+        }
+
+        self.len
+    }
+
+    /// The x position of the character at the given index
+    pub fn x_for_index(&self, index: usize) -> Pixels {
+        for run in &self.runs {
+            for glyph in &run.glyphs {
+                if glyph.index >= index {
+                    return glyph.position.x;
+                }
+            }
+        }
+        self.width
+    }
+
+    /// The corresponding Font at the given index
+    pub fn font_id_for_index(&self, index: usize) -> Option<FontId> {
+        for run in &self.runs {
+            for glyph in &run.glyphs {
+                if glyph.index >= index {
+                    return Some(run.font_id);
+                }
+            }
+        }
+        None
+    }
+
+    /// Split this layout at a byte index, returning `(prefix, suffix)`.
+    ///
+    /// - `prefix` contains glyphs for bytes `[0, byte_index)` with original positions.
+    ///   Its width equals the x-advance up to the split point.
+    /// - `suffix` contains glyphs for bytes `[byte_index, len)` with positions
+    ///   shifted left so the first glyph starts at x=0, and byte indices rebased to 0.
+    /// - `font_size`, `ascent`, and `descent` are copied to both halves.
+    pub fn split_at(&self, byte_index: usize) -> (LineLayout, LineLayout) {
+        let x_offset = self.x_for_index(byte_index);
+
+        // Partition glyph runs. A single run may contribute glyphs to both halves.
+        let mut left_runs = Vec::new();
+        let mut right_runs = Vec::new();
+
+        for run in &self.runs {
+            let split_pos = run.glyphs.partition_point(|g| g.index < byte_index);
+
+            if split_pos > 0 {
+                left_runs.push(ShapedRun {
+                    font_id: run.font_id,
+                    glyphs: run.glyphs[..split_pos].to_vec(),
+                });
+            }
+
+            if split_pos < run.glyphs.len() {
+                let right_glyphs = run.glyphs[split_pos..]
+                    .iter()
+                    .map(|g| ShapedGlyph {
+                        id: g.id,
+                        position: point(g.position.x - x_offset, g.position.y),
+                        index: g.index - byte_index,
+                        is_emoji: g.is_emoji,
+                    })
+                    .collect();
+                right_runs.push(ShapedRun {
+                    font_id: run.font_id,
+                    glyphs: right_glyphs,
+                });
+            }
+        }
+
+        let left = LineLayout {
+            font_size: self.font_size,
+            width: x_offset,
+            ascent: self.ascent,
+            descent: self.descent,
+            runs: left_runs,
+            len: byte_index,
+        };
+
+        let right = LineLayout {
+            font_size: self.font_size,
+            width: self.width - x_offset,
+            ascent: self.ascent,
+            descent: self.descent,
+            runs: right_runs,
+            len: self.len - byte_index,
+        };
+
+        (left, right)
+    }
+}
+
+/// A line of text that has been wrapped to fit a given width
+#[derive(Default, Debug)]
+pub struct WrappedLineLayout {
+    /// The line layout, pre-wrapping.
+    pub unwrapped_layout: Arc<LineLayout>,
+
+    /// The boundaries at which the line was wrapped
+    pub wrap_boundaries: SmallVec<[WrapBoundary; 1]>,
+
+    /// The width of the line, if it was wrapped
+    pub wrap_width: Option<Pixels>,
+}
+
+impl WrappedLineLayout {
+    /// The length of the underlying text, in utf8 bytes.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.unwrapped_layout.len
+    }
+
+    /// The width of this line, in pixels, whether or not it was wrapped.
+    pub fn width(&self) -> Pixels {
+        self.wrap_width
+            .unwrap_or(Pixels::MAX)
+            .min(self.unwrapped_layout.width)
+    }
+
+    /// The size of the whole wrapped text, for the given line_height.
+    /// can span multiple lines if there are multiple wrap boundaries.
+    pub fn size(&self, line_height: Pixels) -> Size<Pixels> {
+        Size {
+            width: self.width(),
+            height: line_height * (self.wrap_boundaries.len() + 1),
+        }
+    }
+
+    /// The ascent of a line in this layout
+    pub fn ascent(&self) -> Pixels {
+        self.unwrapped_layout.ascent
+    }
+
+    /// The descent of a line in this layout
+    pub fn descent(&self) -> Pixels {
+        self.unwrapped_layout.descent
+    }
+
+    /// The wrap boundaries in this layout
+    pub fn wrap_boundaries(&self) -> &[WrapBoundary] {
+        &self.wrap_boundaries
+    }
+
+    /// The font size of this layout
+    pub fn font_size(&self) -> Pixels {
+        self.unwrapped_layout.font_size
+    }
+
+    /// The runs in this layout, sans wrapping
+    pub fn runs(&self) -> &[ShapedRun] {
+        &self.unwrapped_layout.runs
+    }
+
+    /// The index corresponding to a given position in this layout for the given line height.
+    ///
+    /// See also [`Self::closest_index_for_position`].
+    pub fn index_for_position(
+        &self,
+        position: Point<Pixels>,
+        line_height: Pixels,
+    ) -> Result<usize, usize> {
+        self._index_for_position(position, line_height, false)
+    }
+
+    /// The closest index to a given position in this layout for the given line height.
+    ///
+    /// Closest means the character boundary closest to the given position.
+    ///
+    /// See also [`LineLayout::closest_index_for_x`].
+    pub fn closest_index_for_position(
+        &self,
+        position: Point<Pixels>,
+        line_height: Pixels,
+    ) -> Result<usize, usize> {
+        self._index_for_position(position, line_height, true)
+    }
+
+    fn _index_for_position(
+        &self,
+        mut position: Point<Pixels>,
+        line_height: Pixels,
+        closest: bool,
+    ) -> Result<usize, usize> {
+        let wrapped_line_ix = (position.y / line_height) as usize;
+
+        let wrapped_line_start_index;
+        let wrapped_line_start_x;
+        if wrapped_line_ix > 0 {
+            let Some(line_start_boundary) = self.wrap_boundaries.get(wrapped_line_ix - 1) else {
+                return Err(0);
+            };
+            let run = &self.unwrapped_layout.runs[line_start_boundary.run_ix];
+            let glyph = &run.glyphs[line_start_boundary.glyph_ix];
+            wrapped_line_start_index = glyph.index;
+            wrapped_line_start_x = glyph.position.x;
+        } else {
+            wrapped_line_start_index = 0;
+            wrapped_line_start_x = Pixels::ZERO;
+        };
+
+        let wrapped_line_end_index;
+        let wrapped_line_end_x;
+        if wrapped_line_ix < self.wrap_boundaries.len() {
+            let next_wrap_boundary_ix = wrapped_line_ix;
+            let next_wrap_boundary = self.wrap_boundaries[next_wrap_boundary_ix];
+            let run = &self.unwrapped_layout.runs[next_wrap_boundary.run_ix];
+            let glyph = &run.glyphs[next_wrap_boundary.glyph_ix];
+            wrapped_line_end_index = glyph.index;
+            wrapped_line_end_x = glyph.position.x;
+        } else {
+            wrapped_line_end_index = self.unwrapped_layout.len;
+            wrapped_line_end_x = self.unwrapped_layout.width;
+        };
+
+        let mut position_in_unwrapped_line = position;
+        position_in_unwrapped_line.x += wrapped_line_start_x;
+        if position_in_unwrapped_line.x < wrapped_line_start_x {
+            Err(wrapped_line_start_index)
+        } else if position_in_unwrapped_line.x >= wrapped_line_end_x {
+            Err(wrapped_line_end_index)
+        } else {
+            if closest {
+                Ok(self
+                    .unwrapped_layout
+                    .closest_index_for_x(position_in_unwrapped_line.x))
+            } else {
+                Ok(self
+                    .unwrapped_layout
+                    .index_for_x(position_in_unwrapped_line.x)
+                    .unwrap())
+            }
+        }
+    }
+
+    /// Returns the pixel position for the given byte index.
+    pub fn position_for_index(&self, index: usize, line_height: Pixels) -> Option<Point<Pixels>> {
+        let mut line_start_ix = 0;
+        let mut line_end_indices = self
+            .wrap_boundaries
+            .iter()
+            .map(|wrap_boundary| {
+                let run = &self.unwrapped_layout.runs[wrap_boundary.run_ix];
+                let glyph = &run.glyphs[wrap_boundary.glyph_ix];
+                glyph.index
+            })
+            .chain([self.len()])
+            .enumerate();
+        for (ix, line_end_ix) in line_end_indices {
+            let line_y = ix as f32 * line_height;
+            if index < line_start_ix {
+                break;
+            } else if index > line_end_ix {
+                line_start_ix = line_end_ix;
+                continue;
+            } else {
+                let line_start_x = self.unwrapped_layout.x_for_index(line_start_ix);
+                let x = self.unwrapped_layout.x_for_index(index) - line_start_x;
+                return Some(point(x, line_y));
+            }
+        }
+
+        None
+    }
+}
+
+#[expect(missing_docs)]
+pub trait PlatformTextSystem: Send + Sync {
+    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()>;
+    /// Installs a nonblocking sink for unresolved grapheme clusters.
+    fn set_missing_glyph_sink(&self, _sink: Option<Arc<dyn MissingGlyphSink>>) {}
+    /// Get all available font names.
+    fn all_font_names(&self) -> Vec<String>;
+    /// Get the font ID for a font descriptor.
+    fn font_id(&self, descriptor: &Font) -> Result<FontId>;
+    /// Prewarm any system font caches needed to shape text.
+    fn prewarm_fonts(&self, _font_ids: &[FontId]) {}
+    /// Get metrics for a font.
+    fn font_metrics(&self, font_id: FontId) -> FontMetrics;
+    /// Get typographic bounds for a glyph.
+    fn typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Bounds<f32>>;
+    /// Get the advance width for a glyph.
+    fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>>;
+    /// Get the glyph ID for a character.
+    fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId>;
+    /// Get raster bounds for a glyph.
+    fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>>;
+    /// Rasterize a glyph.
+    fn rasterize_glyph(
+        &self,
+        params: &RenderGlyphParams,
+        raster_bounds: Bounds<DevicePixels>,
+    ) -> Result<(Size<DevicePixels>, Vec<u8>)>;
+    /// Layout a line of text with the given font runs.
+    fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout;
+    /// Returns the recommended text rendering mode for the given font and size.
+    fn recommended_rendering_mode(&self, _font_id: FontId, _font_size: Pixels)
+    -> TextRenderingMode;
+    /// Returns the dilation level to use for a glyph painted in the given color.
+    fn glyph_dilation_for_color(&self, _color: Hsla) -> u8 {
+        0
+    }
+}
+
+/// The spacing behavior required of a fallback font.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum FallbackFontClass {
+    /// A proportionally spaced fallback font.
+    Proportional,
+    /// A fixed-width fallback font.
+    Monospace,
+}
+
+/// A grapheme cluster that could not be represented by any available font.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct MissingGlyph {
+    grapheme: SharedString,
+    font_class: FallbackFontClass,
+}
+
+impl MissingGlyph {
+    /// Creates a missing-glyph report.
+    pub fn new(grapheme: SharedString, font_class: FallbackFontClass) -> Self {
+        Self {
+            grapheme,
+            font_class,
+        }
+    }
+
+    /// Returns the unresolved grapheme cluster.
+    pub fn grapheme(&self) -> &str {
+        &self.grapheme
+    }
+
+    /// Returns the spacing behavior required of a fallback font.
+    pub fn font_class(&self) -> FallbackFontClass {
+        self.font_class
+    }
+}
+
+/// Accepts missing glyphs detected by a platform text system.
+pub trait MissingGlyphSink: Send + Sync {
+    /// Reports grapheme clusters that exhausted font fallback.
+    fn report(&self, missing_glyphs: Vec<MissingGlyph>);
+}
+
+#[expect(missing_docs)]
+pub struct NoopTextSystem;
+
+#[expect(missing_docs)]
+impl NoopTextSystem {
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl PlatformTextSystem for NoopTextSystem {
+    fn add_fonts(&self, _fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
+        Ok(())
+    }
+
+    fn all_font_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn font_id(&self, _descriptor: &Font) -> Result<FontId> {
+        Ok(FontId(1))
+    }
+
+    fn font_metrics(&self, _font_id: FontId) -> FontMetrics {
+        FontMetrics {
+            units_per_em: 1000,
+            ascent: 1025.0,
+            descent: -275.0,
+            line_gap: 0.0,
+            underline_position: -95.0,
+            underline_thickness: 60.0,
+            cap_height: 698.0,
+            x_height: 516.0,
+            bounding_box: Bounds {
+                origin: Point {
+                    x: -260.0,
+                    y: -245.0,
+                },
+                size: Size {
+                    width: 1501.0,
+                    height: 1364.0,
+                },
+            },
+        }
+    }
+
+    fn typographic_bounds(&self, _font_id: FontId, _glyph_id: GlyphId) -> Result<Bounds<f32>> {
+        Ok(Bounds {
+            origin: Point { x: 54.0, y: 0.0 },
+            size: Size {
+                width: 392.0,
+                height: 528.0,
+            },
+        })
+    }
+
+    fn advance(&self, _font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>> {
+        Ok(Size {
+            width: 600.0 * glyph_id.0 as f32,
+            height: 0.0,
+        })
+    }
+
+    fn glyph_for_char(&self, _font_id: FontId, ch: char) -> Option<GlyphId> {
+        Some(GlyphId(ch.len_utf16() as u32))
+    }
+
+    fn glyph_raster_bounds(&self, _params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+        Ok(Default::default())
+    }
+
+    fn rasterize_glyph(
+        &self,
+        _params: &RenderGlyphParams,
+        raster_bounds: Bounds<DevicePixels>,
+    ) -> Result<(Size<DevicePixels>, Vec<u8>)> {
+        Ok((raster_bounds.size, Vec::new()))
+    }
+
+    fn layout_line(&self, text: &str, font_size: Pixels, font_runs: &[FontRun]) -> LineLayout {
+        let mut position = px(0.);
+        let metrics = self.font_metrics(FontId(0));
+        let em_width = font_size
+            * self
+                .advance(FontId(0), self.glyph_for_char(FontId(0), 'm').unwrap())
+                .unwrap()
+                .width
+            / metrics.units_per_em as f32;
+        let mut glyphs = Vec::new();
+        for (ix, c) in text.char_indices() {
+            if let Some(glyph) = self.glyph_for_char(FontId(0), c) {
+                glyphs.push(ShapedGlyph {
+                    id: glyph,
+                    position: point(position, px(0.)),
+                    index: ix,
+                    is_emoji: glyph.0 == 2,
+                });
+                if glyph.0 == 2 {
+                    position += em_width * 2.0;
+                } else {
+                    position += em_width;
+                }
+            } else {
+                position += em_width
+            }
+        }
+        let mut shaped_runs = Vec::default();
+        if !glyphs.is_empty() {
+            shaped_runs.push(ShapedRun {
+                font_id: FontId(0),
+                glyphs,
+            });
+        } else {
+            position = px(0.);
+        }
+
+        let mut tracking = px(0.);
+        let mut byte_offset = 0usize;
+        for run in font_runs {
+            let end = byte_offset.saturating_add(run.len).min(text.len());
+            let slice = text.get(byte_offset..end).unwrap_or("");
+            let n = slice.chars().count();
+            if n > 1 {
+                if let Some(spacing) = run.letter_spacing {
+                    tracking += spacing * (n - 1) as f32;
+                }
+            }
+            byte_offset = byte_offset.saturating_add(run.len);
+        }
+
+        LineLayout {
+            font_size,
+            width: position + tracking,
+            ascent: font_size * (metrics.ascent / metrics.units_per_em as f32),
+            descent: font_size * (metrics.descent / metrics.units_per_em as f32),
+            runs: shaped_runs,
+            len: text.len(),
+        }
+    }
+
+    fn recommended_rendering_mode(
+        &self,
+        _font_id: FontId,
+        _font_size: Pixels,
+    ) -> TextRenderingMode {
+        TextRenderingMode::Grayscale
+    }
 }

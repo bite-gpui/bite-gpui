@@ -1,16 +1,17 @@
-//! GPUI's default engine: Taffy-backed layout evaluation.
+//! GPUI's default engine: Taffy-backed layout evaluation and the text shaping
+//! and wrapping caches the facade drives.
 //!
 //! The scene representation and the engine's interface contracts live in
 //! [`gpui_engine`]; this crate holds the concrete implementations that depend
 //! on `taffy`.
-//!
-//! The reference also holds the text shaping and wrapping caches here. Those
-//! are deferred to the text-layout gate, so for now this crate carries the
-//! layout half only.
 
 #![warn(missing_docs)]
 
 mod layout;
 mod layout_style;
+mod line_layout;
+mod text_system;
 
 pub use layout::*;
+pub use line_layout::*;
+pub use text_system::*;

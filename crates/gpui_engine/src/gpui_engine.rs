@@ -13,9 +13,8 @@
 //! `gpui_engine::Scene` name the same type and consumers do not need to know this crate
 //! exists.
 //!
-//! This crate also stands in for the reference's `gpui_engine_default`: the line-layout
-//! cache keys, whose reference home is that crate, are absorbed here because it does not
-//! exist yet.
+//! The line-layout cache keys are no longer absorbed here: they live in
+//! `gpui_engine_default` beside the cache that builds them.
 
 #![warn(missing_docs)]
 // Mirrors `gpui`: the moved code carries a few `mut` bindings that only some platform
@@ -31,7 +30,6 @@ mod font_fallbacks;
 mod font_features;
 mod frame_session;
 mod layout;
-mod line_layout;
 mod line_wrapper;
 mod render;
 mod renderer;
@@ -39,6 +37,7 @@ mod scene;
 mod style;
 mod surface;
 mod text;
+mod text_system;
 
 pub use atlas::*;
 pub use filter::*;
@@ -46,7 +45,6 @@ pub use font_fallbacks::*;
 pub use font_features::*;
 pub use frame_session::*;
 pub use layout::*;
-pub use line_layout::*;
 pub use line_wrapper::*;
 pub use render::*;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
@@ -55,3 +53,4 @@ pub use scene::*;
 pub use style::*;
 pub use surface::*;
 pub use text::*;
+pub use text_system::*;
