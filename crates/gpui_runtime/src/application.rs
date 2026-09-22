@@ -103,6 +103,15 @@ impl Application {
         self
     }
 
+    /// Sets the text system used to shape and lay out text.
+    ///
+    /// Defaults to the text system bundled with GPUI. Supply a different
+    /// implementation to swap the shaper and line layout engine.
+    pub fn with_text_system(self, text_system: Arc<dyn TextSystem>) -> Self {
+        self.0.borrow_mut().set_text_system(text_system);
+        self
+    }
+
     /// Configures when the application should automatically quit.
     /// By default, [`QuitMode::Default`] is used.
     pub fn with_quit_mode(self, mode: QuitMode) -> Self {
