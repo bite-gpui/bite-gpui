@@ -2166,10 +2166,24 @@ impl RenderingParameters {
         use std::env;
 
         let format_features = adapter.get_texture_format_features(surface_format);
-        let path_sample_count = [4, 2, 1]
-            .into_iter()
-            .find(|&n| format_features.flags.sample_count_supported(n))
-            .unwrap_or(1);
+        // The pass the vector paths are rasterized in draws into a target the size
+        // of the window and is resolved before it is composited, so what it costs
+        // is mostly independent of what the paths cover: at 4x on a 2560x1600
+        // drawable that is 64MB of samples to clear, resolve and read back every
+        // frame. The best the surface supports is the default; the environment
+        // variable is here to see what it costs, as the font knobs below are.
+        let path_sample_count = env::var("ZED_PATH_SAMPLE_COUNT")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|&n| {
+                [1, 2, 4, 8].contains(&n) && format_features.flags.sample_count_supported(n)
+            })
+            .unwrap_or_else(|| {
+                [4, 2, 1]
+                    .into_iter()
+                    .find(|&n| format_features.flags.sample_count_supported(n))
+                    .unwrap_or(1)
+            });
 
         let gamma = env::var("ZED_FONTS_GAMMA")
             .ok()
