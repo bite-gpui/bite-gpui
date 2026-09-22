@@ -5005,6 +5005,32 @@ impl Window<'_> {
             });
     }
 
+    /// How finely a glyph's size is rounded before it is rasterized and cached, in
+    /// pixels.
+    ///
+    /// A rasterized glyph is keyed on the exact size it was cut at. That is fine
+    /// for text at a size that is chosen and then left alone, but a caller drawing
+    /// text at a size that changes every frame — anything being zoomed, or scaled
+    /// per line by a transform — asks for a fresh cut of every glyph of every line
+    /// of every frame, and is never asked for anything the atlas already holds.
+    /// Rounding the size a glyph is *cut* at onto a lattice is what lets the atlas
+    /// answer instead; a quarter of a pixel moves the ink by half a step at the
+    /// most, and keeps the lattice small.
+    ///
+    /// Only the rasterization is rounded. A glyph is still positioned, and spaced
+    /// from its neighbours, by a layout shaped at the exact size — rounding the
+    /// size a line is *laid out* at would move the far end of a long line by a
+    /// whole step's worth of its width, which is visible in a way that half a step
+    /// of ink is not.
+    const GLYPH_RASTER_STEP: f32 = 0.25;
+
+    /// The size a glyph should be rasterized at, given the size it is drawn at.
+    ///
+    /// See [`Window::GLYPH_RASTER_STEP`].
+    fn glyph_raster_size(font_size: Pixels) -> Pixels {
+        px((font_size.0 / Self::GLYPH_RASTER_STEP).round() * Self::GLYPH_RASTER_STEP)
+    }
+
     /// Paints a monochrome (non-emoji) glyph into the scene for the next frame at the current z-index.
     ///
     /// The y component of the origin is the baseline of the glyph.
@@ -5043,7 +5069,7 @@ impl Window<'_> {
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
-            font_size,
+            font_size: Self::glyph_raster_size(font_size),
             subpixel_variant,
             scale_factor,
             is_emoji: false,
@@ -5140,7 +5166,7 @@ impl Window<'_> {
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
-            font_size,
+            font_size: Self::glyph_raster_size(font_size),
             subpixel_variant: Default::default(),
             scale_factor,
             is_emoji: true,
