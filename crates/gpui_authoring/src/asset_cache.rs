@@ -1,8 +1,12 @@
 use crate::{App, SharedString, SharedUri};
 use futures::{Future, TryFutureExt};
 
+/// The shared hash helper now lives with the rest of the clipboard data in
+/// `gpui_platform`; re-exported so `asset_cache::hash` keeps its path.
+pub use gpui_platform::hash;
+
 use std::fmt::Debug;
-use std::hash::{BuildHasher, Hash};
+use std::hash::Hash;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -74,9 +78,4 @@ where
         let load = T::load(source, cx);
         load.inspect_err(|e| log::error!("Failed to load asset: {:?}", e))
     }
-}
-
-/// Use a quick, non-cryptographically secure hash function to get an identifier from data
-pub fn hash<T: Hash>(data: &T) -> u64 {
-    collections::FxBuildHasher.hash_one(data)
 }

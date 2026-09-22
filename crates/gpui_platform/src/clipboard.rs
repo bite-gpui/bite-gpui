@@ -1,41 +1,9 @@
-use anyhow::{Context as _, Result};
-use image::{DynamicImage, Frame};
 use seahash::SeaHasher;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::io::Cursor;
 use std::path::PathBuf;
 use strum::EnumIter;
-
-#[allow(missing_docs)]
-pub fn decode_static_image(
-    bytes: &[u8],
-    format: image::ImageFormat,
-) -> Result<SmallVec<[Frame; 1]>> {
-    let decoder = image::ImageReader::with_format(Cursor::new(bytes), format)
-        .into_decoder()
-        .context("creating image decoder")?;
-    decode_static_image_from_decoder(decoder)
-}
-
-#[allow(missing_docs)]
-pub fn decode_static_image_from_decoder(
-    mut decoder: impl image::ImageDecoder,
-) -> Result<SmallVec<[Frame; 1]>> {
-    let orientation = decoder
-        .orientation()
-        .context("reading decoder's orientation")?;
-    let mut image = DynamicImage::from_decoder(decoder).context("decoding image")?;
-    image.apply_orientation(orientation);
-
-    let mut data = image.into_rgba8();
-    for pixel in data.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
-
-    Ok(SmallVec::from_elem(Frame::new(data), 1))
-}
 
 /// A clipboard item that should be copied to the clipboard
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -214,7 +182,7 @@ impl FileDragPaths {
 }
 
 /// Use a quick, non-cryptographically secure hash function to get an identifier from data
-fn hash<T: Hash>(data: &T) -> u64 {
+pub fn hash<T: Hash>(data: &T) -> u64 {
     collections::FxBuildHasher.hash_one(data)
 }
 

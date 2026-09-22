@@ -25,9 +25,10 @@ use crate::{
     PlatformGestures, PlatformInput, PlatformMenu, PlatformMenuItem, Point, RenderImage, Scene,
     SharedString, Size, SvgRenderer, SystemWindowTab, Task, Window, WindowControlArea,
 };
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use futures::channel::oneshot;
 use image::AnimationDecoder as _;
+use image::{DynamicImage, Frame};
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 use image::RgbaImage;
 use image::codecs::gif::GifDecoder;
@@ -1174,6 +1175,33 @@ pub enum WindowKind {
     /// A window that appears on top of its parent window and blocks interaction with it
     /// until the modal window is closed
     Dialog,
+}
+
+pub(crate) fn decode_static_image(
+    bytes: &[u8],
+    format: image::ImageFormat,
+) -> Result<SmallVec<[Frame; 1]>> {
+    let decoder = image::ImageReader::with_format(Cursor::new(bytes), format)
+        .into_decoder()
+        .context("creating image decoder")?;
+    decode_static_image_from_decoder(decoder)
+}
+
+pub(crate) fn decode_static_image_from_decoder(
+    mut decoder: impl image::ImageDecoder,
+) -> Result<SmallVec<[Frame; 1]>> {
+    let orientation = decoder
+        .orientation()
+        .context("reading decoder's orientation")?;
+    let mut image = DynamicImage::from_decoder(decoder).context("decoding image")?;
+    image.apply_orientation(orientation);
+
+    let mut data = image.into_rgba8();
+    for pixel in data.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+
+    Ok(SmallVec::from_elem(Frame::new(data), 1))
 }
 
 /// Window- and app-coupled extensions on [`Image`].
