@@ -95,12 +95,16 @@ mod macos_build {
         output_path
     }
 
-    /// Locate a sibling workspace crate relative to this crate. Resolved at
-    /// build-script runtime against this crate's manifest dir, so no checkout
-    /// path is baked into a compiled artifact (which corgi rejects).
+    /// Locate a sibling workspace crate's sources, which are vendored into this
+    /// crate under `vendor/`.
+    ///
+    /// They cannot be reached as siblings: a `.crate` unpacks on its own, so
+    /// `CARGO_MANIFEST_DIR/../gpui_engine` does not exist for a consumer
+    /// building this crate from the registry, and cbindgen would fail to read
+    /// the files below.
     fn find_sibling_crate_dir(name: &str) -> PathBuf {
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
-            .join("..")
+            .join("vendor")
             .join(name)
     }
 
