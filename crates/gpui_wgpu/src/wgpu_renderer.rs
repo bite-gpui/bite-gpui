@@ -492,14 +492,19 @@ mod tests {
             },
         )?;
         let actual = renderer.render_to_image(&scene)?;
+        // The baseline was captured from the retired Metal renderer, so a backend
+        // whose float math differs by a few LSBs still agrees with it: the
+        // gradient's Oklab conversion goes through `pow`. Structural differences
+        // are far larger than this — an sRGB-interpolated gradient is off by 54
+        // in one channel, and a transparent clear by 255.
+        const LEGACY_TOLERANCE: u8 = 2;
         for (index, (actual, expected)) in actual.as_raw().iter().zip(LEGACY).enumerate() {
-            assert_eq!(
-                actual,
-                expected,
-                "legacy mismatch at pixel ({}, {}), channel {}",
+            assert!(
+                actual.abs_diff(*expected) <= LEGACY_TOLERANCE,
+                "legacy mismatch at pixel ({}, {}), channel {}: {actual} vs {expected}",
                 (index / 4) % 4,
                 (index / 4) / 4,
-                index % 4
+                index % 4,
             );
         }
         assert_eq!(actual.as_raw().len(), LEGACY.len());

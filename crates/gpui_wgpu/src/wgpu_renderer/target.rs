@@ -249,10 +249,12 @@ fn clear_color(transparent: bool) -> wgpu::Color {
     }
     #[cfg(target_os = "windows")]
     return wgpu::Color::WHITE;
-    #[cfg(target_os = "macos")]
+    // An opaque target has to start opaque. The scene blend state keeps alpha
+    // with `dst_factor = One`, so clearing to alpha 0 leaves the target
+    // translucent wherever nothing opaque was drawn, and a readback stops
+    // matching the retired Metal renderer's baseline, which cleared black.
+    #[cfg(not(target_os = "windows"))]
     return wgpu::Color::BLACK;
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    wgpu::Color::TRANSPARENT
 }
 
 #[cfg(test)]
