@@ -38,18 +38,22 @@ use skrifa::{
 use smallvec::SmallVec;
 use tiny_skia::{FillRule, Mask, PathBuilder, Transform};
 
+// The fonts are bundled inside the crate rather than read from the repository's
+// shared `assets/`: `include_bytes!` cannot reach outside the package root, so a
+// path into `assets/` leaves the published tarball without the files it compiles
+// against. `../assets/fonts/license.txt` ships with them.
 /// The embedded regular font.
 const FONT_DATA: &[u8] =
-    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
+    include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
 /// The embedded italic font.
 const FONT_DATA_ITALIC: &[u8] =
-    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf");
+    include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf");
 /// The embedded semibold font.
 const FONT_DATA_SEMIBOLD: &[u8] =
-    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBold.ttf");
+    include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBold.ttf");
 /// The embedded semibold italic font.
 const FONT_DATA_SEMIBOLD_ITALIC: &[u8] =
-    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBoldItalic.ttf");
+    include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBoldItalic.ttf");
 /// The family name shared by the embedded fonts.
 pub const FONT_FAMILY: &str = "IBM Plex Sans";
 
