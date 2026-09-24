@@ -87,7 +87,7 @@ fn unplanned_mixed_scene(count: usize) -> Scene {
             padding: 0,
             bounds,
             content_mask: ContentMask { bounds },
-            color: white().into(),
+            color: white(),
             thickness: ScaledPixels(1.0),
             wavy: ShaderBool::Disabled,
         });
