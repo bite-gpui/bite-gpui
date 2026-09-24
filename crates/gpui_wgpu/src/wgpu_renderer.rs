@@ -413,7 +413,7 @@ mod tests {
             padding: 0,
             bounds,
             content_mask: gpui::ContentMask { bounds },
-            color: gpui::hsla(0.0, 1.0, 0.5, 0.5).into(),
+            color: gpui::hsla(0.0, 1.0, 0.5, 0.5),
             thickness: ScaledPixels(1.0),
             wavy: false.into(),
         });
@@ -658,7 +658,7 @@ mod tests {
                 padding: 0,
                 bounds,
                 content_mask: gpui::ContentMask { bounds },
-                color: gpui::hsla(0.0, 0.0, 1.0, 1.0).into(),
+                color: gpui::hsla(0.0, 0.0, 1.0, 1.0),
                 thickness: ScaledPixels(1.0),
                 wavy: false.into(),
             });

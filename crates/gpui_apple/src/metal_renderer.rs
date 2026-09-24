@@ -2345,7 +2345,7 @@ mod tests {
             content_mask: ContentMask {
                 bounds: underline_bounds,
             },
-            color: hsla(0.6, 0.8, 0.6, 0.65).into(),
+            color: hsla(0.6, 0.8, 0.6, 0.65),
             thickness: ScaledPixels(1.0),
             wavy: gpui::ShaderBool::Disabled,
         });
@@ -2373,7 +2373,7 @@ mod tests {
             content_mask: ContentMask {
                 bounds: underline_bounds,
             },
-            color: hsla(0.1, 0.9, 0.55, 1.0).into(),
+            color: hsla(0.1, 0.9, 0.55, 1.0),
             thickness: ScaledPixels(1.0),
             wavy: gpui::ShaderBool::Enabled,
         });
@@ -2435,7 +2435,7 @@ mod tests {
             content_mask: ContentMask { bounds: full },
             background: solid_background(hsla(0.05, 0.8, 0.45, 1.0)),
             border_style: BorderStyle::Dashed,
-            border_color: hsla(0.6, 0.9, 0.7, 1.0).into(),
+            border_color: hsla(0.6, 0.9, 0.7, 1.0),
             corner_radii: Corners::all(ScaledPixels(2.0)),
             border_widths: Edges::all(ScaledPixels(1.0)),
             ..Default::default()
@@ -2498,7 +2498,7 @@ mod tests {
             bounds: box_bounds,
             content_mask: ContentMask { bounds: full },
             corner_radii: Corners::all(ScaledPixels(2.0)),
-            color: hsla(0.7, 0.8, 0.3, 0.7).into(),
+            color: hsla(0.7, 0.8, 0.3, 0.7),
             element_bounds: box_bounds,
             element_corner_radii: Corners::all(ScaledPixels(2.0)),
             inset: gpui::ShaderBool::Disabled,
