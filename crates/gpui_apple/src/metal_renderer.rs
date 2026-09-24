@@ -2117,7 +2117,7 @@ mod tests {
             padding: 0,
             bounds,
             content_mask: ContentMask { bounds },
-            color: white().into(),
+            color: white(),
             tile,
             transformation: TransformationMatrix::unit(),
         });
