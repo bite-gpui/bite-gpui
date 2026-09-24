@@ -855,6 +855,9 @@ pub fn linear_gradient(
         tag: BackgroundTag::LinearGradient,
         gradient_angle_or_pattern_height: angle,
         colors: [from.into(), to.into()],
+        // This fork interpolates gradients in Oklab; upstream leaves this field at
+        // its sRGB default.
+        color_space: ColorSpace::Oklab,
         ..Default::default()
     }
 }
