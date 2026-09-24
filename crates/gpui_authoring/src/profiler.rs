@@ -1244,10 +1244,24 @@ impl FrameTimingCollector {
     }
 }
 
+/// Serializes the tests that observe or change the process-global trace state.
+///
+/// `trace_scope` is global by design: holding one reports tracing as enabled on
+/// every thread, so a test that asserts on `trace_enabled()` or on the frame
+/// event buffer has to be the only scope holder. The `app::bench_context` tests
+/// that run a `TraceScope` take this lock too.
+#[cfg(all(test, any(feature = "profiler", feature = "bench-support")))]
+pub(crate) fn trace_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static TRACE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TRACE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(all(test, feature = "profiler"))]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::MutexGuard;
 
     #[test]
     fn records_draw_events_only_while_tracing() {
@@ -1516,7 +1530,6 @@ mod tests {
     }
 
     const FRAME: Duration = Duration::from_millis(16);
-    static TRACE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     struct TraceTestGuard {
         was_enabled: bool,
@@ -1525,9 +1538,7 @@ mod tests {
 
     impl TraceTestGuard {
         fn new() -> Self {
-            let lock = TRACE_TEST_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let lock = super::trace_test_lock();
             let was_enabled = trace_enabled();
             set_trace_enabled(false);
             Self {

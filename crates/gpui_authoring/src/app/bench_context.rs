@@ -1181,10 +1181,12 @@ mod tests {
     use std::{rc::Rc, sync::Arc};
 
     use super::*;
-    use crate::profiler::journal::install_test_foreground_journal;
+    use crate::profiler::journal::{ForegroundJournalEntry, install_test_foreground_journal};
+    use crate::profiler::trace_test_lock;
 
     #[test]
     fn foreground_work_reports_long_task_without_window_draw() {
+        let _trace_test_lock = trace_test_lock();
         let (journal, _journal_guard) = install_test_foreground_journal(1024, 64);
         let dispatcher = Arc::new(ThreadedDispatcher::new());
         let foreground_executor = ForegroundExecutor::new(dispatcher);
@@ -1199,9 +1201,15 @@ mod tests {
         run_task_to_completion(&foreground_executor, task);
 
         let events = trace_scope.finish();
+        // The frame-event buffer is process-global, so in a parallel run it also
+        // holds whatever the other tests drew. The foreground journal is
+        // thread-local, and a window-less task records no frame state in it.
         assert!(
-            events.frame_events.is_empty(),
-            "no window was involved, so no frame events should be recorded"
+            events
+                .journal_entries
+                .iter()
+                .all(|entry| !matches!(entry, ForegroundJournalEntry::FrameState(_))),
+            "no window was involved, so no frame state should be recorded"
         );
 
         let report = BenchReport::default();
@@ -1231,6 +1239,7 @@ mod tests {
 
     #[test]
     fn foreground_work_excludes_setup_before_trace_scope_starts() {
+        let _trace_test_lock = trace_test_lock();
         let (journal, _journal_guard) = install_test_foreground_journal(1024, 64);
         let dispatcher = Arc::new(ThreadedDispatcher::new());
         let foreground_executor = ForegroundExecutor::new(dispatcher);
@@ -1271,6 +1280,7 @@ mod tests {
 
     #[test]
     fn bench_task_reports_long_task_without_window() {
+        let _trace_test_lock = trace_test_lock();
         let platform = bench_platform(None, Arc::new(crate::NoopTextSystem::new()));
         let report = BenchReport::default();
         let name = "bench_task_reports_long_task_without_window";
