@@ -7370,7 +7370,7 @@ impl Window<'_> {
     /// technology is currently connected, so it can be used to gate subscriptions
     /// that are only needed for accessibility.
     pub fn is_a11y_enabled(&self) -> bool {
-        self.a11y.is_enabled()
+        self.core.a11y.is_enabled()
     }
 
     /// Returns whether accessibility features are active for this frame,

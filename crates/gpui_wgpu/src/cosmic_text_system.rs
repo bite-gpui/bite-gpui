@@ -1526,7 +1526,7 @@ mod tests {
     /// testing in that sliver used to panic (ZED-BW8, ZED-75K, ZED-81Z).
     #[test]
     fn index_for_position_past_line_width() -> Result<()> {
-        let text_system = Arc::new(gpui::TextSystem::new(Arc::new(text_system()?)));
+        let text_system = Arc::new(gpui::DefaultTextSystem::new(Arc::new(text_system()?)));
         let window_text_system = gpui::WindowTextSystem::new(text_system);
         let text: SharedString = "Warning: this will delete files\u{200b}".into();
         let runs = [gpui::TextRun {

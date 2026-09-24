@@ -7531,6 +7531,7 @@ dependencies = [
  "backtrace",
  "bindgen",
  "collections",
+ "criterion",
  "embed-resource",
  "env_logger 0.11.8",
  "gpui_authoring",
