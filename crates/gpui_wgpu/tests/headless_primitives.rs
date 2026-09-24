@@ -95,7 +95,7 @@ fn every_primitive_kind_renders() {
         order: 0,
         bounds: bordered,
         content_mask: full_mask(),
-        border_color: white.into(),
+        border_color: white,
         border_widths: gpui::Edges::all(ScaledPixels(4.0)),
         ..Default::default()
     });
@@ -107,7 +107,7 @@ fn every_primitive_kind_renders() {
         bounds: shadow_bounds,
         corner_radii: Default::default(),
         content_mask: full_mask(),
-        color: blue.into(),
+        color: blue,
         element_bounds: shadow_bounds,
         element_corner_radii: Default::default(),
         inset: ShaderBool::Disabled,
@@ -120,7 +120,7 @@ fn every_primitive_kind_renders() {
         padding: 0,
         bounds: underline_bounds,
         content_mask: full_mask(),
-        color: white.into(),
+        color: white,
         thickness: ScaledPixels(4.0),
         wavy: ShaderBool::Disabled,
     });
@@ -131,7 +131,7 @@ fn every_primitive_kind_renders() {
         padding: 0,
         bounds: mono_bounds,
         content_mask: full_mask(),
-        color: green.into(),
+        color: green,
         tile: mono,
         transformation: Default::default(),
     });

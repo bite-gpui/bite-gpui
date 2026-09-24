@@ -2826,7 +2826,7 @@ mod tests {
             padding: 0,
             bounds: scaled(10.0, 60.0, 30.0, 30.0),
             content_mask: full_mask(),
-            color: green.into(),
+            color: green,
             tile: mono,
             transformation: Default::default(),
         });
