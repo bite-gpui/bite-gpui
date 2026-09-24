@@ -12,11 +12,9 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use gpui_engine::{
-    AtlasKey, AtlasTextureId, AtlasTile, HeadlessAtlas, PlatformAtlas, Scene, SceneRenderer, TileId,
-};
+use gpui_engine::{HeadlessAtlas, PlatformAtlas, Scene, SceneRenderer};
 use gpui_platform::{
-    Bounds, Capslock, DevicePixels, DispatchEventResult, DisplayId, GpuSpecs, Modifiers, Pixels,
+    Bounds, Capslock, DispatchEventResult, DisplayId, GpuSpecs, Modifiers, Pixels,
     PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
     PromptLevel, RequestFrameOptions, Size, WindowAppearance, WindowBackgroundAppearance,
     WindowBounds, WindowControlArea, WindowParams, WindowVisibility, px,
