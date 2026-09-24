@@ -95,9 +95,17 @@ mod macos_build {
         output_path
     }
 
-    /// Locate the gpui crate directory relative to this crate.
-    fn find_gpui_crate_dir() -> PathBuf {
-        gpui::GPUI_MANIFEST_DIR.into()
+    /// Locate a sibling workspace crate's sources, which are vendored into this
+    /// crate under `vendor/`.
+    ///
+    /// They cannot be reached as siblings: a `.crate` unpacks on its own, so
+    /// `CARGO_MANIFEST_DIR/../gpui_engine` does not exist for a consumer
+    /// building this crate from the registry, and cbindgen would fail to read
+    /// the files below.
+    fn find_sibling_crate_dir(name: &str) -> PathBuf {
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("vendor")
+            .join(name)
     }
 
     /// To enable runtime compilation, we need to "stitch" the shaders file with the generated header
