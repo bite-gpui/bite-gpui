@@ -57,3 +57,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo check --release -p gpui
+
+  # The Windows presentation probe: whether a wgpu surface can be built from the `HWND`
+  # GPUI creates and present on it, on which backend, and whether it survives a
+  # DirectComposition tree on the same window. It is a probe, so it answers rather than
+  # gates, and it comes out once it has; the crate stays as the reproduction.
+  wgpu-present:
+    name: wgpu present probe (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo run --manifest-path probes/windows-wgpu-present/Cargo.toml
