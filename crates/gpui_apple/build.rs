@@ -5,9 +5,14 @@ fn main() {
     // on the target — while `build.rs` itself is compiled for the *host*. Checking
     // the crate for a macOS target from a non-macOS host therefore compiles the lib
     // with nothing below having run, and the lib includes an artifact that is not
-    // there. Write it, so a Linux runner can type-check the Metal backend the way it
-    // already type-checks the Direct3D one. The Windows backend needs no equivalent
-    // because it has no shader to compile.
+    // there. Write it, so `cargo check --target aarch64-apple-darwin -p gpui_macos`
+    // works from a Linux checkout: that is how the Metal renderer is type-checked
+    // without a macOS machine.
+    //
+    // CI is not what this is for. It checks the Apple crates on a macOS runner,
+    // where the real shaders compile. The Windows backend needs no equivalent: its
+    // Rust includes the generated HLSL only in a release build, and in debug the
+    // shaders are compiled at run time.
     if cross_checking_macos() {
         write_shader_stub();
         return;
