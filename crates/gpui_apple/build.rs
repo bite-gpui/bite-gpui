@@ -1,8 +1,41 @@
 #![allow(clippy::disallowed_methods, reason = "build scripts are exempt")]
 
 fn main() {
+    // The lib is Apple-only — the crate root and `metal_renderer.rs` are both
+    // gated on the target — while `build.rs` itself is compiled for the *host*.
+    // Checking the crate for an Apple target from a non-Apple host therefore
+    // compiles the lib with nothing below having run, and the lib includes an
+    // artifact that is not there. Write it, so a Linux runner can type-check the
+    // Metal backend the way it already type-checks the Direct3D one. The Windows
+    // backend needs no equivalent because it has no shader to compile.
+    if cross_checking_apple() {
+        write_shader_stub();
+        return;
+    }
+
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     apple_build::run();
+}
+
+/// An Apple target built from a host that is not Apple.
+fn cross_checking_apple() -> bool {
+    cfg!(not(target_os = "macos"))
+        && matches!(
+            std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
+            Ok("macos") | Ok("ios")
+        )
+}
+
+/// The artifact `metal_renderer.rs` includes, empty. Its contents are only ever
+/// handed to Metal at run time, which cannot happen on a host that is not Apple.
+fn write_shader_stub() {
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set"));
+    let name = if std::env::var_os("CARGO_FEATURE_RUNTIME_SHADERS").is_some() {
+        "stitched_shaders.metal"
+    } else {
+        "shaders.metallib"
+    };
+    std::fs::write(out_dir.join(name), []).expect("write the shader artifact");
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
