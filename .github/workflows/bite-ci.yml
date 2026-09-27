@@ -51,12 +51,8 @@ jobs:
   # writes it now when it is cross-checked. The Metal compiler still does not run
   # here, so this checks the Rust and not the shaders: the shaders need a macOS
   # runner.
-  #
-  # Measured rather than assumed: `continue-on-error` until a run has shown it green,
-  # and the flag comes off then.
   macos-cross-check:
     name: cargo check --target aarch64-apple-darwin
-    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
