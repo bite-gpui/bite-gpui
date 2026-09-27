@@ -57,14 +57,3 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo check --release -p gpui
-
-  # The macOS presentation probe: whether a wgpu surface can be built from the `NSView` GPUI
-  # creates and present on it, whether the view's layer has to be a `CAMetalLayer` the renderer
-  # made, and what `gpui_wgpu`'s backend set finds here. It is a probe, so it answers rather
-  # than gates, and it comes out once it has; the crate stays as the reproduction.
-  macos-present:
-    name: macos wgpu present probe (macos-14)
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - run: cargo run --manifest-path probes/macos-wgpu-present/Cargo.toml
