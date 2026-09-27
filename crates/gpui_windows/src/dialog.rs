@@ -13,7 +13,7 @@ use futures::{
     future::{Either, select},
     lock::Mutex,
 };
-use gpui::ForegroundExecutor;
+use gpui_platform::ForegroundExecutor;
 use gpui_util::ResultExt;
 use windows::{
     Win32::{
