@@ -1,0 +1,22 @@
+# The distribution CI, called from here.
+#
+# The checks live in `bite-gpui/distribution`; this file is the stub that runs them
+# against a pull request to this repository, so the logic has one home. It calls
+# `pr-checks.yml` rather than `verify.yml` because verifying a *target* stages a
+# branch, and staging refuses an untagged tip - which a pull request's head is.
+#
+# The ref is the distribution branch until that entry point reaches `main`. Switch
+# it to `@main` once it has.
+name: Distribution checks
+
+on:
+  pull_request:
+    branches: [bite_v1.22.0-pre]
+  workflow_dispatch:
+
+jobs:
+  checks:
+    uses: bite-gpui/distribution/.github/workflows/pr-checks.yml@pr-checks
+    with:
+      repository: ${{ github.repository }}
+      ref: ${{ github.sha }}
