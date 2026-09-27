@@ -1,0 +1,23 @@
+[package]
+name = "macos-wgpu-present"
+version = "0.0.0"
+edition = "2021"
+
+[workspace]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "NSResponder",
+    "NSView",
+    "objc2-quartz-core",
+] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+    "NSGeometry",
+] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = [
+    "CALayer",
+    "CAMetalLayer",
+] }
+pollster = "0.4"
+wgpu = "29"
