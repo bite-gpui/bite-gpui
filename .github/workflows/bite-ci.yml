@@ -1,0 +1,59 @@
+# The fork's own CI, in one file.
+#
+# It is here, and not only in `bite-gpui/distribution`, because of how a
+# `pull_request` run resolves its workflow files: from the pull request's *merge*
+# commit, base and head together. A file that only a pull request adds therefore
+# runs for that pull request and no other, so gating the pull requests that target a
+# branch means carrying the file on that branch. Every `bite_*` branch is regenerated
+# by replay, so the fewer files there are to carry, the less there is to keep in step.
+#
+# The backends get their own runners because nothing else reaches them:
+# `gpui_windows.rs`, `gpui_macos.rs` and `gpui_apple.rs` each open with
+# `#![cfg(target_os = "…")]`, so a Linux build compiles them to nothing — and the
+# release pipeline's `verify.yml`, whose legs are Linux and macOS, never compiles the
+# Windows backend at all.
+#
+# Standard GitHub-hosted runners are free for a public repository, so checking on
+# the real platforms costs wall-clock and nothing else.
+#
+# The checks that read the tree rather than the release tag stay in
+# `bite-gpui/distribution` and are called rather than copied. `verify.yml` verifies a
+# *target*, which means staging the branch, and staging refuses an untagged tip —
+# exactly what a pull request's head is.
+name: Bite CI
+
+on:
+  pull_request:
+    branches: ['bite_*']
+  workflow_dispatch:
+
+jobs:
+  # The target table and the naming rule. The ref is the distribution branch until
+  # the entry point reaches `main`.
+  checks:
+    uses: bite-gpui/distribution/.github/workflows/pr-checks.yml@pr-checks
+    with:
+      repository: ${{ github.repository }}
+      ref: ${{ github.sha }}
+
+  # The Metal backend, on macOS, through the facade so the windowing and text code a
+  # desktop build needs compiles too. This is the only place the Metal shaders are
+  # compiled at all: the build script runs `xcrun metal`, and it runs for the host.
+  macos:
+    name: cargo check -p gpui (macos-14)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo check -p gpui
+
+  # The Direct3D backend, on Windows. Release rather than debug, because that is the
+  # profile whose build script compiles the HLSL with `fxc` and whose Rust includes
+  # the result; in debug those shaders are compiled at run time by
+  # `D3DCompileFromFile` and a `check` never sees them. It also makes the job
+  # unsatisfiable anywhere but Windows, which is the point.
+  windows:
+    name: cargo check --release -p gpui (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo check --release -p gpui
