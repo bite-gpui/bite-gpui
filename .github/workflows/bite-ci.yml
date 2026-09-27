@@ -45,9 +45,12 @@ jobs:
       - run: rustup target add x86_64-pc-windows-msvc
       - run: cargo check --target x86_64-pc-windows-msvc -p gpui_windows
 
-  # The Metal backend, the Windows check's mirror. `gpui_apple`'s build script is
-  # gated on the *host*, not the target, so cross-checking type-checks the Apple
-  # crates while cbindgen's step and the Metal compiler do not run.
+  # The Metal backend, the Windows check's mirror. The lib is gated on the target
+  # and the build script on the host, so this used to fail on the artifact
+  # `metal_renderer.rs` includes — one only a macOS host produced; the build script
+  # writes it now when it is cross-checked. The Metal compiler still does not run
+  # here, so this checks the Rust and not the shaders: the shaders need a macOS
+  # runner.
   #
   # Measured rather than assumed: `continue-on-error` until a run has shown it green,
   # and the flag comes off then.
