@@ -1,5 +1,5 @@
 use crate::{
-    AssetRegistry, AssetSource, DevicePixels, IsZero, RenderImage, Result, SharedString, Size,
+    AssetRegistry, DevicePixels, IsZero, RenderImage, Result, Size,
     swap_rgba_pa_to_bgra,
 };
 use image::Frame;

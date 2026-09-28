@@ -6,8 +6,7 @@ use image::{Delay, EncodableLayout, Frame};
 use std::{
     borrow::Cow,
     collections::BTreeMap,
-    fmt,
-    hash::Hash, sync::{Arc, atomic::{AtomicUsize, Ordering::SeqCst}},
+    fmt, sync::{Arc, atomic::{AtomicUsize, Ordering::SeqCst}},
 };
 
 /// One way to store a set of assets for gpui to access.

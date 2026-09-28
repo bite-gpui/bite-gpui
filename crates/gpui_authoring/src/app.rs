@@ -48,7 +48,7 @@ pub use visual_test_context::*;
 use crate::InspectorElementRegistry;
 use crate::{
     Action, ActionBuildError, ActionRegistry, Any, AnyView, AnyWindowHandle, AppContext, Arena,
-    ArenaBox, Asset, AssetSource, BackgroundExecutor, Bounds, ClipboardItem, ClipboardReadError,
+    ArenaBox, Asset, BackgroundExecutor, Bounds, ClipboardItem, ClipboardReadError,
     CursorStyle, DefaultTextSystem, DispatchPhase, DisplayId, EventEmitter, ExternalDragPayload,
     FocusHandle, FocusMap, ForegroundExecutor, FramePipeline, Global, KeyBinding, KeyContext,
     Keymap, Keystroke, LayoutEngine, LayoutId, Menu, MenuCommandId, MenuItem, OwnedMenu,
@@ -2731,6 +2731,13 @@ impl App {
     #[doc(hidden)]
     pub fn set_accessibility_force_disabled(&mut self, disabled: bool) {
         self.accessibility_force_disabled = disabled;
+    }
+
+    /// Builds every window's accessibility tree every frame whether or not a screen
+    /// reader is connected.
+    #[doc(hidden)]
+    pub fn set_accessibility_forced(&mut self) {
+        self.accessibility_forced = true;
     }
 }
 

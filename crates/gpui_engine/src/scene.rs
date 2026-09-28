@@ -31,8 +31,10 @@ pub use gpui_ce_types::{ShaderBool, Shadow};
 #[expect(missing_docs)]
 pub type PathVertex_ScaledPixels = PathVertex<ScaledPixels>;
 
-pub(crate) const DEFAULT_BORDER_DASHED_LENGTH: f32 = 2.0;
-pub(crate) const DEFAULT_BORDER_DASHED_GAP: f32 = 1.0;
+/// The default length of each border dash, as a multiple of the border width.
+pub const DEFAULT_BORDER_DASHED_LENGTH: f32 = 2.0;
+/// The default gap between border dashes, as a multiple of the border width.
+pub const DEFAULT_BORDER_DASHED_GAP: f32 = 1.0;
 
 #[derive(Default)]
 #[expect(missing_docs)]

@@ -1,7 +1,8 @@
 //! Lerp trait defines behaviour for interpolating between two values of the same type.
 use crate::{
     AbsoluteLength, Background, Bounds, Corners, DefiniteLength, DevicePixels, Edges, Fill, Hsla,
-    Length, Percentage, Pixels, Point, Radians, Rems, Rgba, Size, colors::Colors,
+    Length, Percentage, Pixels, Point, Radians, Relative, Rems, RingColor, Rgba, Size,
+    colors::Colors,
 };
 use std::{
     fmt::Debug,
@@ -106,7 +107,6 @@ tuple_struct_lerps!(
     Radians(f32),
     Percentage(f32),
     DevicePixels(i32),
-    Relative(f32),
     Rems(f32),
     Pixels(f32)
 );
@@ -123,6 +123,12 @@ impl Lerp for Hsla {
         let from: Rgba = (*self).into();
         let to: Rgba = (*to).into();
         from.lerp(&to, delta).into()
+    }
+}
+
+impl Lerp for Relative {
+    fn lerp(&self, to: &Self, delta: f32) -> Self {
+        Relative::from(self.as_f32().lerp(&to.as_f32(), delta))
     }
 }
 

@@ -39,7 +39,7 @@ where
 mod test {
     use crate::{App, AssetRegistry, BackgroundExecutor, ForegroundExecutor, TestDispatcher, TestPlatform};
     use std::{cell::RefCell, rc::Rc, sync::Arc};
-    use super::*;
+    
 
     /// Helper to create test infrastructure.
     /// Returns (dispatcher, background_executor, app).

@@ -7,7 +7,7 @@ use gpui::{
     App, Background, Bounds, BoxShadow, Context, Div, FontWeight, Render, Window, WindowBounds,
     WindowOptions, div, hsla, linear_color_stop, linear_gradient, prelude::*, px, rgb, size,
 };
-use gpui_platform::application;
+use gpui_ce_platform::application;
 
 struct BackgroundShowcase;
 

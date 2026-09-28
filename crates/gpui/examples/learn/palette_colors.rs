@@ -73,7 +73,7 @@ impl Render for PaletteColorsExample {
                             .rounded_lg()
                             .bg(palette_rgba.into_hsla())
                             .border_1()
-                            .border_color(palette_hsla),
+                            .border_color(palette_hsla.into_hsla()),
                     ),
             )
     }

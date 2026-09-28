@@ -35,7 +35,7 @@ pub use gpui_platform::{DispatchEventResult, WindowControlArea};
 use crate::engine_layout::to_engine_layout_style;
 use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
 use crate::TouchEvent;
-use crate::{Hsla, IntoHsla};
+use crate::Hsla;
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
 use derive_more::{Deref, DerefMut};
@@ -7634,9 +7634,9 @@ impl PaintQuad {
     }
 
     /// Sets the border color of the quad.
-    pub fn border_color(self, border_color: impl IntoHsla) -> Self {
+    pub fn border_color(self, border_color: impl Into<Background>) -> Self {
         PaintQuad {
-            border_color: border_color.into_hsla(),
+            border_color: border_color.into(),
             ..self
         }
     }
@@ -7672,7 +7672,7 @@ pub fn quad(
     corner_radii: impl Into<Corners<Pixels>>,
     background: impl Into<Background>,
     border_widths: impl Into<Edges<Pixels>>,
-    border_color: impl IntoHsla,
+    border_color: impl Into<Background>,
     border_style: BorderStyle,
 ) -> PaintQuad {
     PaintQuad {
@@ -7680,10 +7680,10 @@ pub fn quad(
         corner_radii: corner_radii.into(),
         background: background.into(),
         border_widths: border_widths.into(),
-        border_color: border_color.into_hsla(),
+        border_color: border_color.into(),
         border_style,
-        border_dashed_length: crate::scene::DEFAULT_BORDER_DASHED_LENGTH,
-        border_dashed_gap: crate::scene::DEFAULT_BORDER_DASHED_GAP,
+        border_dashed_length: gpui_engine::DEFAULT_BORDER_DASHED_LENGTH,
+        border_dashed_gap: gpui_engine::DEFAULT_BORDER_DASHED_GAP,
     }
 }
 
@@ -7696,15 +7696,15 @@ pub fn fill(bounds: impl Into<Bounds<Pixels>>, background: impl Into<Background>
         border_widths: (0.).into(),
         border_color: transparent_black().into(),
         border_style: BorderStyle::default(),
-        border_dashed_length: crate::scene::DEFAULT_BORDER_DASHED_LENGTH,
-        border_dashed_gap: crate::scene::DEFAULT_BORDER_DASHED_GAP,
+        border_dashed_length: gpui_engine::DEFAULT_BORDER_DASHED_LENGTH,
+        border_dashed_gap: gpui_engine::DEFAULT_BORDER_DASHED_GAP,
     }
 }
 
 /// Creates a rectangle outline with the given bounds, border color, and a 1px border width
 pub fn outline(
     bounds: impl Into<Bounds<Pixels>>,
-    border_color: impl IntoHsla,
+    border_color: impl Into<Background>,
     border_style: BorderStyle,
 ) -> PaintQuad {
     PaintQuad {
@@ -7712,10 +7712,10 @@ pub fn outline(
         corner_radii: (0.).into(),
         background: transparent_black().into(),
         border_widths: (1.).into(),
-        border_color: border_color.into_hsla(),
+        border_color: border_color.into(),
         border_style,
-        border_dashed_length: crate::scene::DEFAULT_BORDER_DASHED_LENGTH,
-        border_dashed_gap: crate::scene::DEFAULT_BORDER_DASHED_GAP,
+        border_dashed_length: gpui_engine::DEFAULT_BORDER_DASHED_LENGTH,
+        border_dashed_gap: gpui_engine::DEFAULT_BORDER_DASHED_GAP,
     }
 }
 
@@ -7731,7 +7731,7 @@ mod tests {
 
     use crate::{
         AnyWindowHandle, App, AppContext as _, ArenaClearNeeded, Background, Bounds, BoxShadow,
-        ColorExt as _, Context, DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload,
+        Context, DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload,
         ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle, FocusId, FramePipeline,
         ImageSource, InputEvent as _, InteractiveElement as _, IntoElement, LongPressEvent,
         MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render,
@@ -7929,6 +7929,8 @@ mod tests {
                 );
             })
             .unwrap();
+    }
+
     #[gpui::test]
     fn a_window_draws_through_its_frame_pipeline(cx: &mut TestAppContext) {
         let recorded: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));

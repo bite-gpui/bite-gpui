@@ -9,7 +9,6 @@ use gpui::{
     App, Bounds, Context, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb,
     rgba, size,
 };
-use palette::WithAlpha;
 use slider::Slider;
 
 actions!(app, [Quit]);
@@ -54,7 +53,7 @@ impl Render for CornerSmoothingExample {
                                 .h(px(self.height))
                                 .rounded(px(self.corner_radius))
                                 .rounded_smoothing(self.corner_smoothing)
-                                .bg(rgba(0x663399b8).with_alpha(0.5)),
+                                .bg(rgba(0x663399b8).alpha(0.5)),
                         ),
                     ),
             )
@@ -151,7 +150,7 @@ impl Render for CornerSmoothingExample {
 }
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui_ce_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(500.), px(650.)), cx);
         cx.open_window(
             WindowOptions {
@@ -177,7 +176,7 @@ mod slider {
     use std::{cell::Cell, rc::Rc};
 
     use gpui::{
-        App, Bounds, ColorExt, Context, DragMoveEvent, MouseButton, Pixels, Window, div,
+        App, Bounds, Context, DragMoveEvent, MouseButton, Pixels, Window, div,
         prelude::*, px, relative, rgb,
     };
 

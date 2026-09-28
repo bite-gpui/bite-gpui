@@ -7,7 +7,7 @@
 //! and the renderer crates (`gpui_render`, `gpui_wgpu`, `gpui_windows`) can name
 //! them without depending on `gpui`.
 
-use gpui_types::{Bounds, ContentMask, Corners, DrawOrder, Hsla, ScaledPixels};
+use gpui_types::{Background, Bounds, ContentMask, Corners, DrawOrder, ScaledPixels};
 
 /// A boolean with the same four-byte representation in Rust and WGSL.
 /// Scene structs use it over one-byte [`bool`] to keep the storage-buffer ABI explicit.
@@ -43,10 +43,10 @@ pub struct Shadow {
     pub bounds: Bounds<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
-    pub color: Hsla,
+    pub color: Background,
     pub element_bounds: Bounds<ScaledPixels>,
     pub element_corner_radii: Corners<ScaledPixels>,
     /// Whether this shadow is rendered inside the element instead of outside it.
     pub inset: ShaderBool,
-    pub padding: u32,
+    pub corner_smoothing: f32,
 }

@@ -5,7 +5,7 @@ use gpui::{
     App, Bounds, Context, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*,
     px, rgb, size,
 };
-use gpui_platform::application;
+use gpui_ce_platform::application;
 use std::time::Duration;
 
 struct VisibilityExample {

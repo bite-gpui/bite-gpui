@@ -1,9 +1,9 @@
 use crate::{
-    AbsoluteLength, App, Background, BackgroundTag, BorderStyle, Bounds, ColorExt, ContentMask,
+    AbsoluteLength, App, Background, BorderStyle, Bounds, ContentMask,
     Corners,
     CornersRefinement, CursorStyle, DefiniteLength, DevicePixels, Edges, EdgesRefinement, Font,
     FontFallbacks, FontFeatures, FontStyle, FontWeight, GridLocation, Length, Pixels, Point,
-    PointRefinement, ScaledPixels, SharedString, Size, SizeRefinement, Styled, TextRun, Window,
+    PointRefinement, SharedString, Size, SizeRefinement, Styled, TextRun, Window,
     black, phi, point, px, quad, rems, size, transparent_black,
 };
 use crate::{Hsla, Rgba};
@@ -149,8 +149,8 @@ pub enum RingColor {
     /// Use the element's effective text color, matching CSS `currentColor`.
     #[default]
     CurrentColor,
-    /// Use an explicit color.
-    Color(Hsla),
+    /// Use an explicit color or gradient.
+    Color(Background),
 }
 
 impl RingColor {
@@ -732,7 +732,7 @@ impl Style {
                 let mut min = bounds.origin;
                 let mut max = bounds.bottom_right();
 
-                if self.border_color.is_some_and(|color| color.a > 0.) {
+                if self.border_color.is_some_and(|color| !color.is_transparent()) {
                     min.x += self.border_widths.left.to_pixels(rem_size);
                     max.x -= self.border_widths.right.to_pixels(rem_size);
                     min.y += self.border_widths.top.to_pixels(rem_size);
@@ -818,29 +818,18 @@ impl Style {
         let paint_box = |window: &mut Window, cx: &mut App| {
             let background_color = self.background.as_ref().and_then(Fill::color);
             if background_color.is_some_and(|color| !color.is_transparent()) {
-                let mut border_color = match background_color {
-                    Some(color) => match color.tag {
-                        BackgroundTag::Solid
-                        | BackgroundTag::PatternSlash
-                        | BackgroundTag::Checkerboard => color.solid,
-
-                        BackgroundTag::LinearGradient => color
-                            .colors
-                            .first()
-                            .map(|stop| stop.color)
-                            .unwrap_or_default(),
-                    },
-                    None => Hsla::default(),
-                };
-                border_color.a = 0.;
-                window.paint_quad(quad(
-                    bounds,
-                    corner_radii,
-                    background_color.unwrap_or_default(),
-                    Edges::default(),
-                    border_color,
-                    self.border_style,
-                ));
+                let background_color = background_color.unwrap_or_default();
+                window.paint_quad_with_corner_smoothing(
+                    quad(
+                        bounds,
+                        corner_radii,
+                        background_color,
+                        Edges::default(),
+                        background_color.opacity(0.),
+                        self.border_style,
+                    ),
+                    corner_smoothing,
+                );
             }
 
             if let Some(ring) = self.inset_ring.inset_shadow(current_color) {
@@ -862,16 +851,20 @@ impl Style {
 
             if self.is_border_visible() {
                 let border_widths = self.border_widths.to_pixels(rem_size);
-                let mut background = self.border_color.unwrap_or_default();
-                background.a = 0.;
-                window.paint_quad(quad(
-                    bounds,
-                    corner_radii,
-                    background,
-                    border_widths,
-                    self.border_color.unwrap_or_default(),
-                    self.border_style,
-                ));
+                let border_color = self.border_color.unwrap_or_default();
+                window.paint_quad_with_corner_smoothing(
+                    quad(
+                        bounds,
+                        corner_radii,
+                        border_color.opacity(0.),
+                        border_widths,
+                        border_color,
+                        self.border_style,
+                    )
+                    .border_dashed_length(self.border_dashed_length)
+                    .border_dashed_gap(self.border_dashed_gap),
+                    corner_smoothing,
+                );
             }
         };
 
@@ -896,7 +889,8 @@ impl Style {
     }
 
     fn is_border_visible(&self) -> bool {
-        self.border_color.is_some_and(|color| color.a > 0.)
+        self.border_color
+            .is_some_and(|color| !color.is_transparent())
             && self.border_widths.any(|length| !length.is_zero())
     }
 }
@@ -937,8 +931,8 @@ impl Default for Style {
             background: None,
             border_color: None,
             border_style: BorderStyle::default(),
-            border_dashed_length: crate::scene::DEFAULT_BORDER_DASHED_LENGTH,
-            border_dashed_gap: crate::scene::DEFAULT_BORDER_DASHED_GAP,
+            border_dashed_length: gpui_engine::DEFAULT_BORDER_DASHED_LENGTH,
+            border_dashed_gap: gpui_engine::DEFAULT_BORDER_DASHED_GAP,
             corner_radii: Corners::default(),
             corner_smoothing: None,
             box_shadow: Default::default(),
@@ -1135,7 +1129,6 @@ pub fn combine_highlights(
 #[cfg(test)]
 mod tests {
     use crate::{blue, green, hsla, linear_color_stop, linear_gradient, px, red, yellow};
-    use palette::WithAlpha;
 
     use super::*;
 
@@ -1358,11 +1351,11 @@ mod tests {
 
         assert_eq!(
             style.border_dashed_length,
-            crate::scene::DEFAULT_BORDER_DASHED_LENGTH
+            gpui_engine::DEFAULT_BORDER_DASHED_LENGTH
         );
         assert_eq!(
             style.border_dashed_gap,
-            crate::scene::DEFAULT_BORDER_DASHED_GAP
+            gpui_engine::DEFAULT_BORDER_DASHED_GAP
         );
 
         style.refine(

@@ -6,7 +6,7 @@ mod example_support;
 use gpui::{
     App, Bounds, Context, CursorStyle, Decorations, HitboxBehavior, MouseButton, Pixels, Point,
     ResizeEdge, Size, Window, WindowBackgroundAppearance, WindowBounds, WindowDecorations,
-    WindowOptions, black, canvas, div, green, hsla, point, prelude::*, px, rgb, size,
+    WindowOptions, black, canvas, div, green, point, prelude::*, px, rgb, size,
     transparent_black, white,
 };
 use gpui_ce_platform::application;

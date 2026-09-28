@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use gpui_authoring::{
-    App, AppCell, AssetSource, AsyncApp, BackgroundExecutor, ForegroundExecutor, FramePipeline,
+    App, AppCell, AssetRegistry, AsyncApp, BackgroundExecutor, ForegroundExecutor, FramePipeline,
     Platform, QuitMode, TextSystem, WindowId, http_client::HttpClient,
 };
 use std::{ffi::OsString, path::PathBuf, rc::Rc, sync::Arc};
@@ -66,7 +66,7 @@ impl Application {
     /// otherwise reports nothing until a screen reader activates the platform
     /// adapter. [`Application::new_inaccessible`] still wins when both are set.
     pub fn with_accessibility_forced(self) -> Self {
-        self.0.borrow_mut().accessibility_forced = true;
+        self.0.borrow_mut().set_accessibility_forced();
         self
     }
 
