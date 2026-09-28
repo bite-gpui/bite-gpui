@@ -1814,6 +1814,7 @@ impl WindowHost {
             icon,
             #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
             tabbing_identifier,
+            renderer_factory,
         } = options;
 
         let initial_window_title = titlebar
@@ -1839,6 +1840,7 @@ impl WindowHost {
                 icon,
                 #[cfg(target_os = "macos")]
                 tabbing_identifier,
+                renderer_factory,
             },
         )?;
 
