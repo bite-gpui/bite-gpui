@@ -318,6 +318,24 @@ impl TestAppContext {
         .unwrap()
     }
 
+    /// Opens a new window with the given options.
+    ///
+    /// `add_window` and `open_window` fill in the bounds for you; this one is for a test that
+    /// needs to configure something else — the window's renderer, say.
+    pub fn open_window_with_options<F, V>(
+        &mut self,
+        options: WindowOptions,
+        build_window: F,
+    ) -> WindowHandle<V>
+    where
+        F: FnOnce(&mut Window, &mut Context<V>) -> V,
+        V: 'static + Render,
+    {
+        let mut cx = self.app.borrow_mut();
+        cx.open_window(options, |window, cx| cx.new(|cx| build_window(window, cx)))
+            .unwrap()
+    }
+
     /// Adds a new window with no content.
     pub fn add_empty_window(&mut self) -> &mut VisualTestContext {
         let mut cx = self.app.borrow_mut();
