@@ -2,9 +2,9 @@
 
 use gpui_shared_string::SharedString;
 use gpui_types::{Bounds, Edges, Pixels, Point, Size, px, size};
-use std::{sync::Arc, time::Duration};
+use std::{rc::Rc, sync::Arc, time::Duration};
 
-use crate::{DisplayId, WindowId, popup::PopupOptions};
+use crate::{DisplayId, DynRendererFactory, RendererFactory, WindowId, popup::PopupOptions};
 
 /// Default window size used when no explicit size is provided.
 pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(1095.));
@@ -423,6 +423,14 @@ pub struct WindowOptions {
 
     /// Tab group name, allows opening the window as a native tab on macOS 10.12+. Windows with the same tabbing identifier will be grouped together.
     pub tabbing_identifier: Option<String>,
+
+    /// The renderer this window should draw through, if the application wants its own.
+    ///
+    /// The factory runs once for the window, after the native window exists and before the
+    /// first frame, because a renderer binds to a surface and the surface comes from the
+    /// window. With `None` the backend builds the renderer it builds today, by the same
+    /// construction call, so a window that installs nothing behaves exactly as before.
+    pub renderer_factory: Option<DynRendererFactory>,
 }
 
 /// The variables that can be configured when creating a new window
@@ -488,6 +496,8 @@ pub struct WindowParams {
 
     #[cfg(target_os = "macos")]
     pub tabbing_identifier: Option<String>,
+
+    pub renderer_factory: Option<DynRendererFactory>,
 }
 
 /// Represents the status of how a window should be opened.
@@ -544,7 +554,20 @@ impl Default for WindowOptions {
             window_min_size: None,
             window_decorations: None,
             tabbing_identifier: None,
+            renderer_factory: None,
         }
+    }
+}
+
+impl WindowOptions {
+    /// Draw this window through a renderer of the application's own rather than the
+    /// backend's default.
+    ///
+    /// The factory is invoked once, when the window is created: see
+    /// [`renderer_factory`](Self::renderer_factory).
+    pub fn with_renderer_factory(mut self, factory: impl RendererFactory) -> Self {
+        self.renderer_factory = Some(DynRendererFactory(Rc::new(factory)));
+        self
     }
 }
 
