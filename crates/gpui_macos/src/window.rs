@@ -665,7 +665,7 @@ struct MacWindowState {
     cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
-    renderer: renderer::Renderer,
+    renderer: Box<dyn PlatformRenderer>,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui_platform::DispatchEventResult>>,
     activate_callback: Option<Box<dyn FnMut(bool)>>,
@@ -972,6 +972,7 @@ impl MacWindow {
             display_id,
             window_min_size,
             tabbing_identifier,
+            renderer_factory,
             ..
         }: WindowParams,
         cursor_visible: Arc<AtomicBool>,
@@ -979,7 +980,7 @@ impl MacWindow {
         background_executor: BackgroundExecutor,
         renderer_context: renderer::Context,
         marker: MainThreadMarker,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
@@ -1099,13 +1100,31 @@ impl MacWindow {
                 cursor_style: CursorStyle::Arrow,
                 cursor_visible,
                 frame_source: None,
-                renderer: renderer::new_renderer(
-                    renderer_context,
-                    native_window as *mut _,
-                    native_view as *mut _,
-                    bounds.size.map(|pixels| pixels.as_f32()),
-                    false,
-                ),
+                renderer: match renderer_factory {
+                    Some(factory) => factory.0.create(RendererTarget {
+                        window_handle: Some(rwh::RawWindowHandle::AppKit(
+                            rwh::AppKitWindowHandle::new(
+                                NonNull::new_unchecked(native_view).cast(),
+                            ),
+                        )),
+                        display_handle: Some(rwh::RawDisplayHandle::AppKit(
+                            rwh::AppKitDisplayHandle::new(),
+                        )),
+                        size: bounds.size,
+                        scale_factor: get_scale_factor(native_window),
+                        // The window applies its transparency after construction, which is the
+                        // `false` the default renderer is built with.
+                        transparent: false,
+                        backend: Some(&renderer_context),
+                    })?,
+                    None => Box::new(renderer::new_renderer(
+                        renderer_context,
+                        native_window as *mut _,
+                        native_view as *mut _,
+                        bounds.size.map(|pixels| pixels.as_f32()),
+                        false,
+                    )),
+                },
                 request_frame_callback: None,
                 event_callback: None,
                 activate_callback: None,
@@ -1306,7 +1325,7 @@ impl MacWindow {
 
             pool.drain();
 
-            window
+            Ok(window)
         }
     }
 
@@ -2125,12 +2144,12 @@ impl PlatformWindow for MacWindow {
 
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {
         let mut this = self.0.lock();
-        f(&mut this.renderer);
+        f(&mut *this.renderer);
     }
 
     fn present(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer) -> bool) {
         let mut this = self.0.lock();
-        f(&mut this.renderer);
+        f(&mut *this.renderer);
     }
 
     fn gpu_specs(&self) -> Option<gpui_platform::GpuSpecs> {
@@ -3095,10 +3114,11 @@ fn update_window_scale_factor(window_state: &Arc<Mutex<MacWindowState>>) {
     let scale_factor = lock.scale_factor();
     let size = lock.content_size();
     let drawable_size = size.to_device_pixels(scale_factor);
-    if let Some(layer) = lock.renderer.layer() {
+    let layer = MacSceneRenderer::layer_ptr(&*lock.renderer);
+    if !layer.is_null() {
         unsafe {
             let _: () = msg_send![
-                layer,
+                layer as id,
                 setContentsScale: scale_factor as f64
             ];
         }
@@ -3194,7 +3214,7 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
 
         if lock.activated_least_once {
             if let Some(mut callback) = lock.request_frame_callback.take() {
-                lock.renderer.set_presents_with_transaction(true);
+                MacSceneRenderer::set_presents_with_transaction(&mut *lock.renderer, true);
                 lock.stop_display_link();
                 drop(lock);
                 callback(RequestFrameOptions {
@@ -3205,7 +3225,7 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
 
                 let mut lock = window_state.lock();
                 lock.request_frame_callback = Some(callback);
-                lock.renderer.set_presents_with_transaction(false);
+                MacSceneRenderer::set_presents_with_transaction(&mut *lock.renderer, false);
                 lock.start_display_link();
             }
         } else {
@@ -3269,7 +3289,7 @@ extern "C" fn close_window(this: &Object, _: Sel) {
 extern "C" fn make_backing_layer(this: &Object, _: Sel) -> id {
     let window_state = unsafe { get_window_state(this) };
     let window_state = window_state.as_ref().lock();
-    window_state.renderer.layer_ptr() as id
+    MacSceneRenderer::layer_ptr(&*window_state.renderer) as id
 }
 
 extern "C" fn view_did_change_backing_properties(this: &Object, _: Sel) {
@@ -3320,7 +3340,7 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
     if let Some(mut callback) = lock.request_frame_callback.take() {
-        lock.renderer.set_presents_with_transaction(true);
+        MacSceneRenderer::set_presents_with_transaction(&mut *lock.renderer, true);
         lock.stop_display_link();
         drop(lock);
         callback(RequestFrameOptions {
@@ -3331,7 +3351,7 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
 
         let mut lock = window_state.lock();
         lock.request_frame_callback = Some(callback);
-        lock.renderer.set_presents_with_transaction(false);
+        MacSceneRenderer::set_presents_with_transaction(&mut *lock.renderer, false);
         lock.start_display_link();
     }
 }
