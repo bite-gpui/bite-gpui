@@ -28,6 +28,7 @@ pub mod layer_shell;
 mod menu;
 mod notification;
 mod platform;
+mod platform_renderer;
 mod platform_scheduler;
 mod platform_window;
 pub mod popup;
@@ -73,6 +74,7 @@ pub use keyboard::*;
 pub use menu::*;
 pub use notification::*;
 pub use platform::*;
+pub use platform_renderer::*;
 pub use platform_scheduler::*;
 pub use platform_window::*;
 pub use profiler::{
