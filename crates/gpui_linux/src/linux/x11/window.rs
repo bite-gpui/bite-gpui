@@ -5,16 +5,17 @@ use crate::linux::X11ClientStatePtr;
 use gpui_engine::SceneRenderer;
 use gpui_platform::{
     Bounds, Decorations, DevicePixels, ForegroundExecutor, GpuSpecs, Modifiers, Pixels,
-    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
-    PromptLevel, RequestFrameOptions, ResizeEdge, ScaledPixels, Size, Tiling, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowDecorations, WindowId,
-    WindowKind, WindowParams, WindowVisibility, popup::PopupNotSupportedError, px,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformRenderer, PlatformWindow, Point,
+    PromptButton, PromptLevel, RendererTarget, RequestFrameOptions, ResizeEdge, ScaledPixels, Size,
+    Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowDecorations, WindowId, WindowKind, WindowParams, WindowVisibility,
+    popup::PopupNotSupportedError, px,
 };
 use gpui_wgpu::{CompositorGpuHint, WgpuRenderer, WgpuSurfaceConfig};
 
 use collections::FxHashSet;
 use gpui_util::{ResultExt, maybe};
-use raw_window_handle as rwh;
+use raw_window_handle::{self as rwh, HasDisplayHandle as _, HasWindowHandle as _};
 use x11rb::{
     connection::Connection,
     cookie::{Cookie, VoidCookie},
@@ -267,9 +268,7 @@ pub struct X11WindowState {
     pub(crate) last_sync_counter: Option<sync::Int64>,
     bounds: Bounds<Pixels>,
     scale_factor: f32,
-    /// Taken when the window is dropped. Its GPU objects use the X connection, so they mustn't
-    /// outlive the window, which a display mode switch relies on.
-    renderer: Option<WgpuRenderer>,
+    renderer: Option<Box<dyn PlatformRenderer>>,
     display: Rc<dyn PlatformDisplay>,
     input_handler: Option<PlatformInputHandler>,
     appearance: WindowAppearance,
@@ -754,7 +753,7 @@ impl X11WindowState {
 
             xcb_flush(xcb);
 
-            let mut renderer = {
+            let mut renderer: Box<dyn PlatformRenderer> = {
                 let raw_window = RawWindow {
                     connection: as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(
                         xcb,
@@ -774,7 +773,28 @@ impl X11WindowState {
                     transparent: false,
                     preferred_present_mode: None,
                 };
-                WgpuRenderer::new(gpu_context, &raw_window, config, compositor_gpu)?
+                match params.renderer_factory.as_ref() {
+                    Some(factory) => factory.0.create(RendererTarget {
+                        window_handle: raw_window
+                            .window_handle()
+                            .ok()
+                            .map(|handle| handle.as_raw()),
+                        display_handle: raw_window
+                            .display_handle()
+                            .ok()
+                            .map(|handle| handle.as_raw()),
+                        size: params.bounds.size,
+                        scale_factor,
+                        transparent: config.transparent,
+                        backend: Some(&config),
+                    })?,
+                    None => Box::new(WgpuRenderer::new(
+                        gpu_context,
+                        &raw_window,
+                        config,
+                        compositor_gpu,
+                    )?),
+                }
             };
 
             renderer.set_subpixel_layout(is_bgr);
@@ -1752,13 +1772,16 @@ impl PlatformWindow for X11Window {
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {
         let mut inner = self.0.state.borrow_mut();
         if let Some(renderer) = &mut inner.renderer {
-            f(renderer);
+            f(&mut **renderer);
         }
     }
 
     fn present(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer) -> bool) {
         let mut inner = self.0.state.borrow_mut();
         let inner = &mut *inner;
+        let size = inner.bounds.size;
+        let scale_factor = inner.scale_factor;
+        let transparent = inner.is_transparent();
         let Some(renderer) = &mut inner.renderer else {
             return;
         };
@@ -1772,7 +1795,15 @@ impl PlatformWindow for X11Window {
                 window_id: self.0.x_window,
                 visual_id: inner.visual_id,
             };
-            match renderer.recover(&raw_window) {
+            let target = RendererTarget {
+                window_handle: raw_window.window_handle().ok().map(|handle| handle.as_raw()),
+                display_handle: raw_window.display_handle().ok().map(|handle| handle.as_raw()),
+                size,
+                scale_factor,
+                transparent,
+                backend: None,
+            };
+            match renderer.recover(target) {
                 Ok(()) => {}
                 Err(err) => {
                     log::warn!("GPU recovery failed, will retry on next frame: {err}");
@@ -1783,7 +1814,7 @@ impl PlatformWindow for X11Window {
             return;
         }
 
-        f(renderer);
+        f(&mut **renderer);
 
         if renderer.needs_redraw() {
             inner.force_render_after_recovery = true;
