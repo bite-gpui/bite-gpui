@@ -57,3 +57,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo check --release -p gpui
+
+  # The first tests these pull requests run. Upstream's `run_tests.yml` triggers here and is
+  # then skipped: every test job in it is gated on `github.repository_owner` being
+  # `zed-industries` or `zed-extensions`, and this fork is neither. So a branch can be green
+  # with nothing executed, which is what this job is for.
+  #
+  # `-p gpui_authoring --lib` is where the renderer seam's test lives. It opens a window
+  # through `TestPlatform`, so it needs no display and one runner is enough; `script/linux`
+  # installs what its build needs. The filter is narrow on purpose -- widening it is the
+  # work, not this job.
+  tests:
+    name: cargo test -p gpui_authoring --lib (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./script/linux
+      - run: cargo test -p gpui_authoring --lib
