@@ -1,17 +1,19 @@
 //! `WgpuRenderer` as a window's renderer.
 //!
 //! A window holds a `Box<dyn gpui_platform::PlatformRenderer>`; this is how the wgpu renderer
-//! answers that contract, for the backends that hold one — wayland and X11 today.
+//! answers that contract, for the windows that hold one: the wayland and X11 backends, where it
+//! is also the default, and Windows, where a factory installs it in place of the Direct3D renderer
+//! the backend builds itself.
 //!
-//! It is a module of its own because the impl exists only where the platform's native hooks are
-//! not part of the contract. macOS and Windows require `MacSceneRenderer` / `WinSceneRenderer`,
-//! which `WgpuRenderer` does not have yet, so those two backends keep their own default until
-//! the platform halves of the seam land; the web build still holds its renderer concretely. The
-//! module therefore carries one `cfg` — the platforms that hold one, the wayland and X11
-//! backends — rather than an item-by-item one.
+//! macOS is the one platform left out. A window's renderer there must answer `MacSceneRenderer`,
+//! whose layer pointer a wgpu renderer has no answer for yet: the corner the macOS presentation
+//! probe measured but did not decide. The module therefore carries one `cfg` — not wasm, not
+//! macOS — instead of an item-by-item one.
 
 use anyhow::Result;
 use gpui_platform::{DevicePixels, GpuSpecs, PlatformRenderer, RendererTarget, Size};
+#[cfg(target_os = "windows")]
+use gpui_platform::{WinSceneRenderer, WindowBackgroundAppearance};
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
     RawWindowHandle, WindowHandle,
@@ -55,6 +57,21 @@ impl PlatformRenderer for WgpuRenderer {
     fn recover(&mut self, target: RendererTarget<'_>) -> Result<()> {
         let window = RawWindowHandles::from_target(&target)?;
         WgpuRenderer::recover(self, &window)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl WinSceneRenderer for WgpuRenderer {
+    /// The Direct3D 12 surface offers no alpha mode but `Opaque`, so a wgpu-backed window has no
+    /// background appearance to honour; the factory that installs one asks for an opaque surface.
+    fn set_background_appearance(&mut self, _appearance: WindowBackgroundAppearance) {}
+
+    /// Resizing configures the surface's new size, which is what the trait's own
+    /// `update_drawable_size` does; the error it cannot return is only reachable from DXGI, and
+    /// wgpu reports a surface it cannot configure through `device_lost` instead.
+    fn resize(&mut self, size: Size<DevicePixels>) -> Result<()> {
+        WgpuRenderer::update_drawable_size(self, size);
+        Ok(())
     }
 }
 
