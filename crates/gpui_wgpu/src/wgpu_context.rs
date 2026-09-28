@@ -289,12 +289,31 @@ impl WgpuContext {
     #[cfg(not(target_family = "wasm"))]
     pub fn instance(display: Box<dyn wgpu::wgt::WgpuHasDisplayHandle>) -> wgpu::Instance {
         wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+            backends: Self::backends(),
             flags: wgpu::InstanceFlags::default(),
             backend_options: wgpu::BackendOptions::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             display: Some(display),
         })
+    }
+
+    /// The backends the instance is built with.
+    ///
+    /// Vulkan and GL are what this asked for while Linux was the only host. Neither can present
+    /// on the other desktop platforms: on Windows they find no adapter at all, and on macOS they
+    /// cannot even build a surface from the view's raw handle. So each adds the API its window
+    /// system actually has. Without them `WgpuRenderer::new` fails at instance creation, before
+    /// a frame is reached, which is not something a window can recover from.
+    #[cfg(not(target_family = "wasm"))]
+    fn backends() -> wgpu::Backends {
+        let mut backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
+        if cfg!(target_os = "windows") {
+            backends |= wgpu::Backends::DX12;
+        }
+        if cfg!(target_os = "macos") {
+            backends |= wgpu::Backends::METAL;
+        }
+        backends
     }
 
     pub fn check_compatible_with_surface(&self, surface: &wgpu::Surface<'_>) -> anyhow::Result<()> {

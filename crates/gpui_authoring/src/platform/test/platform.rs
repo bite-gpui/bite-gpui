@@ -6,8 +6,8 @@ use crate::{
     ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, DevicePixels,
     DummyKeyboardMapper, ForegroundExecutor, MenuCommandId, Platform, PlatformDisplay,
     PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem,
-    PlatformTextSystem, PromptButton, SceneRenderer, ScreenCaptureFrame, ScreenCaptureSource,
-    ScreenCaptureStream, SharedString, SourceMetadata, SystemNotification,
+    PlatformTextSystem, PromptButton, RendererTarget, SceneRenderer, ScreenCaptureFrame,
+    ScreenCaptureSource, ScreenCaptureStream, SharedString, SourceMetadata, SystemNotification,
     SystemNotificationResponse, Task, TestDisplay, TestWindow, ThermalState, WindowAppearance,
     WindowId, WindowParams, size,
 };
@@ -491,7 +491,25 @@ impl Platform for TestPlatform {
         handle: WindowId,
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn crate::PlatformWindow>> {
-        let renderer = self.headless_renderer_factory.as_ref().and_then(|f| f());
+        // A renderer the window installed wins over the platform's own, the way a window option
+        // wins over an application default everywhere else.
+        let renderer: Option<Box<dyn SceneRenderer>> = match params.renderer_factory.as_ref() {
+            Some(factory) => {
+                let target = RendererTarget {
+                    // A test window has no native window, which is also what `TestWindow`
+                    // reports for both handles.
+                    window_handle: None,
+                    display_handle: None,
+                    size: params.bounds.size,
+                    scale_factor: 2.0,
+                    transparent: false,
+                    backend: None,
+                };
+                let renderer: Box<dyn SceneRenderer> = factory.0.create(target)?;
+                Some(renderer)
+            }
+            None => self.headless_renderer_factory.as_ref().and_then(|f| f()),
+        };
         let window = TestWindow::new(
             handle,
             params,
@@ -725,5 +743,128 @@ impl PlatformKeyboardLayout for TestKeyboardLayout {
 
     fn name(&self) -> &str {
         "zed.keyboard.example"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+    #[cfg(target_os = "macos")]
+    use std::ffi::c_void;
+
+    use crate::{
+        Bounds, DevicePixels, Empty, FnRendererFactory, GpuSpecs, HeadlessAtlas, PlatformAtlas,
+        PlatformRenderer, PlatformWindow as _, Point, RendererTarget, Scene, SceneRenderer, Size,
+        TestAppContext, WindowBounds, WindowOptions, px, size,
+    };
+
+    /// Counts the frames it is asked to draw, so a test can tell whose renderer drew.
+    struct RecordingRenderer {
+        draws: Rc<Cell<usize>>,
+        atlas: Arc<HeadlessAtlas>,
+    }
+
+    impl RecordingRenderer {
+        fn new(draws: Rc<Cell<usize>>) -> Self {
+            Self {
+                draws,
+                atlas: Arc::new(HeadlessAtlas::default()),
+            }
+        }
+    }
+
+    impl SceneRenderer for RecordingRenderer {
+        fn draw(&mut self, _scene: &Scene) -> bool {
+            self.draws.set(self.draws.get() + 1);
+            true
+        }
+
+        fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+            self.atlas.clone()
+        }
+    }
+
+    impl PlatformRenderer for RecordingRenderer {
+        fn update_drawable_size(&mut self, _size: Size<DevicePixels>) {}
+
+        fn max_texture_size(&self) -> u32 {
+            16_384
+        }
+
+        fn gpu_specs(&self) -> Option<GpuSpecs> {
+            None
+        }
+    }
+
+    // A window's renderer has to answer its platform's native hooks, and a test renderer is not
+    // on a native surface, so they have nothing to do.
+    #[cfg(target_os = "macos")]
+    impl crate::MacSceneRenderer for RecordingRenderer {
+        fn layer_ptr(&self) -> *mut c_void {
+            std::ptr::null_mut()
+        }
+
+        fn set_presents_with_transaction(&mut self, _value: bool) {}
+    }
+
+    #[cfg(target_os = "windows")]
+    impl crate::WinSceneRenderer for RecordingRenderer {
+        fn set_background_appearance(&mut self, _appearance: crate::WindowBackgroundAppearance) {}
+
+        fn resize(&mut self, _size: Size<DevicePixels>) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn window_options(draws: Rc<Cell<usize>>) -> WindowOptions {
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: Point::default(),
+                size: size(px(800.), px(600.)),
+            })),
+            ..WindowOptions::default()
+        }
+        .with_renderer_factory(FnRendererFactory(
+            move |_target: RendererTarget<'_>| -> anyhow::Result<Box<dyn PlatformRenderer>> {
+                Ok(Box::new(RecordingRenderer::new(draws.clone())))
+            },
+        ))
+    }
+
+    /// The window draws through the renderer its options install, and through the backend's own
+    /// renderer when they install none.
+    #[gpui::test]
+    fn window_draws_through_the_renderer_factory_it_is_given(cx: &mut TestAppContext) {
+        let draws = Rc::new(Cell::new(0));
+        let window = cx.open_window_with_options(window_options(draws.clone()), |_, _| Empty);
+        let mut window = cx.test_window(*window);
+
+        let before = draws.get();
+        let mut drew = false;
+        window.present(&mut |renderer| {
+            drew = renderer.draw(&Scene::default());
+            true
+        });
+        assert!(drew);
+        assert_eq!(draws.get(), before + 1);
+
+        let window = cx.open_window_with_options(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: Point::default(),
+                    size: size(px(800.), px(600.)),
+                })),
+                ..WindowOptions::default()
+            },
+            |_, _| Empty,
+        );
+        let mut window = cx.test_window(*window);
+
+        let mut drew = false;
+        window.present(&mut |renderer| {
+            drew = renderer.draw(&Scene::default());
+            true
+        });
+        assert!(drew, "a window that installs nothing still draws");
     }
 }
