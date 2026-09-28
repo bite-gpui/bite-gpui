@@ -33,6 +33,9 @@ const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 // This configuration is used for MSAA rendering on paths only, and it's guaranteed to be supported by DirectX 11.
 const PATH_MULTISAMPLE_COUNT: u32 = 4;
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
+/// The 2D texture limit of every Direct3D 11 feature level GPUI runs on; the atlas clamps to the
+/// same value (`MAX_ATLAS_SIZE`).
+const MAX_TEXTURE_SIZE: u32 = 16_384;
 
 pub(crate) struct FontInfo {
     pub gamma_ratios: [f32; 4],
@@ -831,7 +834,10 @@ impl DirectXRenderer {
         if surfaces.is_empty() {
             return Ok(());
         }
-        Ok(())
+        // Surface primitives are a macOS path today, so this arm is unreachable on Windows.
+        // It says so rather than returning Ok, which would let a scene with surfaces report a
+        // frame it never drew.
+        anyhow::bail!("the Direct3D renderer does not draw surface primitives")
     }
 
     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
@@ -2102,5 +2108,45 @@ impl SceneRenderer for DirectXRenderer {
     ) -> anyhow::Result<image::RgbaImage> {
         let background_appearance = self.background_appearance;
         self.render_to_image(scene, background_appearance)
+    }
+}
+
+impl WinSceneRenderer for DirectXRenderer {
+    fn set_background_appearance(&mut self, appearance: WindowBackgroundAppearance) {
+        DirectXRenderer::set_background_appearance(self, appearance);
+    }
+
+    fn resize(&mut self, size: Size<DevicePixels>) -> anyhow::Result<()> {
+        DirectXRenderer::resize(self, size)
+    }
+
+    fn mark_drawable(&mut self) {
+        DirectXRenderer::mark_drawable(self);
+    }
+}
+
+impl PlatformRenderer for DirectXRenderer {
+    /// The window resizes through `WinSceneRenderer::resize`, which is where the DXGI failure it
+    /// has to act on comes from; this exists for the generic path and can only log the same one.
+    fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
+        DirectXRenderer::resize(self, size).log_err();
+    }
+
+    fn max_texture_size(&self) -> u32 {
+        MAX_TEXTURE_SIZE
+    }
+
+    fn gpu_specs(&self) -> Option<GpuSpecs> {
+        DirectXRenderer::gpu_specs(self).log_err()
+    }
+
+    /// Windows device loss is not a lost surface: the platform replaces the DirectX devices
+    /// behind the window and hands them to the renderer in the target's backend extras.
+    fn recover(&mut self, target: RendererTarget<'_>) -> anyhow::Result<()> {
+        let devices = target
+            .backend
+            .and_then(|backend| backend.downcast_ref::<DirectXDevices>())
+            .context("Direct3D recovery needs the replacement DirectXDevices in the target")?;
+        DirectXRenderer::handle_device_lost(self, devices)
     }
 }
