@@ -1,9 +1,5 @@
 mod cosmic_text_system;
-#[cfg(not(any(
-    target_family = "wasm",
-    target_os = "macos",
-    target_os = "windows"
-)))]
+#[cfg(not(any(target_family = "wasm", target_os = "macos")))]
 mod platform_renderer;
 mod wgpu_atlas;
 mod wgpu_context;
