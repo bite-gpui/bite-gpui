@@ -36,6 +36,15 @@ pub trait MacSceneRenderer: SceneRenderer {
 pub trait WinSceneRenderer: SceneRenderer {
     /// The window's background appearance changed.
     fn set_background_appearance(&mut self, appearance: crate::WindowBackgroundAppearance);
+
+    /// The drawable size changed. Windows resizes a swap chain here rather than in
+    /// `PlatformRenderer::update_drawable_size`, because the failure is one the window has to act
+    /// on: a drawable that cannot be resized means the devices are invalid.
+    fn resize(&mut self, size: Size<DevicePixels>) -> anyhow::Result<()>;
+
+    /// The renderer may draw again. A renderer that discards the frames between a device loss
+    /// and the forced render that follows it clears that state here; only Direct3D has any.
+    fn mark_drawable(&mut self) {}
 }
 
 /// The platform's native hooks, as a supertrait every [`PlatformRenderer`] has.

@@ -64,7 +64,7 @@ pub struct WindowsWindowState {
     pub last_visibility: Cell<Option<WindowVisibility>>,
     pub direct_manipulation: DirectManipulationHandler,
 
-    pub renderer: RefCell<DirectXRenderer>,
+    pub renderer: RefCell<Box<dyn PlatformRenderer>>,
     /// Set when the next `draw_window` call must be treated as a forced
     /// render. Used after a GPU device-lost recovery, where the next frame
     /// must both re-enable drawing (via `mark_drawable`) and bypass the GPUI
@@ -123,6 +123,7 @@ impl WindowsWindowState {
         disable_direct_composition: bool,
         invalidate_devices: Arc<AtomicBool>,
         draw_coordinator: Rc<DrawCoordinator>,
+        renderer_factory: Option<DynRendererFactory>,
     ) -> Result<Self> {
         let scale_factor = {
             let monitor_dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
@@ -142,8 +143,29 @@ impl WindowsWindowState {
         };
         let border_offset = WindowBorderOffset::default();
         let restore_from_minimized = None;
-        let renderer = DirectXRenderer::new(hwnd, directx_devices, disable_direct_composition)
-            .context("Creating DirectX renderer")?;
+        let renderer: Box<dyn PlatformRenderer> = match renderer_factory {
+            Some(factory) => factory.0.create(RendererTarget {
+                window_handle: NonZeroIsize::new(hwnd.0 as isize).map(|hwnd| {
+                    rwh::RawWindowHandle::Win32(rwh::Win32WindowHandle::new(hwnd))
+                }),
+                display_handle: Some(rwh::RawDisplayHandle::Windows(
+                    rwh::WindowsDisplayHandle::new(),
+                )),
+                size: logical_size,
+                scale_factor,
+                // The window applies its background appearance on every present, and starts from
+                // the opaque one.
+                transparent: false,
+                // The Direct3D renderer is built from this crate's own types, so a factory that
+                // wants it would have to live in this crate; one installed from outside builds a
+                // renderer of its own from the handles above.
+                backend: None,
+            })?,
+            None => Box::new(
+                DirectXRenderer::new(hwnd, directx_devices, disable_direct_composition)
+                    .context("Creating DirectX renderer")?,
+            ),
+        };
         let callbacks = Callbacks::default();
         let input_handler = None;
         let pending_surrogate = None;
@@ -279,6 +301,7 @@ impl WindowsWindowInner {
             context.disable_direct_composition,
             context.invalidate_devices.clone(),
             context.draw_coordinator.clone(),
+            context.renderer_factory.clone(),
         )?;
 
         Ok(Rc::new(Self {
@@ -430,6 +453,7 @@ struct WindowCreateContext {
     invalidate_devices: Arc<AtomicBool>,
     draw_coordinator: Rc<DrawCoordinator>,
     parent_hwnd: Option<HWND>,
+    renderer_factory: Option<DynRendererFactory>,
 }
 
 impl WindowsWindow {
@@ -543,6 +567,7 @@ impl WindowsWindow {
             invalidate_devices,
             draw_coordinator,
             parent_hwnd,
+            renderer_factory: params.renderer_factory,
         };
         let creation_result = unsafe {
             CreateWindowExW(
@@ -1030,14 +1055,14 @@ impl PlatformWindow for WindowsWindow {
 
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {
         let mut renderer = self.state.renderer.borrow_mut();
-        f(&mut *renderer);
+        f(&mut **renderer);
     }
 
     fn present(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer) -> bool) {
         let background_appearance = self.state.background_appearance.get();
         let mut renderer = self.state.renderer.borrow_mut();
-        renderer.set_background_appearance(background_appearance);
-        f(&mut *renderer);
+        WinSceneRenderer::set_background_appearance(&mut **renderer, background_appearance);
+        f(&mut **renderer);
     }
 
     fn get_raw_handle(&self) -> HWND {
@@ -1045,7 +1070,7 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        self.state.renderer.borrow().gpu_specs().log_err()
+        self.state.renderer.borrow().gpu_specs()
     }
 
     fn update_ime_position(&self, bounds: Bounds<Pixels>) {
