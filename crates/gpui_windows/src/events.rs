@@ -1,7 +1,8 @@
-use std::{cell::Cell, rc::Rc, sync::atomic::Ordering};
+use std::{cell::Cell, num::NonZeroIsize, rc::Rc, sync::atomic::Ordering};
 
 use anyhow::Context as _;
 use gpui_util::ResultExt;
+use raw_window_handle as rwh;
 use windows::{
     Win32::{
         Foundation::*,
@@ -161,7 +162,7 @@ impl WindowsWindowInner {
             WM_SHOWWINDOW => self.handle_window_visibility_changed(handle, wparam),
             WM_GPUI_CURSOR_STYLE_CHANGED => self.handle_cursor_changed(lparam),
             WM_GPUI_FORCE_UPDATE_WINDOW => self.draw_window(handle, true),
-            WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
+            WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(handle, lparam),
             DM_POINTERHITTEST => self.handle_dm_pointer_hit_test(wparam),
             WM_GETOBJECT => self.handle_wm_getobject(wparam, lparam),
             _ => None,
@@ -278,13 +279,15 @@ impl WindowsWindowInner {
         let new_logical_size = device_size.to_pixels(scale_factor);
 
         self.state.logical_size.set(new_logical_size);
-        if should_resize_renderer
-            && let Err(e) = self.state.renderer.borrow_mut().resize(device_size)
-        {
-            log::error!("Failed to resize renderer, invalidating devices: {}", e);
-            self.state
-                .invalidate_devices
-                .store(true, std::sync::atomic::Ordering::Release);
+        if should_resize_renderer {
+            let resize_result =
+                WinSceneRenderer::resize(&mut **self.state.renderer.borrow_mut(), device_size);
+            if let Err(e) = resize_result {
+                log::error!("Failed to resize renderer, invalidating devices: {}", e);
+                self.state
+                    .invalidate_devices
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
         }
         if let Some(mut callback) = self.state.callbacks.resize.take() {
             callback(new_logical_size, scale_factor);
@@ -1301,15 +1304,24 @@ impl WindowsWindowInner {
             .detach();
     }
 
-    fn handle_device_lost(&self, lparam: LPARAM) -> Option<isize> {
+    fn handle_device_lost(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
         let devices = lparam.0 as *const DirectXDevices;
         let devices = unsafe { &*devices };
-        if let Err(err) = self
-            .state
-            .renderer
-            .borrow_mut()
-            .handle_device_lost(&devices)
-        {
+        let transparent =
+            self.state.background_appearance.get() != WindowBackgroundAppearance::Opaque;
+        let target = RendererTarget {
+            window_handle: NonZeroIsize::new(handle.0 as isize).map(|hwnd| {
+                rwh::RawWindowHandle::Win32(rwh::Win32WindowHandle::new(hwnd))
+            }),
+            display_handle: Some(rwh::RawDisplayHandle::Windows(
+                rwh::WindowsDisplayHandle::new(),
+            )),
+            size: self.state.logical_size.get(),
+            scale_factor: self.state.scale_factor.get(),
+            transparent,
+            backend: Some(devices),
+        };
+        if let Err(err) = self.state.renderer.borrow_mut().recover(target) {
             panic!("Device lost: {err}");
         }
         // Make sure the first `draw_window` after recovery (whether it comes
@@ -1359,7 +1371,7 @@ impl WindowsWindowInner {
         if force_render {
             // Re-enable drawing after a device loss recovery. The forced render
             // will rebuild the scene with fresh atlas textures.
-            self.state.renderer.borrow_mut().mark_drawable();
+            WinSceneRenderer::mark_drawable(&mut **self.state.renderer.borrow_mut());
         }
         request_frame(RequestFrameOptions {
             require_presentation: false,
