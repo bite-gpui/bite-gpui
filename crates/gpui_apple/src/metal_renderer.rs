@@ -10,7 +10,8 @@ use gpui_engine::{
     AtlasTextureId, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer,
 };
 use gpui_platform::{
-    Background, Bounds, ContentMask, DevicePixels, Point, ScaledPixels, Size, point, size,
+    Background, Bounds, ContentMask, DevicePixels, GpuSpecs, MacSceneRenderer, PlatformRenderer,
+    Point, ScaledPixels, Size, point, size,
 };
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use image::RgbaImage;
@@ -42,6 +43,9 @@ const PATH_SAMPLE_COUNT: u32 = 4;
 /// Metal requires the offset a buffer is bound at to be 256-byte aligned.
 const INSTANCE_BUFFER_ALIGNMENT: usize = 256;
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
+/// The largest 2D texture every Mac GPUI runs on accepts. Metal exposes no query for it, and the
+/// atlas clamps to the same value (`MAX_ATLAS_SIZE`).
+const MAX_TEXTURE_SIZE: u32 = 16_384;
 
 pub type Context = Arc<Mutex<InstanceBufferPool>>;
 pub type Renderer = MetalRenderer;
@@ -1627,6 +1631,40 @@ impl SceneRenderer for MetalRenderer {
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
     fn render_scene(&mut self, scene: &Scene, size: Size<DevicePixels>) -> anyhow::Result<()> {
         MetalRenderer::render_scene(self, scene, size)
+    }
+}
+
+impl MacSceneRenderer for MetalRenderer {
+    fn layer_ptr(&self) -> *mut std::ffi::c_void {
+        MetalRenderer::layer_ptr(self).cast()
+    }
+
+    fn set_presents_with_transaction(&mut self, value: bool) {
+        MetalRenderer::set_presents_with_transaction(self, value);
+    }
+}
+
+impl PlatformRenderer for MetalRenderer {
+    fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
+        MetalRenderer::update_drawable_size(self, size);
+    }
+
+    fn max_texture_size(&self) -> u32 {
+        MAX_TEXTURE_SIZE
+    }
+
+    /// Metal's adapter details are not surfaced through the window, which leaves this `None`
+    /// where the platform's own renderer would answer it.
+    fn gpu_specs(&self) -> Option<GpuSpecs> {
+        None
+    }
+
+    fn update_transparency(&mut self, transparent: bool) {
+        MetalRenderer::update_transparency(self, transparent);
+    }
+
+    fn destroy(&mut self) {
+        MetalRenderer::destroy(self);
     }
 }
 
