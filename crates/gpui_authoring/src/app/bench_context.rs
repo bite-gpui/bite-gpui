@@ -10,7 +10,8 @@ use anyhow::{Result, anyhow};
 use hdrhistogram::Histogram;
 
 use crate::{
-    AnyView, AnyWindowHandle, App, AppCell, AppContext, BackgroundExecutor, Bounds, BoundsExt,
+    AnyView, AnyWindowHandle, App, AppCell, AppContext, AssetRegistry, BackgroundExecutor, Bounds,
+    BoundsExt,
     Context, Empty, Entity, EntityId, EventEmitter, Focusable, ForegroundExecutor, Global,
     Platform, PlatformDispatcherExt, PlatformHeadlessRenderer, PlatformTextSystem, Render,
     Reservation, Task, TestPlatform, ThreadedDispatcher, VisualContext, Window, WindowBounds,
@@ -527,7 +528,7 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
              ThreadedDispatcher; construct one with gpui::bench_platform"
         );
         let foreground_executor = platform.foreground_executor();
-        let asset_source = Arc::new(());
+        let asset_source = AssetRegistry::default().into();
         // Benchmark setup must not make accidental network requests. The
         // production `BlockedHttpClient` reports them without enabling a
         // configurable test double through `test-support`.

@@ -219,12 +219,16 @@ fn solid_quad(
     Quad {
         order: 0,
         border_style: BorderStyle::Solid,
+        border_dashed_length: gpui_engine::DEFAULT_BORDER_DASHED_LENGTH,
+        border_dashed_gap: gpui_engine::DEFAULT_BORDER_DASHED_GAP,
         bounds,
         content_mask: *content_mask,
         background: color.into(),
-        border_color: transparent_black(),
+        border_color: transparent_black().into(),
         corner_radii: Corners::default(),
         border_widths: Edges::default(),
+        corner_smoothing: 0.0,
+        padding: 0,
     }
 }
 
