@@ -6,6 +6,7 @@
 //! windowing, and input to each platform backend.
 
 mod dispatcher;
+pub mod imported_texture;
 mod metal_atlas;
 pub mod metal_renderer;
 
