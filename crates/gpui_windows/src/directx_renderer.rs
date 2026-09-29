@@ -376,9 +376,8 @@ impl DirectXRenderer {
 
     /// Clear the render target for `background_appearance` and encode every
     /// primitive batch of `scene` into it, without presenting. Shared by
-    /// [`draw`](Self::draw) (which then presents) and
-    /// [`render_to_image`](Self::render_to_image) (which reads the target back
-    /// instead), so the two cannot drift.
+    /// [`draw`](Self::draw) (which then presents) and `render_scene` (which renders into the same
+    /// target and does not), so the two cannot drift.
     fn render(
         &mut self,
         scene: &Scene,
@@ -440,26 +439,13 @@ impl DirectXRenderer {
         Ok(())
     }
 
-    /// Render `scene` to an offscreen CPU image **without presenting** so
-    /// the window need never be shown or visible (the macOS headless path
-    /// goes through MetalRenderer; this is the Windows analogue). Draws into
-    /// the existing render target, copies it into a `D3D11_USAGE_STAGING`
-    /// texture, maps it, and converts BGRA to RGBA.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn render_to_image(
-        &mut self,
-        scene: &Scene,
-        background_appearance: WindowBackgroundAppearance,
-    ) -> Result<image::RgbaImage> {
-        // A pending device-lost recovery (`skip_draws`) leaves the atlas holding
-        // tile references from the previous device; drawing before the forced
-        // re-render rebuilds them panics in `DirectXAtlasTextures::texture`.
-        anyhow::ensure!(
-            !self.skip_draws,
-            "render_to_image unavailable while recovering from a lost device"
-        );
-        self.render(scene, background_appearance)?;
-
+    /// Render `scene` into the target **without presenting**, then read it back as a CPU image.
+    ///
+    /// The offscreen contract, in the shape the other two renderers have it: render, and read the
+    /// target back on demand. Direct3D's target is its window's swap chain — the renderer is built
+    /// around one — so "offscreen" here is "rendered and not presented", which is what a headless
+    /// capture needs and what the window need never be shown for.
+    fn read_render_target(&mut self) -> Result<gpui_engine::PixelBuffer> {
         let devices = self.devices.as_ref().context("devices missing")?;
         let device = &devices.device;
         let context = &devices.device_context;
@@ -510,12 +496,11 @@ impl DirectXRenderer {
             }
             context.Unmap(&staging, 0);
         }
-        // The render target is BGRA; image::RgbaImage expects RGBA.
+        // The render target is BGRA; `PixelBuffer` is RGBA8.
         for px in pixels.chunks_exact_mut(4) {
             px.swap(0, 2);
         }
-        image::RgbaImage::from_raw(width, height, pixels)
-            .context("Failed to build RgbaImage from staging readback")
+        gpui_engine::PixelBuffer::new(width, height, pixels)
     }
 
     pub(crate) fn resize(&mut self, new_size: Size<DevicePixels>) -> Result<()> {
@@ -2229,16 +2214,25 @@ impl SceneRenderer for DirectXRenderer {
         DirectXRenderer::sprite_atlas(self)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    fn render_scene_to_image(
-        &mut self,
-        scene: &Scene,
-        _size: Size<DevicePixels>,
-    ) -> anyhow::Result<gpui_engine::PixelBuffer> {
+    /// The offscreen contract, in the shape the other two renderers have it: size the target,
+    /// draw into it without presenting, and read it back only when a consumer on the CPU asks.
+    /// Direct3D renders into its window's swap chain, so the size is the swap chain's and the
+    /// window is what the renderer is built around — which is why there is no `new_headless` here.
+    fn render_scene(&mut self, scene: &Scene, size: Size<DevicePixels>) -> anyhow::Result<()> {
+        // A pending device-lost recovery (`skip_draws`) leaves the atlas holding tile references
+        // from the previous device; drawing before the forced re-render rebuilds them panics in
+        // `DirectXAtlasTextures::texture`.
+        anyhow::ensure!(
+            !self.skip_draws,
+            "offscreen rendering is unavailable while recovering from a lost device"
+        );
+        self.resize(size)?;
         let background_appearance = self.background_appearance;
-        let image = self.render_to_image(scene, background_appearance)?;
-        let (width, height) = image.dimensions();
-        gpui_engine::PixelBuffer::new(width, height, image.into_raw())
+        self.render(scene, background_appearance)
+    }
+
+    fn read_pixels(&mut self) -> anyhow::Result<gpui_engine::PixelBuffer> {
+        self.read_render_target()
     }
 }
 
