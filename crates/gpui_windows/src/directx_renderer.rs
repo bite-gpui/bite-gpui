@@ -1,4 +1,6 @@
 use std::{
+    any::Any,
+    rc::Rc,
     slice,
     sync::{Arc, OnceLock},
 };
@@ -228,9 +230,6 @@ impl DirectXRenderer {
     /// texture on: the same-device rule is what makes the token, rather than a handle, enough.
     ///
     /// `None` while a device-lost recovery is pending, as the renderer's other device uses are.
-    /// [`DirectXTextureExt`](crate::DirectXTextureExt) is its only caller, so it carries the same
-    /// attribute that half does.
-    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub(crate) fn device(&self) -> Option<&ID3D11Device> {
         self.devices.as_ref().map(|devices| &devices.device)
     }
@@ -2272,6 +2271,17 @@ impl PlatformRenderer for DirectXRenderer {
         DirectXRenderer::gpu_specs(self).log_err()
     }
 
+    /// The device a producer has to make its texture on: this renderer's own, which the platform
+    /// built and it was constructed from, so a texture created on it is visible to the draws below
+    /// with no handle to open and nothing to synchronise.
+    ///
+    /// This is the route the Direct3D 11 producer path needs — a Media Foundation or DXVA decoder
+    /// decodes into a texture on this device — and a texture made from it needs
+    /// [`DirectXTextureExt`](crate::DirectXTextureExt) to become a token.
+    fn device_any(&self) -> Option<Rc<dyn Any>> {
+        DirectXRenderer::device(self).map(|device| Rc::new(device.clone()) as Rc<dyn Any>)
+    }
+
     /// Windows device loss is not a lost surface: the platform replaces the DirectX devices
     /// behind the window and hands them to the renderer in the target's backend extras.
     fn recover(&mut self, target: RendererTarget<'_>) -> anyhow::Result<()> {
@@ -2463,10 +2473,12 @@ mod tests {
         // Distinct per channel, and far from either end, so a transfer function applied once in
         // the wrong direction cannot round back to the same byte.
         let fixture = [200u8, 100, 50, 255];
+        // The producer's half: the device comes through the seam, which is the only route an
+        // application has, and the texture is made on it rather than on the renderer's own field.
         let device = renderer
-            .device()
-            .context("the renderer has a device")?
-            .clone();
+            .device_any()
+            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+            .context("the renderer lends its device through the seam")?;
         let texture = imported_texture(
             &device,
             1,
