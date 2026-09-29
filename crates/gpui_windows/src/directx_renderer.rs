@@ -22,8 +22,8 @@ use windows::{
 use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
 use crate::*;
 use gpui_engine::{
-    AtlasTextureId, MonochromeSprite, PaintSurface, Path, PlatformAtlas, PolychromeSprite,
-    PrimitiveBatch, Quad, Scene, SceneRenderer, SubpixelSprite, Underline,
+    AtlasTextureId, CustomRenderPrimitive, MonochromeSprite, PaintSurface, Path, PlatformAtlas,
+    PolychromeSprite, PrimitiveBatch, Quad, Scene, SceneRenderer, SubpixelSprite, Underline,
     get_gamma_correction_ratios,
 };
 use gpui_platform::*;
@@ -402,6 +402,7 @@ impl DirectXRenderer {
                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
                 }
                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
+                PrimitiveBatch::Custom(range) => self.draw_custom(&scene.custom[range]),
             }
             .with_context(|| {
                 format!(
@@ -838,6 +839,18 @@ impl DirectXRenderer {
         // It says so rather than returning Ok, which would let a scene with surfaces report a
         // frame it never drew.
         anyhow::bail!("the Direct3D renderer does not draw surface primitives")
+    }
+
+    fn draw_custom(&mut self, customs: &[CustomRenderPrimitive]) -> Result<()> {
+        if customs.is_empty() {
+            return Ok(());
+        }
+        // An imported texture reaches a window here only through `WgpuRenderer`, which a factory
+        // installs in place of this one; a wgpu texture cannot be read by Direct3D 11 and wgpu
+        // offers no shareable resource, which is decision 0002. So this arm is unreachable, and
+        // says so rather than returning Ok, which would let a scene with an imported texture
+        // report a frame it never drew.
+        anyhow::bail!("the Direct3D renderer does not draw imported textures")
     }
 
     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
