@@ -1,18 +1,82 @@
 //! The renderer contract that engines implement.
 
 use crate::{PlatformAtlas, Scene};
-#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 use gpui_types::{DevicePixels, Size};
 use std::sync::Arc;
+
+/// A frame read back from a renderer, as raw pixels.
+///
+/// This is the engine's own type rather than an `image::RgbaImage` because the contract is what
+/// every renderer implements, and an image codec crate is not something a renderer needs: the
+/// consumers that want one — a PNG in test support, a fixture diff, an export — sit above the
+/// engine and convert. `image` was a dependency of this crate for this signature alone.
+///
+/// The layout is fixed so that the boundary needs no negotiation: RGBA8, unpremultiplied,
+/// tightly packed, row-major, top-left origin. A backend whose target is BGRA or premultiplied
+/// converts while it copies, which is where the swizzle already happens; a backend with other
+/// pixel formats widens this type rather than smuggling a second layout through it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PixelBuffer {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+impl PixelBuffer {
+    /// Wraps `data` as an image of `width` by `height` pixels.
+    ///
+    /// Fails if `data` is not exactly `width * height * 4` bytes, so that the accessors below
+    /// cannot hand out a buffer shorter than the size they report.
+    pub fn new(width: u32, height: u32, data: Vec<u8>) -> anyhow::Result<Self> {
+        let expected = width as usize * height as usize * 4;
+        anyhow::ensure!(
+            data.len() == expected,
+            "a {width}x{height} RGBA8 image is {expected} bytes, but the buffer is {}",
+            data.len()
+        );
+        Ok(Self {
+            width,
+            height,
+            data,
+        })
+    }
+
+    /// The width, in pixels.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// The height, in pixels.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The pixels, RGBA8 and tightly packed.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Consumes the buffer, returning its pixels.
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
+    }
+}
 
 /// A renderer that presents a [`Scene`] to some target.
 ///
 /// OS backends and alternative engines implement this; `gpui` produces the
 /// [`Scene`] and submits it through the window's platform implementation.
 ///
-/// Image capture and offscreen rendering are capabilities of the renderer
-/// rather than of the OS window, so onscreen GPU renderers only need to
-/// implement [`SceneRenderer::draw`] and [`SceneRenderer::sprite_atlas`].
+/// Offscreen rendering is part of this contract rather than a testing shim: a renderer that is
+/// never given a window is how server-side rendering, headless capture and snapshotting are
+/// expressed, and the window's renderer is the only thing that owns the device. Onscreen
+/// renderers therefore only *need* [`draw`](Self::draw) and [`sprite_atlas`](Self::sprite_atlas);
+/// the rest have defaults that report themselves unsupported.
+///
+/// Rendering and readback are separate steps on purpose. [`render_scene`](Self::render_scene)
+/// fills a target without a CPU round trip, which is what a consumer on the GPU wants;
+/// [`read_pixels`](Self::read_pixels) pays for system memory only when a consumer on the CPU
+/// needs it; [`render_scene_to_image`](Self::render_scene_to_image) is the two together.
 pub trait SceneRenderer: 'static {
     /// Encodes and submits `scene`, returning whether it was presented.
     ///
@@ -28,26 +92,32 @@ pub trait SceneRenderer: 'static {
     ///
     /// Onscreen renderers derive their target from the window and can ignore
     /// this; headless renderers use it to size an offscreen texture.
-    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
     fn set_viewport_size(&mut self, _size: Size<DevicePixels>) {}
 
-    /// Render a scene and return the result as an RGBA image.
-    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
-    fn render_scene_to_image(
-        &mut self,
-        _scene: &Scene,
-        _size: Size<DevicePixels>,
-    ) -> anyhow::Result<image::RgbaImage> {
-        anyhow::bail!("render_scene_to_image is not supported by this renderer")
+    /// Renders `scene` into an offscreen target of `size`, without reading it back.
+    ///
+    /// This is the headless analogue of presenting a frame: it performs the same CPU-side
+    /// scene encoding and GPU submission as drawing to a real window, but does not block on
+    /// GPU completion or copy pixels back.
+    fn render_scene(&mut self, _scene: &Scene, _size: Size<DevicePixels>) -> anyhow::Result<()> {
+        anyhow::bail!("offscreen rendering is not supported by this renderer")
     }
 
-    /// Render a scene to an offscreen target without reading the result back.
+    /// Reads the offscreen target of the last [`render_scene`](Self::render_scene) back.
     ///
-    /// This is the headless analogue of presenting a frame: it performs the
-    /// same CPU-side scene encoding and GPU submission as drawing to a real
-    /// window, but doesn't block on GPU completion or copy pixels back.
-    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
-    fn render_scene(&mut self, _scene: &Scene, _size: Size<DevicePixels>) -> anyhow::Result<()> {
-        Ok(())
+    /// Only a renderer that has rendered offscreen can answer this; the failure is the same
+    /// "unsupported" one, one step later.
+    fn read_pixels(&mut self) -> anyhow::Result<PixelBuffer> {
+        anyhow::bail!("pixel readback is not supported by this renderer")
+    }
+
+    /// Renders `scene` offscreen and reads the result back.
+    fn render_scene_to_image(
+        &mut self,
+        scene: &Scene,
+        size: Size<DevicePixels>,
+    ) -> anyhow::Result<PixelBuffer> {
+        self.render_scene(scene, size)?;
+        self.read_pixels()
     }
 }
