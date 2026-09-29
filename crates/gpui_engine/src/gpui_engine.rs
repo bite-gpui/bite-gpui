@@ -11,6 +11,7 @@
 
 mod atlas;
 mod bounds_tree;
+mod custom_render;
 mod font_fallbacks;
 mod font_features;
 mod frame_session;
@@ -24,6 +25,7 @@ mod text;
 mod text_system;
 
 pub use atlas::*;
+pub use custom_render::*;
 pub use font_fallbacks::*;
 pub use font_features::*;
 pub use frame_session::*;
