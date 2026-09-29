@@ -945,6 +945,46 @@ fn fmod(a: f32, b: f32) -> f32 {
     return a - b * trunc(a / b);
 }
 
+// --- imported textures --- //
+
+// A texture produced outside GPUI, drawn across the custom primitive's quad. The
+// instance record, the `globals` uniform and the vertex entry point are the quad
+// path's, so the geometry and clipping match a quad's exactly; only the sampler
+// slot and the fragment differ.
+@group(2) @binding(0) var t_imported: texture_2d<f32>;
+@group(2) @binding(1) var s_imported: sampler;
+
+@fragment
+fn fs_imported_texture(input: QuadVarying) -> @location(0) vec4<f32> {
+    // Alpha clip first, since we don't have `clip_distance`.
+    if (any(input.clip_distances < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
+
+    let quad = load_quad(input.quad_id);
+
+    // The builtin position is in device pixels; the quad's bounds recover the unit
+    // vertex the fragment came from without a dedicated varying.
+    var texture_position = (input.position.xy - quad.bounds.origin) / quad.bounds.size;
+    // A producer's textures usually have a top-left origin; `flip_v` rides in the
+    // quad's border style, which a textured quad has no other use for.
+    if (quad.border_style == 1u) {
+        texture_position.y = 1.0 - texture_position.y;
+    }
+
+    let sampled = textureSample(t_imported, s_imported, texture_position);
+    // The view is sRGB, so the sampler decodes to linear. GPUI's target is a non-sRGB
+    // `_UNORM` and its shaders write sRGB-encoded values -- the atlas is non-sRGB for the
+    // same reason -- so re-encode. On a producer whose content is sRGB-encoded this round
+    // trip is the identity on its bytes, which is exactly the invariant the format's
+    // requirement is there to guarantee.
+    let sample = linear_to_srgba(sampled);
+    // The primitive's opacity rides in the solid background's alpha, which
+    // `vs_quad` forwards as an unused scratch field on the texturing path.
+    let distance = quad_sdf(input.position.xy, quad.bounds, quad.corner_radii);
+    return blend_color(sample, input.background_solid.a * saturate(0.5 - distance));
+}
+
 // --- shadows --- //
 
 struct Shadow {
