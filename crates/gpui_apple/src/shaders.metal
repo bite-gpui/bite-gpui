@@ -899,6 +899,45 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
   return ycbcrToRGBTransform * ycbcr;
 }
 
+// An RGBA texture produced outside GPUI, drawn across the custom primitive's quad. The
+// instance record and the vertex entry point are the quads', so the geometry, the
+// content-mask clip and the corner SDF match a quad's exactly; only the sampler and the
+// fragment differ. The opacity rides in the solid background's alpha and `flip_v` in the
+// border style -- both fields the texturing path has no other use for.
+fragment float4 imported_texture_fragment(
+    QuadFragmentInput input [[stage_in]],
+    constant Quad *quads [[buffer(QuadInputIndex_Quads)]],
+    texture2d<float> imported_texture
+    [[texture(ImportedTextureInputIndex_Texture)]]) {
+  // Clamped so a clip against a rounded corner cannot bleed the opposite edge in.
+  constexpr sampler imported_sampler(coord::normalized, address::clamp_to_edge,
+                                     filter::linear);
+
+  Quad quad = quads[input.quad_id];
+  float2 bounds_origin = float2(quad.bounds.origin.x, quad.bounds.origin.y);
+  float2 bounds_size = float2(quad.bounds.size.width, quad.bounds.size.height);
+
+  // The position builtin is in device pixels; the quad's bounds recover the unit vertex
+  // the fragment came from without a dedicated varying.
+  float2 texture_position = (input.position.xy - bounds_origin) / bounds_size;
+  // `flip_v` rides in the border style -- `BorderStyle::Dashed`, whose value is 1, which a
+  // textured quad has no other use for.
+  if (quad.border_style == 1) {
+    texture_position.y = 1.0 - texture_position.y;
+  }
+
+  float4 sample = imported_texture.sample(imported_sampler, texture_position);
+  // The texture is sRGB, so the sampler decodes to linear. GPUI's target is a non-sRGB
+  // `_UNORM` and its shaders write sRGB-encoded values -- the atlas is non-sRGB for the
+  // same reason -- so re-encode. On a producer whose content is sRGB-encoded this round
+  // trip is the identity on its bytes.
+  sample.rgb = linear_to_srgb(sample.rgb);
+
+  float distance = quad_sdf(input.position.xy, quad.bounds, quad.corner_radii);
+  float alpha = sample.a * input.background_solid.a * saturate(0.5 - distance);
+  return float4(sample.rgb, alpha);
+}
+
 float4 hsla_to_rgba(Hsla hsla) {
   float h = hsla.h * 6.0; // Now, it's an angle but scaled in [0, 6) range
   float s = hsla.s;
