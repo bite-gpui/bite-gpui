@@ -1,4 +1,5 @@
 mod cosmic_text_system;
+mod imported_texture;
 #[cfg(not(any(
     target_family = "wasm",
     target_os = "macos",
@@ -10,6 +11,7 @@ mod wgpu_context;
 mod wgpu_renderer;
 
 pub use cosmic_text_system::*;
+pub use imported_texture::*;
 pub use wgpu;
 pub use wgpu_atlas::*;
 pub use wgpu_context::*;
