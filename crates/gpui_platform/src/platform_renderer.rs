@@ -80,6 +80,24 @@ pub trait PlatformRenderer: NativeSceneHooks {
     /// What GPU this renderer is on, if it can tell.
     fn gpu_specs(&self) -> Option<GpuSpecs>;
 
+    /// The graphics device this renderer draws on, for a producer that has to make a texture on
+    /// it.
+    ///
+    /// This is the whole of decision 0002's device rule seen from the other side: the device
+    /// belongs to whoever built the window's renderer, and a producer — a decoder, an engine, a
+    /// viewport — has to render on *that* one. The return is erased because the shared trait must
+    /// not name `ID3D11Device` or `MTLDevice`; the payload is the backend's own type (a
+    /// `GpuContext`, a `DirectXDevices`, a device), and the crate that owns it is where a caller
+    /// downcasts. It is owned rather than borrowed because a caller reaches a renderer through a
+    /// closure ([`PlatformWindow::with_renderer`](crate::PlatformWindow::with_renderer)), which
+    /// no borrow can outlive.
+    ///
+    /// `None` means there is no device to lend: a renderer that draws offscreen, or one a factory
+    /// installed that is not the backend's own. That is an answer, not a failure.
+    fn device_any(&self) -> Option<Rc<dyn Any>> {
+        None
+    }
+
     /// Whether glyphs are rasterized with subpixel antialiasing in BGR order.
     fn set_subpixel_layout(&mut self, _is_bgr: bool) {}
 

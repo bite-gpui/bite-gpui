@@ -3021,6 +3021,17 @@ impl Window<'_> {
         self.frame_state.rendered_frame.scene.underlines.clone()
     }
 
+    /// The graphics device this window's renderer draws on, if it has one to lend.
+    ///
+    /// This is how a producer reaches it, and it is the only route: the device belongs to whoever
+    /// built the window's renderer, and a texture has to be made on *that* device for the
+    /// renderer to sample it. The value is erased because one `Window` type cannot name
+    /// `ID3D11Device` or `MTLDevice` — the crate that owns the payload is where a caller
+    /// downcasts, and `None` means this window's renderer has no device to lend.
+    pub fn device_any(&self) -> Option<Rc<dyn Any>> {
+        self.core.platform_window.device_any()
+    }
+
     /// Returns the custom-render primitives in the most recently rendered frame's scene: the
     /// textures an application produced elsewhere and painted into this window. Like
     /// [`painted_quads`](Self::painted_quads), this is the scene as painted, before any renderer
