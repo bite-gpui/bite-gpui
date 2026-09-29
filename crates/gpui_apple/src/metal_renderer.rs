@@ -1769,6 +1769,12 @@ impl PlatformRenderer for MetalRenderer {
         None
     }
 
+    /// The device this renderer draws on. It created it, so it is the only holder: a producer that
+    /// wants to make a texture on it has to be handed this, and nothing else on macOS can.
+    fn device_any(&self) -> Option<std::rc::Rc<dyn std::any::Any>> {
+        Some(std::rc::Rc::new(self.device.clone()))
+    }
+
     fn update_transparency(&mut self, transparent: bool) {
         MetalRenderer::update_transparency(self, transparent);
     }
