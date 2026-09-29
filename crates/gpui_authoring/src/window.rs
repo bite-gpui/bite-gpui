@@ -2998,7 +2998,12 @@ impl Window<'_> {
         self.core.platform_window.with_renderer(&mut |renderer| {
             result = Some(renderer.render_scene_to_image(scene, size));
         });
-        result.unwrap_or_else(|| anyhow::bail!("platform window does not support image capture"))
+        let pixels = result
+            .unwrap_or_else(|| anyhow::bail!("platform window does not support image capture"))?;
+        let (width, height) = (pixels.width(), pixels.height());
+        image::RgbaImage::from_raw(width, height, pixels.into_data()).ok_or_else(|| {
+            anyhow::anyhow!("the renderer returned a {width}x{height} pixel buffer of the wrong length")
+        })
     }
 
     /// Returns the quads in the most recently rendered frame's scene, so tests can assert on
