@@ -2105,9 +2105,11 @@ impl SceneRenderer for DirectXRenderer {
         &mut self,
         scene: &Scene,
         _size: Size<DevicePixels>,
-    ) -> anyhow::Result<image::RgbaImage> {
+    ) -> anyhow::Result<gpui_engine::PixelBuffer> {
         let background_appearance = self.background_appearance;
-        self.render_to_image(scene, background_appearance)
+        let image = self.render_to_image(scene, background_appearance)?;
+        let (width, height) = image.dimensions();
+        gpui_engine::PixelBuffer::new(width, height, image.into_raw())
     }
 }
 
