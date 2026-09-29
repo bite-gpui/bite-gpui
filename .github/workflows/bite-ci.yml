@@ -64,6 +64,18 @@ jobs:
           cargo test -p gpui_apple imported_texture 2>&1 | tee imported-texture-metal.log
           grep -qE "test result: ok\. [1-9][0-9]* passed" imported-texture-metal.log
 
+  # A probe rather than a gate: it prints what it measures and the printout is the evidence, which
+  # lives in `decisions/macos-wgpu-producer-probe.md` in `bite-gpui/bite-gpui-project`. It needs a
+  # real Metal device, and it depends on `gpui_apple` by path, so it is the one job that builds the
+  # renderer itself and wgpu together. Its job goes away once it has an answer; the crate stays as
+  # the reproduction.
+  macos-probe:
+    name: the macOS wgpu-producer probe (macos-14)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo run --manifest-path probes/macos-wgpu-producer/Cargo.toml
+
   # The Direct3D backend, on Windows. Release rather than debug, because that is the
   # profile whose build script compiles the HLSL with `fxc` and whose Rust includes
   # the result; in debug those shaders are compiled at run time by
