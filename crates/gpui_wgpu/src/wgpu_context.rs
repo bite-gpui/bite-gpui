@@ -111,6 +111,76 @@ impl WgpuContext {
                 reject_software,
             ))?;
 
+        Ok(Self::from_adapter(
+            instance,
+            adapter,
+            device,
+            queue,
+            dual_source_blending,
+            color_texture_format,
+        ))
+    }
+
+    /// A context with no surface, for rendering offscreen.
+    ///
+    /// The windowed path chooses an adapter by *configuring the window's surface* with it, which
+    /// is the only reliable test -- `get_capabilities` answers optimistically on hybrid systems.
+    /// With no surface there is nothing to configure, so this walks the same priority order and
+    /// takes the first adapter a device can be created on. A headless renderer has no better
+    /// question to ask; it has no display to be incompatible with.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn new_headless(instance: wgpu::Instance) -> anyhow::Result<Self> {
+        pollster::block_on(Self::select_adapter_headless(instance))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn select_adapter_headless(instance: wgpu::Instance) -> anyhow::Result<Self> {
+        let mut adapters: Vec<_> = instance.enumerate_adapters(wgpu::Backends::all()).await;
+        if adapters.is_empty() {
+            anyhow::bail!("No GPU adapters found");
+        }
+        adapters.sort_by_key(|adapter| adapter_sort_key(&adapter.get_info(), None, None));
+
+        let mut failure = None;
+        for adapter in adapters {
+            match Self::create_device(&adapter).await {
+                Ok((device, queue, dual_source_blending, color_texture_format)) => {
+                    return Ok(Self::from_adapter(
+                        instance,
+                        adapter,
+                        device,
+                        queue,
+                        dual_source_blending,
+                        color_texture_format,
+                    ));
+                }
+                Err(error) => {
+                    log::info!(
+                        "  Adapter {} could not create a device: {error}",
+                        adapter.get_info().name
+                    );
+                    failure = Some(error);
+                }
+            }
+        }
+
+        match failure {
+            Some(error) => Err(error.context("no GPU adapter could create a device")),
+            None => anyhow::bail!("No GPU adapters found"),
+        }
+    }
+
+    /// The context a selected adapter and its device make, shared by the two paths that select
+    /// them.
+    #[cfg(not(target_family = "wasm"))]
+    fn from_adapter(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        dual_source_blending: bool,
+        color_texture_format: TextureFormat,
+    ) -> Self {
         let device_lost = Arc::new(AtomicBool::new(false));
         device.set_device_lost_callback({
             let device_lost = Arc::clone(&device_lost);
@@ -129,7 +199,7 @@ impl WgpuContext {
         );
 
         let backend = WgpuBackend::Native(adapter.get_info().backend);
-        Ok(Self {
+        Self {
             instance,
             adapter,
             device: Arc::new(device),
@@ -138,7 +208,7 @@ impl WgpuContext {
             dual_source_blending,
             color_texture_format,
             device_lost,
-        })
+        }
     }
 
     #[cfg(target_family = "wasm")]
@@ -297,6 +367,22 @@ impl WgpuContext {
         })
     }
 
+    /// An instance with no display, for a renderer that presents nothing.
+    ///
+    /// [`instance`](Self::instance) carries the display handle a window's surface is created
+    /// against. A renderer with no window has no surface and nothing to present, so the field
+    /// stays empty, which is also what keeps this from needing a window at all.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn headless_instance() -> wgpu::Instance {
+        wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: Self::backends(),
+            flags: wgpu::InstanceFlags::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            display: None,
+        })
+    }
+
     /// The backends the instance is built with.
     ///
     /// Vulkan and GL are what this asked for while Linux was the only host. Neither can present
@@ -360,59 +446,8 @@ impl WgpuContext {
             log::info!("ZED_DEVICE_ID filter: {:#06x}", device_id);
         }
 
-        // Sort adapters into a single priority order. Tiers (from highest to lowest):
-        //
-        // 1. ZED_DEVICE_ID match — explicit user override
-        // 2. Compositor GPU match — the GPU the display server is rendering on
-        // 3. Device type (Discrete > Integrated > Other > Virtual > Cpu).
-        //    "Other" ranks above "Virtual" because OpenGL seems to count as "Other".
-        // 4. Backend — prefer Vulkan/Metal/Dx12 over GL/etc.
         adapters.sort_by_key(|adapter| {
-            let info = adapter.get_info();
-
-            // Backends like OpenGL report device=0 for all adapters, so
-            // device-based matching is only meaningful when non-zero.
-            let device_known = info.device != 0;
-
-            let user_override: u8 = match device_id_filter {
-                Some(id) if device_known && info.device == id => 0,
-                _ => 1,
-            };
-
-            let compositor_match: u8 = match compositor_gpu {
-                Some(hint)
-                    if device_known
-                        && info.vendor == hint.vendor_id
-                        && info.device == hint.device_id =>
-                {
-                    0
-                }
-                _ => 1,
-            };
-
-            let type_priority: u8 = if info.device_type == wgpu::DeviceType::Cpu {
-                4
-            } else {
-                match info.device_type {
-                    wgpu::DeviceType::DiscreteGpu => 0,
-                    wgpu::DeviceType::IntegratedGpu => 1,
-                    wgpu::DeviceType::Other => 2,
-                    wgpu::DeviceType::VirtualGpu => 3,
-                    wgpu::DeviceType::Cpu => 4,
-                }
-            };
-
-            let backend_priority: u8 = match info.backend {
-                wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => 0,
-                _ => 1,
-            };
-
-            (
-                user_override,
-                compositor_match,
-                type_priority,
-                backend_priority,
-            )
+            adapter_sort_key(&adapter.get_info(), device_id_filter, compositor_gpu)
         });
 
         // Log all available adapters (in sorted order)
@@ -585,6 +620,62 @@ impl WgpuContext {
 }
 
 #[cfg(not(target_family = "wasm"))]
+/// The order adapters are tried in, most preferred first.
+///
+/// Tiers, highest to lowest:
+/// 1. A `ZED_DEVICE_ID` match, the explicit user override.
+/// 2. A compositor-GPU match, the GPU the display server renders on.
+/// 3. Device type (Discrete > Integrated > Other > Virtual > Cpu). "Other" ranks above
+///    "Virtual" because OpenGL seems to count as "Other".
+/// 4. Backend, preferring Vulkan/Metal/Dx12 over GL and the rest.
+///
+/// This is the whole of the preference. Which adapter can also *configure a surface* is decided
+/// by testing rather than by this order, which is what lets the surface-less path share it.
+#[cfg(not(target_family = "wasm"))]
+fn adapter_sort_key(
+    info: &wgpu::AdapterInfo,
+    device_id_filter: Option<u32>,
+    compositor_gpu: Option<&CompositorGpuHint>,
+) -> (u8, u8, u8, u8) {
+    // Backends like OpenGL report device=0 for all adapters, so device-based matching is only
+    // meaningful when non-zero.
+    let device_known = info.device != 0;
+
+    let user_override: u8 = match device_id_filter {
+        Some(id) if device_known && info.device == id => 0,
+        _ => 1,
+    };
+
+    let compositor_match: u8 = match compositor_gpu {
+        Some(hint)
+            if device_known && info.vendor == hint.vendor_id && info.device == hint.device_id =>
+        {
+            0
+        }
+        _ => 1,
+    };
+
+    let type_priority: u8 = match info.device_type {
+        wgpu::DeviceType::DiscreteGpu => 0,
+        wgpu::DeviceType::IntegratedGpu => 1,
+        wgpu::DeviceType::Other => 2,
+        wgpu::DeviceType::VirtualGpu => 3,
+        wgpu::DeviceType::Cpu => 4,
+    };
+
+    let backend_priority: u8 = match info.backend {
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => 0,
+        _ => 1,
+    };
+
+    (
+        user_override,
+        compositor_match,
+        type_priority,
+        backend_priority,
+    )
+}
+
 fn parse_pci_id(id: &str) -> anyhow::Result<u32> {
     let mut id = id.trim();
 
