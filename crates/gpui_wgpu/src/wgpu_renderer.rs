@@ -2306,6 +2306,7 @@ pub struct WgpuHeadlessRenderer {
     core: WgpuRendererCore,
     render_target: Option<HeadlessRenderTarget>,
     observed_error_generation: u64,
+    viewport_size: Option<Size<DevicePixels>>,
 }
 
 #[cfg(all(
@@ -2331,6 +2332,7 @@ impl WgpuHeadlessRenderer {
             core,
             render_target: None,
             observed_error_generation,
+            viewport_size: None,
         })
     }
 
@@ -2517,6 +2519,38 @@ impl WgpuHeadlessRenderer {
     }
 }
 
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(test, feature = "bench-support", feature = "test-support")
+))]
+impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
+    fn draw(&mut self, scene: &Scene) -> bool {
+        // A headless renderer has no compositor to observe, so it reports presented and
+        // renders offscreen at the size the caller last set.
+        if let Some(size) = self.viewport_size {
+            let _ = self.render(scene, size);
+        }
+        true
+    }
+
+    fn sprite_atlas(&self) -> Arc<dyn gpui_engine::PlatformAtlas> {
+        self.core.atlas.clone()
+    }
+
+    fn set_viewport_size(&mut self, size: Size<DevicePixels>) {
+        self.viewport_size = Some(size);
+    }
+
+    fn render_scene(&mut self, scene: &Scene, size: Size<DevicePixels>) -> anyhow::Result<()> {
+        self.render(scene, size)
+    }
+
+    fn read_pixels(&mut self) -> anyhow::Result<gpui_engine::PixelBuffer> {
+        let image = self.read_image()?;
+        let (width, height) = image.dimensions();
+        gpui_engine::PixelBuffer::new(width, height, image.into_raw())
+    }
+}
 
 fn instance_range(range: Range<usize>) -> Range<u32> {
     range.start as u32..range.end as u32
@@ -2587,7 +2621,8 @@ impl RenderingParameters {
 mod tests {
     use super::*;
     use gpui_engine::{
-        BorderStyle, MonochromeSprite, PolychromeSprite, Quad, SubpixelSprite, Underline,
+        BorderStyle, MonochromeSprite, PixelBuffer, PolychromeSprite, Quad, SubpixelSprite,
+        Underline,
     };
     use gpui_platform::{
         ColorSpace, ContentMask, Corners, Edges, Hsla, Shadow, linear_color_stop, linear_gradient,
@@ -2630,8 +2665,9 @@ mod tests {
     /// Channels are compared with a small tolerance so the assertions hold across
     /// drivers without pinning exact rasterizer output.
     #[cfg(target_os = "linux")]
-    fn assert_pixel(image: &image::RgbaImage, x: u32, y: u32, expected: [u8; 4]) {
-        let actual = image.get_pixel(x, y).0;
+    fn assert_pixel(image: &PixelBuffer, x: u32, y: u32, expected: [u8; 4]) {
+        let offset = ((y * image.width() + x) * 4) as usize;
+        let actual = &image.data()[offset..offset + 4];
         assert!(
             actual
                 .iter()
@@ -2658,7 +2694,7 @@ mod tests {
         scene.finish();
 
         let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
-        assert_eq!(image.dimensions(), (64, 32));
+        assert_eq!((image.width(), image.height()), (64, 32));
         assert_pixel(&image, 8, 16, RED);
         assert_pixel(&image, 24, 16, RED);
         assert_pixel(&image, 40, 16, BLUE);
@@ -2676,19 +2712,19 @@ mod tests {
 
         // 13 px rows are 52 bytes, forcing readback to strip copy-row padding.
         let image = renderer.render_scene_to_image(&scene, device_size(13, 7))?;
-        assert_eq!(image.dimensions(), (13, 7));
+        assert_eq!((image.width(), image.height()), (13, 7));
         assert_pixel(&image, 0, 0, BLACK);
         assert_pixel(&image, 3, 3, RED);
         assert_pixel(&image, 12, 6, BLACK);
 
         let image = renderer.render_scene_to_image(&scene, device_size(17, 9))?;
-        assert_eq!(image.dimensions(), (17, 9));
+        assert_eq!((image.width(), image.height()), (17, 9));
         assert_pixel(&image, 3, 3, RED);
         assert_pixel(&image, 16, 8, BLACK);
 
         let image = renderer.render_scene_to_image(&Scene::default(), device_size(13, 7))?;
-        assert_eq!(image.dimensions(), (13, 7));
-        assert!(image.pixels().all(|pixel| pixel.0 == BLACK));
+        assert_eq!((image.width(), image.height()), (13, 7));
+        assert!(image.data().chunks_exact(4).all(|pixel| pixel == BLACK));
         Ok(())
     }
 
@@ -2741,7 +2777,7 @@ mod tests {
 
         // Rejection must leave the renderer usable.
         let image = renderer.render_scene_to_image(&Scene::default(), device_size(4, 4))?;
-        assert_eq!(image.dimensions(), (4, 4));
+        assert_eq!((image.width(), image.height()), (4, 4));
         Ok(())
     }
 

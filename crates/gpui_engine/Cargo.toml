@@ -24,7 +24,6 @@ derive_more.workspace = true
 etagere.workspace = true
 gpui_shared_string.workspace = true
 gpui_types.workspace = true
-image.workspace = true
 log.workspace = true
 parking_lot.workspace = true
 profiling.workspace = true

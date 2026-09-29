@@ -7524,7 +7524,6 @@ dependencies = [
  "etagere",
  "gpui_shared_string",
  "gpui_types",
- "image",
  "log",
  "parking_lot",
  "profiling",

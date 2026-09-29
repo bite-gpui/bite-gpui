@@ -1,14 +1,12 @@
 use crate::{
     AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTile, Bounds, DevicePixels, DispatchEventResult,
-    DisplayId, GpuSpecs, HeadlessAtlas, Pixels, PlatformAtlas, PlatformDisplay,
+    DisplayId, GpuSpecs, HeadlessAtlas, PixelBuffer, Pixels, PlatformAtlas, PlatformDisplay,
     PlatformHeadlessRenderer, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     PromptButton, RequestFrameOptions, Scene, SceneRenderer, Size, TestDisplay, TestPlatform,
     TextInputConfiguration, TextInputStateChange, TileId, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowId, WindowInsets,
     WindowParams, WindowVisibility,
 };
-#[cfg(any(test, feature = "test-support"))]
-use image::RgbaImage;
 use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{
@@ -619,7 +617,7 @@ impl SceneRenderer for TestRenderer {
         &mut self,
         _scene: &Scene,
         _size: Size<DevicePixels>,
-    ) -> anyhow::Result<RgbaImage> {
+    ) -> anyhow::Result<PixelBuffer> {
         anyhow::bail!("render_to_image not available: no HeadlessRenderer configured")
     }
 }
