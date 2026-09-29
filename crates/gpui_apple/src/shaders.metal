@@ -997,10 +997,10 @@ float3 linear_to_srgb(float3 color) {
   return pow(color, float3(1.0 / 2.2));
 }
 
-// The exact piecewise sRGB transfer. The rest of the pipeline uses the power approximation above,
+// The exact piecewise sRGB transfer. The rest of this pipeline uses the power approximation above,
 // which is what the UI's look was built on; the imported-texture fragment is the one place whose
 // contract is that a producer's bytes come back unchanged, and the approximation does not satisfy
-// it. Kept beside `linear_to_srgb` in the WGSL shader, which has only this one.
+// it. The WGSL shader carries only the exact one, so the two arms agree on the transfer.
 float3 linear_to_srgb_exact(float3 color) {
   float3 lower = color * 12.92;
   float3 higher = 1.055 * pow(color, float3(1.0 / 2.4)) - 0.055;
