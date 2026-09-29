@@ -7,7 +7,8 @@ use cocoa::{
     quartzcore::AutoresizingMask,
 };
 use gpui_engine::{
-    AtlasTextureId, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer,
+    AtlasTextureId, CustomRenderPrimitive, MetalTexture, PaintSurface, Path, PlatformAtlas,
+    PrimitiveBatch, Scene, SceneRenderer,
 };
 use gpui_platform::{
     Background, Bounds, ContentMask, DevicePixels, GpuSpecs, MacSceneRenderer, PlatformRenderer,
@@ -132,6 +133,7 @@ pub struct MetalRenderer {
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
     polychrome_sprites_pipeline_state: metal::RenderPipelineState,
     surfaces_pipeline_state: metal::RenderPipelineState,
+    imported_textures_pipeline_state: metal::RenderPipelineState,
     unit_vertices: metal::Buffer,
     #[allow(clippy::arc_with_non_send_sync)]
     instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
@@ -329,6 +331,14 @@ impl MetalRenderer {
             "surface_fragment",
             MTLPixelFormat::BGRA8Unorm,
         );
+        let imported_textures_pipeline_state = build_pipeline_state(
+            &device,
+            &library,
+            "imported_textures",
+            "quad_vertex",
+            "imported_texture_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
 
         let command_queue = device.new_command_queue();
         let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), is_apple_gpu));
@@ -351,6 +361,7 @@ impl MetalRenderer {
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
             surfaces_pipeline_state,
+            imported_textures_pipeline_state,
             unit_vertices,
             instance_buffer_pool,
             sprite_atlas,
@@ -739,6 +750,13 @@ impl MetalRenderer {
                     ),
                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(
                     &scene.surfaces[range.clone()],
+                    range.start,
+                    instance_bindings,
+                    viewport_size,
+                    command_encoder,
+                ),
+                PrimitiveBatch::Custom(range) => self.draw_imported_textures(
+                    &scene.custom[range.clone()],
                     range.start,
                     instance_bindings,
                     viewport_size,
@@ -1219,6 +1237,81 @@ impl MetalRenderer {
             );
         }
     }
+
+    fn draw_imported_textures(
+        &self,
+        primitives: &[CustomRenderPrimitive],
+        first_primitive: usize,
+        instance_bindings: &InstanceBindings,
+        viewport_size: Size<DevicePixels>,
+        command_encoder: &metal::RenderCommandEncoderRef,
+    ) {
+        if primitives.is_empty() {
+            return;
+        }
+
+        command_encoder.set_render_pipeline_state(&self.imported_textures_pipeline_state);
+        command_encoder.set_vertex_buffer(
+            QuadInputIndex::Vertices as u64,
+            Some(&self.unit_vertices),
+            0,
+        );
+        command_encoder.set_vertex_buffer(
+            QuadInputIndex::Quads as u64,
+            Some(&instance_bindings.imported_textures.buffer),
+            instance_bindings.imported_textures.offset as u64,
+        );
+        command_encoder.set_fragment_buffer(
+            QuadInputIndex::Quads as u64,
+            Some(&instance_bindings.imported_textures.buffer),
+            instance_bindings.imported_textures.offset as u64,
+        );
+        command_encoder.set_vertex_bytes(
+            QuadInputIndex::ViewportSize as u64,
+            mem::size_of_val(&viewport_size) as u64,
+            &viewport_size as *const Size<DevicePixels> as *const _,
+        );
+
+        // The view changes per primitive and the engine never names it, so there is nothing
+        // to key a cache on; a bind each is the first cut.
+        for (index, primitive) in primitives.iter().enumerate() {
+            let CustomRenderPrimitive::Texture { handle, .. } = primitive;
+            let Some(texture) = handle.payload.downcast_ref::<MetalTexture>() else {
+                log::error!("an imported texture handle does not hold a Metal texture");
+                continue;
+            };
+
+            // Safety: the handle is the private agreement between the producer and the
+            // renderer it chose, which is to say the texture was made on this renderer's
+            // device; `MetalTexture` carries the `id<MTLTexture>` that device handed out.
+            let texture = unsafe { metal::TextureRef::from_ptr(texture.0 as *mut _) };
+
+            // The fragment decodes as sRGB and re-encodes, so a texture that is not declared
+            // sRGB is already encoded and would come out double-encoded -- a visible defect
+            // rather than a crash, which is why the producer-side check rejects it too.
+            let pixel_format = texture.pixel_format();
+            if !matches!(
+                pixel_format,
+                MTLPixelFormat::BGRA8Unorm_sRGB | MTLPixelFormat::RGBA8Unorm_sRGB
+            ) {
+                log::error!(
+                    "an imported texture must be declared sRGB, but this one is {pixel_format:?}"
+                );
+                continue;
+            }
+
+            command_encoder
+                .set_fragment_texture(ImportedTextureInputIndex::Texture as u64, Some(texture));
+
+            command_encoder.draw_primitives_instanced_base_instance(
+                metal::MTLPrimitiveType::Triangle,
+                0,
+                6,
+                1,
+                (first_primitive + index) as u64,
+            );
+        }
+    }
 }
 
 fn new_command_encoder_for_texture<'a>(
@@ -1403,6 +1496,7 @@ struct InstanceBindings {
     monochrome_sprites: InstanceBinding,
     polychrome_sprites: InstanceBinding,
     surfaces: InstanceBinding,
+    imported_textures: InstanceBinding,
 }
 
 fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<InstanceBindings> {
@@ -1416,6 +1510,12 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
             bounds: surface.bounds,
             content_mask: surface.content_mask,
         }))?,
+        imported_textures: writer.write_iter(
+            scene
+                .custom
+                .iter()
+                .map(CustomRenderPrimitive::to_quad_record),
+        )?,
     })
 }
 
@@ -1590,6 +1690,13 @@ enum SurfaceInputIndex {
     CbCrTexture = 5,
 }
 
+/// The imported-texture pipeline's one texture; its sampler is a `constexpr sampler` in
+/// the fragment, so it has no binding of its own.
+#[repr(C)]
+enum ImportedTextureInputIndex {
+    Texture = 0,
+}
+
 #[repr(C)]
 enum PathRasterizationInputIndex {
     Vertices = 0,
@@ -1624,8 +1731,10 @@ impl SceneRenderer for MetalRenderer {
         &mut self,
         scene: &Scene,
         size: Size<DevicePixels>,
-    ) -> anyhow::Result<image::RgbaImage> {
-        MetalRenderer::render_scene_to_image(self, scene, size)
+    ) -> anyhow::Result<gpui_engine::PixelBuffer> {
+        let image = MetalRenderer::render_scene_to_image(self, scene, size)?;
+        let (width, height) = image.dimensions();
+        gpui_engine::PixelBuffer::new(width, height, image.into_raw())
     }
 
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
@@ -1657,6 +1766,12 @@ impl PlatformRenderer for MetalRenderer {
     /// where the platform's own renderer would answer it.
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         None
+    }
+
+    /// The device this renderer draws on. It created it, so it is the only holder: a producer that
+    /// wants to make a texture on it has to be handed this, and nothing else on macOS can.
+    fn device_any(&self) -> Option<std::rc::Rc<dyn std::any::Any>> {
+        Some(std::rc::Rc::new(self.device.clone()))
     }
 
     fn update_transparency(&mut self, transparent: bool) {
@@ -1703,8 +1818,10 @@ impl SceneRenderer for MetalHeadlessRenderer {
         &mut self,
         scene: &Scene,
         size: Size<DevicePixels>,
-    ) -> anyhow::Result<image::RgbaImage> {
-        self.renderer.render_scene_to_image(scene, size)
+    ) -> anyhow::Result<gpui_engine::PixelBuffer> {
+        let image = self.renderer.render_scene_to_image(scene, size)?;
+        let (width, height) = image.dimensions();
+        gpui_engine::PixelBuffer::new(width, height, image.into_raw())
     }
 
     fn render_scene(&mut self, scene: &Scene, size: Size<DevicePixels>) -> anyhow::Result<()> {

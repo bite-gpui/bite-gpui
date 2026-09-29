@@ -1,12 +1,14 @@
-use crate::{CompositorGpuHint, WgpuAtlas, WgpuContext};
+use crate::{CompositorGpuHint, WgpuAtlas, WgpuContext, WgpuImportedTexture};
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
 use gpui_engine::{
-    AtlasTextureId, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer,
-    get_gamma_correction_ratios,
+    AtlasTextureId, CustomRenderPrimitive, Path, PixelBuffer, PlatformAtlas, PrimitiveBatch, Scene,
+    SceneRenderer, get_gamma_correction_ratios,
 };
-use gpui_platform::{Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size};
+use gpui_platform::{
+    Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size,
+};
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -135,6 +137,7 @@ struct WgpuPipelines {
     poly_sprites: wgpu::RenderPipeline,
     #[allow(dead_code)]
     surfaces: wgpu::RenderPipeline,
+    imported_textures: wgpu::RenderPipeline,
 }
 
 /// One frame allocation of instance data, ready to bind.
@@ -155,6 +158,7 @@ struct InstanceBindings {
     monochrome_sprites: InstanceBinding,
     subpixel_sprites: InstanceBinding,
     polychrome_sprites: InstanceBinding,
+    imported_textures: InstanceBinding,
 }
 
 struct WgpuBindGroupLayouts {
@@ -162,6 +166,7 @@ struct WgpuBindGroupLayouts {
     instances: wgpu::BindGroupLayout,
     texture: wgpu::BindGroupLayout,
     surfaces: wgpu::BindGroupLayout,
+    imported_texture: wgpu::BindGroupLayout,
 }
 
 /// Shared GPU context reference, used to coordinate device recovery across multiple windows.
@@ -183,10 +188,12 @@ enum InstanceData {
 struct WgpuResources {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    surface: wgpu::Surface<'static>,
+    /// The window's surface, or `None` for a renderer that draws offscreen.
+    surface: Option<wgpu::Surface<'static>>,
     pipelines: WgpuPipelines,
     bind_group_layouts: WgpuBindGroupLayouts,
     atlas_sampler: wgpu::Sampler,
+    imported_texture_sampler: wgpu::Sampler,
     atlas_texture_bind_groups: FxHashMap<AtlasTextureId, CachedTextureBindGroup>,
     globals_buffer: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
@@ -196,19 +203,44 @@ struct WgpuResources {
     path_intermediate_view: Option<wgpu::TextureView>,
     path_msaa_texture: Option<wgpu::Texture>,
     path_msaa_view: Option<wgpu::TextureView>,
+    /// The target an offscreen renderer draws into. Always `None` for a renderer that has a
+    /// surface, and dropped when the requested size changes.
+    offscreen_target: Option<OffscreenTarget>,
 }
 
+/// An offscreen renderer's target, kept between frames so a frame at the same size again
+/// allocates nothing.
+struct OffscreenTarget {
+    width: u32,
+    height: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct CachedTextureBindGroup {
     texture_generation: u64,
     bind_group: wgpu::BindGroup,
 }
 
 impl WgpuResources {
+    /// The window's surface.
+    ///
+    /// A renderer that draws offscreen never calls this; a renderer with a surface always has
+    /// one. The `Option` is the two kinds of target in one field, not a state a surface renderer
+    /// can be in.
+    fn surface(&self) -> &wgpu::Surface<'static> {
+        self.surface
+            .as_ref()
+            .expect("this renderer draws to a window, so it has a surface")
+    }
+
     fn invalidate_intermediate_textures(&mut self) {
         self.path_intermediate_texture = None;
         self.path_intermediate_view = None;
         self.path_msaa_texture = None;
         self.path_msaa_view = None;
+        self.offscreen_target = None;
     }
 }
 
@@ -316,11 +348,66 @@ impl WgpuRenderer {
         Self::new_internal(
             Some(Rc::clone(&gpu_context)),
             context,
-            surface,
+            Some(surface),
+            None,
             config,
             compositor_gpu,
             atlas,
         )
+    }
+
+    /// Creates a renderer with no window, drawing into an offscreen texture.
+    ///
+    /// The target is the whole of this renderer's output: it has no surface to present to and no
+    /// recovery to perform, so it also never holds a `GpuContext`. `format` is the *target's*
+    /// format, and has to be the non-sRGB `_UNORM` a window's surface is, or every shader that
+    /// writes a colour would encode it for the wrong target.
+    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    pub fn new_offscreen(
+        size: Size<DevicePixels>,
+        format: wgpu::TextureFormat,
+    ) -> anyhow::Result<Self> {
+        let instance = WgpuContext::headless_instance();
+        let context = WgpuContext::new_headless(instance)?;
+        let atlas = Arc::new(WgpuAtlas::from_context(&context));
+        Self::new_internal(
+            None,
+            &context,
+            None,
+            Some(format),
+            WgpuSurfaceConfig {
+                size,
+                transparent: false,
+                preferred_present_mode: None,
+            },
+            None,
+            atlas,
+        )
+    }
+
+    /// The device this renderer draws on.
+    ///
+    /// A producer on this path renders its texture on *this* device -- that is the whole of the
+    /// same-device rule -- so a renderer that can be built without a window is where an
+    /// application that owns one reaches a device from. A window's is reached through
+    /// `Window::device_any`, which is the same device by another route.
+    pub fn device(&self) -> &wgpu::Device {
+        &self.resources().device
+    }
+
+    /// The queue this renderer submits on.
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.resources().queue
+    }
+
+    /// The shared context slot this renderer draws through, if it has one.
+    ///
+    /// A window's renderer is built with it and adopts whatever context the first renderer filled;
+    /// an offscreen renderer has none, because it has no window to coordinate with. This is what
+    /// `PlatformRenderer::device_any` hands a producer: the same `Rc` a factory was given.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn gpu_context(&self) -> Option<GpuContext> {
+        self.context.clone()
     }
 
     #[cfg(target_family = "wasm")]
@@ -344,59 +431,86 @@ impl WgpuRenderer {
         config: WgpuSurfaceConfig,
     ) -> anyhow::Result<Self> {
         let atlas = Arc::new(WgpuAtlas::from_context(context));
-        Self::new_internal(None, context, surface, config, None, atlas)
+        Self::new_internal(None, context, Some(surface), None, config, None, atlas)
     }
 
     fn new_internal(
         gpu_context: Option<GpuContext>,
         context: &WgpuContext,
-        surface: wgpu::Surface<'static>,
+        surface: Option<wgpu::Surface<'static>>,
+        offscreen_format: Option<wgpu::TextureFormat>,
         config: WgpuSurfaceConfig,
         compositor_gpu: Option<CompositorGpuHint>,
         atlas: Arc<WgpuAtlas>,
     ) -> anyhow::Result<Self> {
-        let surface_caps = surface.get_capabilities(&context.adapter);
-        let preferred_formats = [
-            wgpu::TextureFormat::Bgra8Unorm,
-            wgpu::TextureFormat::Rgba8Unorm,
-        ];
-        let surface_format = preferred_formats
-            .iter()
-            .find(|f| surface_caps.formats.contains(f))
-            .copied()
-            .or_else(|| surface_caps.formats.iter().find(|f| !f.is_srgb()).copied())
-            .or_else(|| surface_caps.formats.first().copied())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Surface reports no supported texture formats for adapter {:?}",
-                    context.adapter.get_info().name
-                )
-            })?;
+        // A window's surface decides the target's format, alpha modes and what it can present; a
+        // renderer with no surface names its own format and has neither of the others. The two
+        // are exclusive, which is why exactly one of `surface` and `offscreen_format` is set.
+        let (surface_format, transparent_alpha_mode, opaque_alpha_mode, present_mode) =
+            match &surface {
+                Some(surface) => {
+                    let surface_caps = surface.get_capabilities(&context.adapter);
+                    let preferred_formats = [
+                        wgpu::TextureFormat::Bgra8Unorm,
+                        wgpu::TextureFormat::Rgba8Unorm,
+                    ];
+                    let surface_format = preferred_formats
+                        .iter()
+                        .find(|f| surface_caps.formats.contains(f))
+                        .copied()
+                        .or_else(|| surface_caps.formats.iter().find(|f| !f.is_srgb()).copied())
+                        .or_else(|| surface_caps.formats.first().copied())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Surface reports no supported texture formats for adapter {:?}",
+                                context.adapter.get_info().name
+                            )
+                        })?;
 
-        let pick_alpha_mode =
-            |preferences: &[wgpu::CompositeAlphaMode]| -> anyhow::Result<wgpu::CompositeAlphaMode> {
-                preferences
-                    .iter()
-                    .find(|p| surface_caps.alpha_modes.contains(p))
-                    .copied()
-                    .or_else(|| surface_caps.alpha_modes.first().copied())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Surface reports no supported alpha modes for adapter {:?}",
-                            context.adapter.get_info().name
-                        )
-                    })
+                    let pick_alpha_mode = |preferences: &[wgpu::CompositeAlphaMode]| -> anyhow::Result<
+                        wgpu::CompositeAlphaMode,
+                    > {
+                        preferences
+                            .iter()
+                            .find(|p| surface_caps.alpha_modes.contains(p))
+                            .copied()
+                            .or_else(|| surface_caps.alpha_modes.first().copied())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "Surface reports no supported alpha modes for adapter {:?}",
+                                    context.adapter.get_info().name
+                                )
+                            })
+                    };
+
+                    let transparent =
+                        pick_alpha_mode(&[
+                            wgpu::CompositeAlphaMode::PreMultiplied,
+                            wgpu::CompositeAlphaMode::Inherit,
+                        ])?;
+                    let opaque = pick_alpha_mode(&[
+                        wgpu::CompositeAlphaMode::Opaque,
+                        wgpu::CompositeAlphaMode::Inherit,
+                    ])?;
+                    let present_mode = config
+                        .preferred_present_mode
+                        .filter(|mode| surface_caps.present_modes.contains(mode))
+                        .unwrap_or(wgpu::PresentMode::Fifo);
+
+                    (surface_format, transparent, opaque, present_mode)
+                }
+                None => {
+                    let format = offscreen_format.ok_or_else(|| {
+                        anyhow::anyhow!("a renderer with no surface needs an offscreen format")
+                    })?;
+                    (
+                        format,
+                        wgpu::CompositeAlphaMode::Opaque,
+                        wgpu::CompositeAlphaMode::Opaque,
+                        wgpu::PresentMode::Fifo,
+                    )
+                }
             };
-
-        let transparent_alpha_mode = pick_alpha_mode(&[
-            wgpu::CompositeAlphaMode::PreMultiplied,
-            wgpu::CompositeAlphaMode::Inherit,
-        ])?;
-
-        let opaque_alpha_mode = pick_alpha_mode(&[
-            wgpu::CompositeAlphaMode::Opaque,
-            wgpu::CompositeAlphaMode::Inherit,
-        ])?;
 
         let alpha_mode = if config.transparent {
             transparent_alpha_mode
@@ -425,17 +539,17 @@ impl WgpuRenderer {
             format: surface_format,
             width: clamped_width.max(1),
             height: clamped_height.max(1),
-            present_mode: config
-                .preferred_present_mode
-                .filter(|mode| surface_caps.present_modes.contains(mode))
-                .unwrap_or(wgpu::PresentMode::Fifo),
+            present_mode,
             desired_maximum_frame_latency: 2,
             alpha_mode,
             view_formats: vec![],
         };
         // Configure the surface immediately. The adapter selection process already validated
-        // that this adapter can successfully configure this surface.
-        surface.configure(&context.device, &surface_config);
+        // that this adapter can successfully configure this surface. A renderer with no surface
+        // has nothing to configure, and creates its targets when it renders.
+        if let Some(surface) = &surface {
+            surface.configure(&context.device, &surface_config);
+        }
 
         let queue = Arc::clone(&context.queue);
         let rendering_params = RenderingParameters::new(&context.adapter, surface_format);
@@ -455,6 +569,18 @@ impl WgpuRenderer {
 
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("atlas_sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        // §4: a clip against a rounded corner must not bleed the opposite edge in,
+        // so the address mode is pinned rather than inherited from the defaults.
+        let imported_texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("imported_texture_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
@@ -577,6 +703,7 @@ impl WgpuRenderer {
             pipelines,
             bind_group_layouts,
             atlas_sampler,
+            imported_texture_sampler,
             atlas_texture_bind_groups: FxHashMap::default(),
             globals_buffer,
             globals_bind_group,
@@ -588,6 +715,7 @@ impl WgpuRenderer {
             path_intermediate_view: None,
             path_msaa_texture: None,
             path_msaa_view: None,
+            offscreen_target: None,
         };
 
         Ok(Self {
@@ -742,11 +870,34 @@ impl WgpuRenderer {
             ],
         });
 
+        let imported_texture = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("imported_texture_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
         WgpuBindGroupLayouts {
             globals,
             instances,
             texture,
             surfaces,
+            imported_texture,
         }
     }
 
@@ -1051,6 +1202,19 @@ impl WgpuRenderer {
             &shader_module,
         );
 
+        let imported_textures = create_pipeline(
+            "imported_textures",
+            "vs_quad",
+            "fs_imported_texture",
+            &layouts.globals,
+            &layouts.instances,
+            Some(&layouts.imported_texture),
+            wgpu::PrimitiveTopology::TriangleStrip,
+            &[Some(color_target.clone())],
+            1,
+            &shader_module,
+        );
+
         let surfaces = create_pipeline(
             "surfaces",
             "vs_surface",
@@ -1074,6 +1238,7 @@ impl WgpuRenderer {
             subpixel_sprites,
             poly_sprites,
             surfaces,
+            imported_textures,
         }
     }
 
@@ -1170,7 +1335,7 @@ impl WgpuRenderer {
             }
 
             resources
-                .surface
+                .surface()
                 .configure(&resources.device, &surface_config);
 
             // Invalidate intermediate textures - they will be lazily recreated
@@ -1229,7 +1394,7 @@ impl WgpuRenderer {
                 return;
             };
             resources
-                .surface
+                .surface()
                 .configure(&resources.device, &surface_config);
             resources.pipelines = Self::create_pipelines(
                 &resources.device,
@@ -1318,7 +1483,13 @@ impl WgpuRenderer {
 
         self.atlas.before_frame();
 
-        let frame = match self.resources().surface.get_current_texture() {
+        // A renderer with no surface draws offscreen: that target is its whole output, and there
+        // is nothing to acquire or present, so it takes none of the window path below.
+        if self.resources().surface.is_none() {
+            return self.draw_offscreen(scene);
+        }
+
+        let frame = match self.resources().surface().get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 // Textures must be destroyed before the surface can be reconfigured.
@@ -1326,7 +1497,7 @@ impl WgpuRenderer {
                 let surface_config = self.surface_config.clone();
                 let resources = self.resources_mut();
                 resources
-                    .surface
+                    .surface()
                     .configure(&resources.device, &surface_config);
                 return false;
             }
@@ -1334,7 +1505,7 @@ impl WgpuRenderer {
                 let surface_config = self.surface_config.clone();
                 let resources = self.resources_mut();
                 resources
-                    .surface
+                    .surface()
                     .configure(&resources.device, &surface_config);
                 return false;
             }
@@ -1354,6 +1525,24 @@ impl WgpuRenderer {
         let frame_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+
+        if let Err(error) = self.render_frame_into(scene, &frame_view) {
+            log::error!("{error:#}");
+            self.resources().queue.submit(std::iter::empty());
+            return false;
+        }
+
+        frame.present();
+        true
+    }
+
+    /// The part of a frame that does not depend on where it is drawn: the globals the shaders
+    /// read, the intermediate textures the path pass needs, and the scene encoding.
+    ///
+    /// On the window path this runs only once a surface has handed over a healthy texture, which
+    /// is what keeps a surface in an invalid state from provoking a panic here.
+    fn render_frame_into(&mut self, scene: &Scene, view: &wgpu::TextureView) -> Result<()> {
+        self.ensure_intermediate_textures();
 
         let gamma_params = GammaParams {
             gamma_ratios: self.rendering_params.gamma_ratios,
@@ -1402,14 +1591,145 @@ impl WgpuRenderer {
             );
         }
 
-        if let Err(error) = self.record_frame(scene, &frame_view) {
+        self.record_frame(scene, view)
+    }
+
+    /// Draws into the offscreen target, which is the only output a renderer with no surface has.
+    fn draw_offscreen(&mut self, scene: &Scene) -> bool {
+        let view = self.ensure_offscreen_target();
+        if let Err(error) = self.render_frame_into(scene, &view) {
             log::error!("{error:#}");
             self.resources().queue.submit(std::iter::empty());
             return false;
         }
-
-        frame.present();
         true
+    }
+
+    /// The offscreen target, created on first use and recreated when the requested size changes.
+    fn ensure_offscreen_target(&mut self) -> wgpu::TextureView {
+        let width = self.surface_config.width;
+        let height = self.surface_config.height;
+        let format = self.surface_config.format;
+
+        if let Some(target) = &self.resources().offscreen_target {
+            if target.width == width && target.height == height {
+                return target.view.clone();
+            }
+        }
+
+        let resources = self.resources_mut();
+        let texture = resources.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen_target"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            // `COPY_SRC` is what a readback needs; the target is otherwise what a window's
+            // surface texture is, and nothing else.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        resources.offscreen_target = Some(OffscreenTarget {
+            width,
+            height,
+            texture,
+            view: view.clone(),
+        });
+        view
+    }
+
+    /// Reads the offscreen target back as pixels.
+    ///
+    /// The copy needs its rows padded to the alignment a texture-to-buffer copy requires, so they
+    /// are stripped one row at a time on the way out; and a target may be `Bgra8Unorm`, which is
+    /// not the engine's layout, so channels swap where that happens. Both are the boundary
+    /// normalising to [`PixelBuffer`]'s fixed layout rather than a second layout leaking upward.
+    fn read_offscreen_pixels(&mut self) -> anyhow::Result<PixelBuffer> {
+        let Some(target) = &self.resources().offscreen_target else {
+            anyhow::bail!("nothing has been rendered offscreen yet");
+        };
+        let texture = target.texture.clone();
+        let width = target.width;
+        let height = target.height;
+
+        let format = self.surface_config.format;
+        let swizzle_bgra = matches!(
+            format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
+        let bytes_per_row = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+
+        let (device, queue, buffer) = {
+            let resources = self.resources();
+            let buffer = resources.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("offscreen_readback"),
+                size: u64::from(bytes_per_row) * u64::from(height),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            (
+                Arc::clone(&resources.device),
+                Arc::clone(&resources.queue),
+                buffer,
+            )
+        };
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("offscreen_readback"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|error| anyhow::anyhow!("waiting for the readback failed: {error:?}"))?;
+
+        let mapped = slice.get_mapped_range();
+        let mut data = Vec::with_capacity(width as usize * height as usize * 4);
+        for row in mapped.chunks_exact(bytes_per_row as usize) {
+            data.extend_from_slice(&row[..width as usize * 4]);
+        }
+        drop(mapped);
+        buffer.unmap();
+
+        if swizzle_bgra {
+            for pixel in data.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+        }
+
+        PixelBuffer::new(width, height, data)
     }
 
     fn record_frame(&mut self, scene: &Scene, frame_view: &wgpu::TextureView) -> Result<()> {
@@ -1541,6 +1861,14 @@ impl WgpuRenderer {
                             &mut pass,
                         )?;
                     }
+                    PrimitiveBatch::Custom(range) => {
+                        self.draw_imported_textures(
+                            &instance_bindings.imported_textures,
+                            &scene.custom[range.clone()],
+                            instance_bindings.imported_textures.first_instance + range.start as u32,
+                            &mut pass,
+                        )?;
+                    }
                     // Surfaces are macOS-only for video playback and are not
                     // implemented by the WGPU renderer.
                     PrimitiveBatch::Surfaces(_surfaces) => {}
@@ -1590,6 +1918,15 @@ impl WgpuRenderer {
                 instance_offset,
                 &scene.polychrome_sprites,
             )?,
+            imported_textures: self.write_instance_binding(
+                "imported_textures_bind_group",
+                instance_offset,
+                &scene
+                    .custom
+                    .iter()
+                    .map(CustomRenderPrimitive::to_quad_record)
+                    .collect::<Vec<_>>(),
+            )?,
         })
     }
 
@@ -1612,6 +1949,28 @@ impl WgpuRenderer {
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(&resources.atlas_sampler),
+                    },
+                ],
+            })
+    }
+
+    fn create_imported_texture_bind_group(&self, view: &wgpu::TextureView) -> wgpu::BindGroup {
+        let resources = self.resources();
+        resources
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("imported_texture_bind_group"),
+                layout: &resources.bind_group_layouts.imported_texture,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(
+                            &resources.imported_texture_sampler,
+                        ),
                     },
                 ],
             })
@@ -1708,6 +2067,39 @@ impl WgpuRenderer {
             sprite_instances.first_instance + range.start
                 ..sprite_instances.first_instance + range.end,
         );
+        Ok(())
+    }
+
+    fn draw_imported_textures(
+        &self,
+        instances: &InstanceBinding,
+        primitives: &[CustomRenderPrimitive],
+        first_instance: u32,
+        pass: &mut wgpu::RenderPass<'_>,
+    ) -> Result<()> {
+        if primitives.is_empty() {
+            return Ok(());
+        }
+
+        let resources = self.resources();
+        pass.set_pipeline(&resources.pipelines.imported_textures);
+        pass.set_bind_group(0, &resources.globals_bind_group, &[]);
+        pass.set_bind_group(1, &instances.bind_group, &[]);
+
+        // The view changes per primitive and the engine never names it, so there is
+        // nothing to key a cache on; a bind group each is the first cut.
+        for (offset, primitive) in primitives.iter().enumerate() {
+            let CustomRenderPrimitive::Texture { handle, .. } = primitive;
+            let Some(texture) = handle.payload.downcast_ref::<WgpuImportedTexture>() else {
+                anyhow::bail!("imported texture handle does not hold a wgpu texture view");
+            };
+
+            let bind_group = self.create_imported_texture_bind_group(&texture.view);
+            pass.set_bind_group(2, &bind_group, &[]);
+
+            let instance = first_instance + offset as u32;
+            pass.draw(0..4, instance..instance + 1);
+        }
         Ok(())
     }
 
@@ -2092,7 +2484,7 @@ impl WgpuRenderer {
                 .as_mut()
                 .expect("GPU resources not available");
             surface.configure(&res.device, &self.surface_config);
-            res.surface = surface;
+            res.surface = Some(surface);
 
             // Invalidate intermediate textures — they'll be recreated lazily.
             res.invalidate_intermediate_textures();
@@ -2187,7 +2579,8 @@ impl WgpuRenderer {
         *self = Self::new_internal(
             Some(gpu_context.clone()),
             context,
-            surface,
+            Some(surface),
+            None,
             config,
             self.compositor_gpu,
             self.atlas.clone(),
@@ -2266,6 +2659,7 @@ impl RenderingParameters {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ImportedTextureExt as _;
     use gpui_engine::{
         BorderStyle, MonochromeSprite, PolychromeSprite, Quad, SubpixelSprite, Underline,
     };
@@ -2428,6 +2822,250 @@ mod tests {
             ]
         );
     }
+
+    /// An offscreen renderer draws a scene with no window at all: it builds its own device, the
+    /// pipelines, the bind-group layouts and the target, and encodes a frame into it. That a
+    /// device is needed is not a property of this code, so a machine without one skips rather
+    /// than fails.
+    #[test]
+    fn an_offscreen_renderer_draws_a_scene_with_no_window() -> anyhow::Result<()> {
+        let viewport = Size {
+            width: DevicePixels(64),
+            height: DevicePixels(64),
+        };
+        let Ok(mut renderer) = WgpuRenderer::new_offscreen(viewport, wgpu::TextureFormat::Bgra8Unorm)
+        else {
+            log::warn!("no GPU adapter available to render offscreen; skipping");
+            return Ok(());
+        };
+
+        let quad_bounds = Bounds {
+            origin: Point {
+                x: 0.0.into(),
+                y: 0.0.into(),
+            },
+            size: Size {
+                width: 32.0.into(),
+                height: 32.0.into(),
+            },
+        };
+        let mut scene = Scene::default();
+        scene.quads.push(Quad {
+            order: 0,
+            border_style: BorderStyle::Solid,
+            bounds: quad_bounds,
+            content_mask: ContentMask {
+                bounds: Bounds {
+                    origin: Point {
+                        x: 0.0.into(),
+                        y: 0.0.into(),
+                    },
+                    size: Size {
+                        width: 64.0.into(),
+                        height: 64.0.into(),
+                    },
+                },
+            },
+            background: Background::default(),
+            border_color: Hsla::default(),
+            corner_radii: Corners::default(),
+            border_widths: Edges::default(),
+        });
+
+        renderer.render_scene(&scene, viewport)?;
+        Ok(())
+    }
+
+    /// Builds a scene whose only primitive is an imported texture covering the whole target.
+    ///
+    /// `write` decides whether the producer's pass is submitted first, which is the whole of the
+    /// ordering the queue gives: a texture the producer never fills is zero-initialised, so the
+    /// composite has nothing to show rather than stale contents.
+    #[cfg(test)]
+    fn imported_texture_scene(
+        renderer: &WgpuRenderer,
+        rgba: [u8; 4],
+        viewport: Size<DevicePixels>,
+        write: bool,
+    ) -> Scene {
+        let texture = renderer.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("imported_fixture"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // sRGB is the invariant: the fragment decodes the sample, so a view that is not
+            // declared sRGB would be encoded twice.
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        if write {
+            renderer.queue().write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4),
+                    rows_per_image: Some(1),
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+
+        let handle = texture
+            .create_view(&wgpu::TextureViewDescriptor::default())
+            .to_imported_handle()
+            .expect("a 1x1 sRGB texture with TEXTURE_BINDING is a valid imported texture");
+
+        let bounds = Bounds {
+            origin: Point {
+                x: 0.0.into(),
+                y: 0.0.into(),
+            },
+            size: Size {
+                width: (viewport.width.0 as f32).into(),
+                height: (viewport.height.0 as f32).into(),
+            },
+        };
+        let mut scene = Scene::default();
+        scene.custom.push(CustomRenderPrimitive::Texture {
+            order: 0,
+            handle,
+            bounds,
+            content_mask: ContentMask { bounds },
+            radii: Corners::default(),
+            opacity: 1.0,
+            flip_v: false,
+        });
+        scene
+    }
+
+    /// The colour-space row, end to end. A texture whose bytes are sRGB-encoded has to come back
+    /// through the composite with the same bytes: the fragment decodes the sample and re-encodes
+    /// it into a non-sRGB target, so the transfer function cancels exactly. Either half alone does
+    /// not, and the result is a washed-out or darkened composite rather than an error, which is
+    /// what makes this worth asserting on pixels.
+    #[test]
+    fn an_imported_texture_round_trips_its_srgb_bytes() -> anyhow::Result<()> {
+        let viewport = Size {
+            width: DevicePixels(8),
+            height: DevicePixels(8),
+        };
+        let Ok(mut renderer) =
+            WgpuRenderer::new_offscreen(viewport, wgpu::TextureFormat::Bgra8Unorm)
+        else {
+            log::warn!("no GPU adapter available to render offscreen; skipping");
+            return Ok(());
+        };
+
+        // Distinct per channel, and far from either end, so a transfer function applied once in
+        // the wrong direction cannot round back to the same byte.
+        let fixture = [200u8, 100, 50, 255];
+        let scene = imported_texture_scene(&renderer, fixture, viewport, true);
+
+        let pixels = renderer.render_scene_to_image(&scene, viewport)?;
+        assert_eq!((pixels.width(), pixels.height()), (8, 8));
+        for (index, pixel) in pixels.data().chunks_exact(4).enumerate() {
+            assert_eq!(pixel, fixture, "pixel {index} did not round trip");
+        }
+        Ok(())
+    }
+
+    /// The ordering row. The composite samples the producer's texture because the producer's pass
+    /// was submitted before the frame's; a frame whose producer never submitted composites nothing,
+    /// because a texture that was never filled is zero-initialised. The texture appearing in the
+    /// readback, and only in the first of the two, is the assertion.
+    #[test]
+    fn an_imported_texture_composites_only_when_its_producer_submitted_first() -> anyhow::Result<()> {
+        let viewport = Size {
+            width: DevicePixels(8),
+            height: DevicePixels(8),
+        };
+        let Ok(mut renderer) =
+            WgpuRenderer::new_offscreen(viewport, wgpu::TextureFormat::Bgra8Unorm)
+        else {
+            log::warn!("no GPU adapter available to render offscreen; skipping");
+            return Ok(());
+        };
+
+        let fixture = [200u8, 100, 50, 255];
+        let submitted = imported_texture_scene(&renderer, fixture, viewport, true);
+        let submitted = renderer.render_scene_to_image(&submitted, viewport)?;
+        let not_submitted = imported_texture_scene(&renderer, fixture, viewport, false);
+        let not_submitted = renderer.render_scene_to_image(&not_submitted, viewport)?;
+
+        assert_eq!(submitted.data()[..4], fixture, "the producer's texture composited");
+        assert_eq!(
+            not_submitted.data()[..4],
+            [0, 0, 0, 0],
+            "a texture its producer never filled left the target clear"
+        );
+        Ok(())
+    }
+
+    /// The device-identity row. A texture from another device cannot be bound, which is the
+    /// same-device rule the whole path rests on. What this asserts is narrower than that rule
+    /// sounds: the failure is a panic inside wgpu-core's own storage lookup rather than a
+    /// validation error this side can name, so the useful thing to pin is that it is *loud* -- a
+    /// renderer cannot silently composite the wrong device's memory.
+    #[test]
+    fn an_imported_texture_from_another_device_is_rejected() -> anyhow::Result<()> {
+        let viewport = Size {
+            width: DevicePixels(8),
+            height: DevicePixels(8),
+        };
+        let Ok(renderer) = WgpuRenderer::new_offscreen(viewport, wgpu::TextureFormat::Bgra8Unorm)
+        else {
+            log::warn!("no GPU adapter available to render offscreen; skipping");
+            return Ok(());
+        };
+        let Ok(other) = WgpuRenderer::new_offscreen(viewport, wgpu::TextureFormat::Bgra8Unorm)
+        else {
+            log::warn!("a second GPU adapter is unavailable; skipping");
+            return Ok(());
+        };
+
+        let texture = other.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("another_devices_texture"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            renderer.create_imported_texture_bind_group(&view)
+        }));
+
+        assert!(
+            bound.is_err(),
+            "binding a view from another device must fail"
+        );
+        Ok(())
+    }
 }
 
 impl SceneRenderer for WgpuRenderer {
@@ -2437,5 +3075,23 @@ impl SceneRenderer for WgpuRenderer {
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.sprite_atlas().clone()
+    }
+
+    /// The window path derives its target from the window, so this only has an effect on a
+    /// renderer that draws offscreen, where the size *is* the target.
+    fn set_viewport_size(&mut self, size: Size<DevicePixels>) {
+        if self.resources().surface.is_none() {
+            WgpuRenderer::update_drawable_size(self, size);
+        }
+    }
+
+    fn render_scene(&mut self, scene: &Scene, size: Size<DevicePixels>) -> anyhow::Result<()> {
+        WgpuRenderer::update_drawable_size(self, size);
+        let view = self.ensure_offscreen_target();
+        self.render_frame_into(scene, &view)
+    }
+
+    fn read_pixels(&mut self) -> anyhow::Result<PixelBuffer> {
+        WgpuRenderer::read_offscreen_pixels(self)
     }
 }

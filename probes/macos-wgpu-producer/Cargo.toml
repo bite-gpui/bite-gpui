@@ -1,0 +1,25 @@
+[package]
+name = "macos-wgpu-producer-probe"
+version = "0.0.0"
+edition = "2021"
+
+# Its own workspace: a probe is not a member of the tree's, so it cannot change the lock file a
+# release is cut from.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+parking_lot = "0.12"
+pollster = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+foreign-types = "0.5"
+metal = "0.33"
+objc2 = "0.6.3"
+wgpu = "29.0.4"
+
+# The renderer itself, at the version a Path A application would depend on. `test-support` is what
+# exposes `MetalRenderer::new_headless`, the way the crate's own rows reach it.
+gpui_apple = { path = "../../crates/gpui_apple", features = ["test-support"] }
+gpui_engine = { path = "../../crates/gpui_engine" }
+gpui_platform = { path = "../../crates/gpui_platform", features = ["test-support"] }

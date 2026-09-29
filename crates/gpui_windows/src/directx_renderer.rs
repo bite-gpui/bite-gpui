@@ -1,4 +1,6 @@
 use std::{
+    any::Any,
+    rc::Rc,
     slice,
     sync::{Arc, OnceLock},
 };
@@ -22,8 +24,8 @@ use windows::{
 use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
 use crate::*;
 use gpui_engine::{
-    AtlasTextureId, MonochromeSprite, PaintSurface, Path, PlatformAtlas, PolychromeSprite,
-    PrimitiveBatch, Quad, Scene, SceneRenderer, SubpixelSprite, Underline,
+    AtlasTextureId, CustomRenderPrimitive, MonochromeSprite, PaintSurface, Path, PlatformAtlas,
+    PolychromeSprite, PrimitiveBatch, Quad, Scene, SceneRenderer, SubpixelSprite, Underline,
     get_gamma_correction_ratios,
 };
 use gpui_platform::*;
@@ -101,12 +103,18 @@ struct DirectXRenderPipelines {
     mono_sprites: PipelineState<MonochromeSprite>,
     subpixel_sprites: PipelineState<SubpixelSprite>,
     poly_sprites: PipelineState<PolychromeSprite>,
+    /// The quads' instance record and vertex entry point with the imported-texture fragment, so a
+    /// producer's texture lands with a quad's geometry, clip and corner coverage.
+    imported_texture_pipeline: PipelineState<Quad>,
 }
 
 struct DirectXGlobalElements {
     global_params_buffer: Option<ID3D11Buffer>,
     batch_params_buffer: Option<ID3D11Buffer>,
     sampler: Option<ID3D11SamplerState>,
+    /// The imported-texture path's sampler. Clamped where the atlas's wraps, so a clip against a
+    /// rounded corner cannot bleed the opposite edge of a producer's texture into the blend.
+    imported_texture_sampler: Option<ID3D11SamplerState>,
 }
 
 struct Annotation<'a>(&'a ID3DUserDefinedAnnotation);
@@ -216,6 +224,14 @@ impl DirectXRenderer {
 
     pub(crate) fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
+    }
+
+    /// The device the renderer draws on, which is the device a Path A producer has to make its
+    /// texture on: the same-device rule is what makes the token, rather than a handle, enough.
+    ///
+    /// `None` while a device-lost recovery is pending, as the renderer's other device uses are.
+    pub(crate) fn device(&self) -> Option<&ID3D11Device> {
+        self.devices.as_ref().map(|devices| &devices.device)
     }
 
     fn pre_draw(&self, clear_color: &[f32; 4]) -> Result<()> {
@@ -360,9 +376,8 @@ impl DirectXRenderer {
 
     /// Clear the render target for `background_appearance` and encode every
     /// primitive batch of `scene` into it, without presenting. Shared by
-    /// [`draw`](Self::draw) (which then presents) and
-    /// [`render_to_image`](Self::render_to_image) (which reads the target back
-    /// instead), so the two cannot drift.
+    /// [`draw`](Self::draw) (which then presents) and `render_scene` (which renders into the same
+    /// target and does not), so the two cannot drift.
     fn render(
         &mut self,
         scene: &Scene,
@@ -402,6 +417,9 @@ impl DirectXRenderer {
                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
                 }
                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
+                PrimitiveBatch::Custom(range) => {
+                    self.draw_custom(range.start, &scene.custom[range])
+                }
             }
             .with_context(|| {
                 format!(
@@ -421,26 +439,13 @@ impl DirectXRenderer {
         Ok(())
     }
 
-    /// Render `scene` to an offscreen CPU image **without presenting** so
-    /// the window need never be shown or visible (the macOS headless path
-    /// goes through MetalRenderer; this is the Windows analogue). Draws into
-    /// the existing render target, copies it into a `D3D11_USAGE_STAGING`
-    /// texture, maps it, and converts BGRA to RGBA.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn render_to_image(
-        &mut self,
-        scene: &Scene,
-        background_appearance: WindowBackgroundAppearance,
-    ) -> Result<image::RgbaImage> {
-        // A pending device-lost recovery (`skip_draws`) leaves the atlas holding
-        // tile references from the previous device; drawing before the forced
-        // re-render rebuilds them panics in `DirectXAtlasTextures::texture`.
-        anyhow::ensure!(
-            !self.skip_draws,
-            "render_to_image unavailable while recovering from a lost device"
-        );
-        self.render(scene, background_appearance)?;
-
+    /// Render `scene` into the target **without presenting**, then read it back as a CPU image.
+    ///
+    /// The offscreen contract, in the shape the other two renderers have it: render, and read the
+    /// target back on demand. Direct3D's target is its window's swap chain — the renderer is built
+    /// around one — so "offscreen" here is "rendered and not presented", which is what a headless
+    /// capture needs and what the window need never be shown for.
+    fn read_render_target(&mut self) -> Result<gpui_engine::PixelBuffer> {
         let devices = self.devices.as_ref().context("devices missing")?;
         let device = &devices.device;
         let context = &devices.device_context;
@@ -491,12 +496,11 @@ impl DirectXRenderer {
             }
             context.Unmap(&staging, 0);
         }
-        // The render target is BGRA; image::RgbaImage expects RGBA.
+        // The render target is BGRA; `PixelBuffer` is RGBA8.
         for px in pixels.chunks_exact_mut(4) {
             px.swap(0, 2);
         }
-        image::RgbaImage::from_raw(width, height, pixels)
-            .context("Failed to build RgbaImage from staging readback")
+        gpui_engine::PixelBuffer::new(width, height, pixels)
     }
 
     pub(crate) fn resize(&mut self, new_size: Size<DevicePixels>) -> Result<()> {
@@ -591,6 +595,21 @@ impl DirectXRenderer {
                 &devices.device,
                 &devices.device_context,
                 &scene.polychrome_sprites,
+            )?;
+        }
+
+        if !scene.custom.is_empty() {
+            // The engine's encode, not a second one: the two renderers' fragments read the same
+            // record, so it is built once, beside the type (`CustomRenderPrimitive::to_quad_record`).
+            let instances: Vec<Quad> = scene
+                .custom
+                .iter()
+                .map(CustomRenderPrimitive::to_quad_record)
+                .collect();
+            self.pipelines.imported_texture_pipeline.update_buffer(
+                &devices.device,
+                &devices.device_context,
+                &instances,
             )?;
         }
 
@@ -840,6 +859,38 @@ impl DirectXRenderer {
         anyhow::bail!("the Direct3D renderer does not draw surface primitives")
     }
 
+    fn draw_custom(&mut self, start: usize, customs: &[CustomRenderPrimitive]) -> Result<()> {
+        if customs.is_empty() {
+            return Ok(());
+        }
+        let devices = self.devices.as_ref().context("devices missing")?;
+
+        // One draw per primitive: the texture is the primitive's own and the engine never names
+        // it, so there is no batch to group beyond the record slice the encoding already shares.
+        for (offset, custom) in customs.iter().enumerate() {
+            let CustomRenderPrimitive::Texture { handle, .. } = custom;
+            let Some(imported) = handle.payload.downcast_ref::<DirectXImportedTexture>() else {
+                anyhow::bail!("an imported texture handle does not hold a Direct3D texture");
+            };
+
+            let view = create_imported_texture_view(&devices.device, &imported.texture)?;
+            self.pipelines
+                .imported_texture_pipeline
+                .draw_range_with_texture(
+                    &devices.device_context,
+                    slice::from_ref(&Some(view)),
+                    self.globals
+                        .batch_params_buffer
+                        .as_ref()
+                        .context("batch params buffer missing")?,
+                    slice::from_ref(&self.globals.imported_texture_sampler),
+                    (start + offset) as u32,
+                    1,
+                )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
         let devices = self.devices.as_ref().context("devices missing")?;
         let desc = unsafe { devices.adapter.GetDesc1() }?;
@@ -1017,6 +1068,13 @@ impl DirectXRenderPipelines {
             16,
             create_blend_state(device)?,
         )?;
+        let imported_texture_pipeline = PipelineState::new(
+            device,
+            "imported_texture_pipeline",
+            ShaderModule::ImportedTexture,
+            64,
+            create_blend_state(device)?,
+        )?;
 
         Ok(Self {
             shadow_pipeline,
@@ -1027,6 +1085,7 @@ impl DirectXRenderPipelines {
             mono_sprites,
             subpixel_sprites,
             poly_sprites,
+            imported_texture_pipeline,
         })
     }
 }
@@ -1077,10 +1136,29 @@ impl DirectXGlobalElements {
             output
         };
 
+        let imported_texture_sampler = unsafe {
+            let desc = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                MipLODBias: 0.0,
+                MaxAnisotropy: 1,
+                ComparisonFunc: D3D11_COMPARISON_ALWAYS,
+                BorderColor: [0.0; 4],
+                MinLOD: 0.0,
+                MaxLOD: D3D11_FLOAT32_MAX,
+            };
+            let mut output = None;
+            device.CreateSamplerState(&desc, Some(&mut output))?;
+            output
+        };
+
         Ok(Self {
             global_params_buffer,
             batch_params_buffer,
             sampler,
+            imported_texture_sampler,
         })
     }
 }
@@ -1608,6 +1686,36 @@ fn create_fragment_shader(device: &ID3D11Device, bytes: &[u8]) -> Result<ID3D11P
     }
 }
 
+/// The producer's texture, viewed for the imported-texture fragment.
+///
+/// The view is the resource's *non-sRGB* counterpart rather than its sRGB one, which is what
+/// makes the sample the bytes the producer wrote: the target is the non-sRGB `_UNORM` the atlas
+/// is in, and this renderer's shaders work on sRGB-encoded values there directly, so a decode
+/// here would leave the fragment a transfer function to cancel — and the only one this shader
+/// file has is the ≈2.2 approximation, which does not round-trip exactly.
+///
+/// A texture from another device fails here rather than composing silently: `D3D11` resolves a
+/// resource through the device that made it.
+#[inline]
+fn create_imported_texture_view(
+    device: &ID3D11Device,
+    texture: &ID3D11Texture2D,
+) -> Result<ID3D11ShaderResourceView> {
+    let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        ViewDimension: D3D_SRV_DIMENSION_TEXTURE2D,
+        Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+            Texture2D: D3D11_TEX2D_SRV {
+                MostDetailedMip: 0,
+                MipLevels: 1,
+            },
+        },
+    };
+    let mut view = None;
+    unsafe { device.CreateShaderResourceView(texture, Some(&desc), Some(&mut view))? };
+    view.context("CreateShaderResourceView returned no view")
+}
+
 #[inline]
 fn create_constant_buffer<T>(device: &ID3D11Device) -> Result<Option<ID3D11Buffer>> {
     const { assert!(std::mem::size_of::<T>() != 0 && std::mem::size_of::<T>().is_multiple_of(16)) };
@@ -1736,6 +1844,7 @@ pub(crate) mod shader_resources {
         MonochromeSprite,
         SubpixelSprite,
         PolychromeSprite,
+        ImportedTexture,
         EmojiRasterization,
     }
 
@@ -1809,6 +1918,10 @@ pub(crate) mod shader_resources {
                 ShaderModule::PolychromeSprite => match target {
                     ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
                     ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
+                },
+                ShaderModule::ImportedTexture => match target {
+                    ShaderTarget::Vertex => IMPORTED_TEXTURE_VERTEX_BYTES,
+                    ShaderTarget::Fragment => IMPORTED_TEXTURE_FRAGMENT_BYTES,
                 },
                 ShaderModule::EmojiRasterization => match target {
                     ShaderTarget::Vertex => EMOJI_RASTERIZATION_VERTEX_BYTES,
@@ -1900,6 +2013,7 @@ pub(crate) mod shader_resources {
                 ShaderModule::MonochromeSprite => "monochrome_sprite",
                 ShaderModule::SubpixelSprite => "subpixel_sprite",
                 ShaderModule::PolychromeSprite => "polychrome_sprite",
+                ShaderModule::ImportedTexture => "imported_texture",
                 ShaderModule::EmojiRasterization => "emoji_rasterization",
             }
         }
@@ -2100,14 +2214,25 @@ impl SceneRenderer for DirectXRenderer {
         DirectXRenderer::sprite_atlas(self)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    fn render_scene_to_image(
-        &mut self,
-        scene: &Scene,
-        _size: Size<DevicePixels>,
-    ) -> anyhow::Result<image::RgbaImage> {
+    /// The offscreen contract, in the shape the other two renderers have it: size the target,
+    /// draw into it without presenting, and read it back only when a consumer on the CPU asks.
+    /// Direct3D renders into its window's swap chain, so the size is the swap chain's and the
+    /// window is what the renderer is built around — which is why there is no `new_headless` here.
+    fn render_scene(&mut self, scene: &Scene, size: Size<DevicePixels>) -> anyhow::Result<()> {
+        // A pending device-lost recovery (`skip_draws`) leaves the atlas holding tile references
+        // from the previous device; drawing before the forced re-render rebuilds them panics in
+        // `DirectXAtlasTextures::texture`.
+        anyhow::ensure!(
+            !self.skip_draws,
+            "offscreen rendering is unavailable while recovering from a lost device"
+        );
+        self.resize(size)?;
         let background_appearance = self.background_appearance;
-        self.render_to_image(scene, background_appearance)
+        self.render(scene, background_appearance)
+    }
+
+    fn read_pixels(&mut self) -> anyhow::Result<gpui_engine::PixelBuffer> {
+        self.read_render_target()
     }
 }
 
@@ -2140,6 +2265,17 @@ impl PlatformRenderer for DirectXRenderer {
         DirectXRenderer::gpu_specs(self).log_err()
     }
 
+    /// The device a producer has to make its texture on: this renderer's own, which the platform
+    /// built and it was constructed from, so a texture created on it is visible to the draws below
+    /// with no handle to open and nothing to synchronise.
+    ///
+    /// This is the route the Direct3D 11 producer path needs — a Media Foundation or DXVA decoder
+    /// decodes into a texture on this device — and a texture made from it needs
+    /// [`DirectXTextureExt`](crate::DirectXTextureExt) to become a token.
+    fn device_any(&self) -> Option<Rc<dyn Any>> {
+        DirectXRenderer::device(self).map(|device| Rc::new(device.clone()) as Rc<dyn Any>)
+    }
+
     /// Windows device loss is not a lost surface: the platform replaces the DirectX devices
     /// behind the window and hands them to the renderer in the target's backend extras.
     fn recover(&mut self, target: RendererTarget<'_>) -> anyhow::Result<()> {
@@ -2148,5 +2284,264 @@ impl PlatformRenderer for DirectXRenderer {
             .and_then(|backend| backend.downcast_ref::<DirectXDevices>())
             .context("Direct3D recovery needs the replacement DirectXDevices in the target")?;
         DirectXRenderer::handle_device_lost(self, devices)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_engine::ImportedTextureHandle;
+    use gpui_platform::{ContentMask, Corners, DevicePixels, Point, Size};
+    use std::ffi::c_void;
+    use windows::{
+        Win32::{
+            Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+            Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM,
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{
+                CreateWindowExW, DefWindowProcW, RegisterClassW, WINDOW_EX_STYLE, WNDCLASSW,
+                WS_POPUP,
+            },
+        },
+        core::{PCWSTR, w},
+    };
+
+    /// `DefWindowProcW` is a Rust-ABI wrapper in the `windows` crate, so a class that defaults
+    /// every message still needs the `extern "system"` shape it asks for.
+    unsafe extern "system" fn default_window_procedure(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    /// A window the renderer can build a swap chain for, never shown: the readback path is what
+    /// makes these tests independent of a visible window.
+    fn hidden_window() -> Result<HWND> {
+        const CLASS_NAME: PCWSTR = w!("Zed::DirectXRendererTest");
+        unsafe {
+            let module = GetModuleHandleW(None)?;
+            let window_class = WNDCLASSW {
+                lpfnWndProc: Some(default_window_procedure),
+                lpszClassName: CLASS_NAME,
+                hInstance: module.into(),
+                ..Default::default()
+            };
+            // Once per process; a repeat registration fails harmlessly.
+            RegisterClassW(&window_class);
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                CLASS_NAME,
+                CLASS_NAME,
+                WS_POPUP,
+                0,
+                0,
+                8,
+                8,
+                None,
+                None,
+                Some(module.into()),
+                None,
+            )
+            .context("creating the hidden test window")
+        }
+    }
+
+    /// A renderer for `viewport` with no visible window, or `None` where this machine has no
+    /// Direct3D 11 device at all. A bare Windows runner has WARP, so the guard is a formality
+    /// rather than the expected path, and it logs why it skipped.
+    fn test_renderer(viewport: Size<DevicePixels>) -> Option<DirectXRenderer> {
+        let devices = match DirectXDevices::new() {
+            Ok(devices) => devices,
+            Err(error) => {
+                log::warn!("no Direct3D 11 device to render offscreen with; skipping: {error:#}");
+                return None;
+            }
+        };
+        let hwnd = match hidden_window() {
+            Ok(hwnd) => hwnd,
+            Err(error) => {
+                log::warn!("could not create a hidden window; skipping: {error:#}");
+                return None;
+            }
+        };
+        let mut renderer = match DirectXRenderer::new(hwnd, &devices, true) {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                log::warn!("could not build a Direct3D renderer; skipping: {error:#}");
+                return None;
+            }
+        };
+        if let Err(error) = renderer.resize(viewport) {
+            log::warn!("could not size the Direct3D renderer; skipping: {error:#}");
+            return None;
+        }
+        Some(renderer)
+    }
+
+    /// A texture on `device` holding `bgra` in every pixel, which is what a producer that wrote
+    /// one would leave behind. `format` is a parameter so a test can hand the boundary something
+    /// it has to refuse.
+    fn imported_texture(
+        device: &ID3D11Device,
+        size: u32,
+        format: DXGI_FORMAT,
+        bgra: [u8; 4],
+    ) -> Result<ID3D11Texture2D> {
+        let pixels: Vec<u8> = bgra
+            .iter()
+            .copied()
+            .cycle()
+            .take((size * size * 4) as usize)
+            .collect();
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: size,
+            Height: size,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let initial_data = D3D11_SUBRESOURCE_DATA {
+            pSysMem: pixels.as_ptr() as *const c_void,
+            SysMemPitch: size * 4,
+            SysMemSlicePitch: 0,
+        };
+        let mut texture = None;
+        unsafe { device.CreateTexture2D(&desc, Some(&initial_data), Some(&mut texture))? };
+        texture.context("CreateTexture2D returned no texture")
+    }
+
+    /// A scene whose only primitive is an imported texture covering the whole target.
+    fn imported_texture_scene(
+        handle: ImportedTextureHandle,
+        viewport: Size<DevicePixels>,
+    ) -> Scene {
+        let bounds = Bounds {
+            origin: Point {
+                x: 0.0.into(),
+                y: 0.0.into(),
+            },
+            size: Size {
+                width: (viewport.width.0 as f32).into(),
+                height: (viewport.height.0 as f32).into(),
+            },
+        };
+        let mut scene = Scene::default();
+        scene.custom.push(CustomRenderPrimitive::Texture {
+            order: 0,
+            handle,
+            bounds,
+            content_mask: ContentMask { bounds },
+            radii: Corners::default(),
+            opacity: 1.0,
+            flip_v: false,
+        });
+        scene
+    }
+
+    /// The colour row. A producer's bytes have to come back unchanged, and on this renderer they
+    /// do so exactly rather than approximately: the sampler reads the texture's own non-sRGB view
+    /// and the fragment writes that straight into the non-sRGB target, so there is no transfer
+    /// function to cancel. A decode here would be the ≈2.2 error the wgpu arm's re-encode exists
+    /// to cancel — and the only encoder this shader file has is `linear_to_srgb`'s approximation.
+    #[test]
+    fn an_imported_texture_round_trips_its_bytes() -> Result<()> {
+        let viewport = Size {
+            width: DevicePixels(8),
+            height: DevicePixels(8),
+        };
+        let Some(mut renderer) = test_renderer(viewport) else {
+            return Ok(());
+        };
+
+        // Distinct per channel, and far from either end, so a transfer function applied once in
+        // the wrong direction cannot round back to the same byte.
+        let fixture = [200u8, 100, 50, 255];
+        // The producer's half: the device comes through the seam, which is the only route an
+        // application has, and the texture is made on it rather than on the renderer's own field.
+        let device = renderer
+            .device_any()
+            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+            .context("the renderer lends its device through the seam")?;
+        let texture = imported_texture(
+            &device,
+            1,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            [fixture[2], fixture[1], fixture[0], fixture[3]],
+        )?;
+        let scene = imported_texture_scene(texture.to_imported_handle()?, viewport);
+
+        let pixels = renderer.render_scene_to_image(&scene, viewport)?;
+        assert_eq!((pixels.width(), pixels.height()), (8, 8));
+        for (index, pixel) in pixels.data().chunks_exact(4).enumerate() {
+            assert_eq!(pixel, fixture, "pixel {index} did not round trip");
+        }
+        Ok(())
+    }
+
+    /// The device-identity row, and the one place this renderer is stronger than `wgpu`: the
+    /// same-device rule is what makes the token rather than a handle enough, and Direct3D enforces
+    /// it by name — `CreateShaderResourceView` refuses a resource another device made, where wgpu's
+    /// refusal is a panic inside its own storage lookup.
+    #[test]
+    fn an_imported_texture_from_another_device_is_rejected() -> Result<()> {
+        let viewport = Size {
+            width: DevicePixels(8),
+            height: DevicePixels(8),
+        };
+        let Some(mut renderer) = test_renderer(viewport) else {
+            return Ok(());
+        };
+
+        let other_devices = DirectXDevices::new()?;
+        let texture = imported_texture(
+            &other_devices.device,
+            1,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            [50, 100, 200, 255],
+        )?;
+        let scene = imported_texture_scene(texture.to_imported_handle()?, viewport);
+
+        assert!(
+            renderer.render_scene_to_image(&scene, viewport).is_err(),
+            "a texture from another device must not composite"
+        );
+        Ok(())
+    }
+
+    /// The boundary row. The fragment writes the sample through, so a texture in another channel
+    /// order would composite with red and blue exchanged rather than failing; the extension is
+    /// where that is caught, with a message that names the producer's mistake.
+    #[test]
+    fn an_imported_texture_in_the_wrong_format_is_refused() -> Result<()> {
+        let devices = match DirectXDevices::new() {
+            Ok(devices) => devices,
+            Err(error) => {
+                log::warn!("no Direct3D 11 device to build a texture on; skipping: {error:#}");
+                return Ok(());
+            }
+        };
+        let texture = imported_texture(
+            &devices.device,
+            1,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            [50, 100, 200, 255],
+        )?;
+
+        assert!(
+            texture.to_imported_handle().is_err(),
+            "an RGBA texture would composite with red and blue exchanged"
+        );
+        Ok(())
     }
 }

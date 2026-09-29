@@ -46,6 +46,28 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo check -p gpui
 
+  # Path A's Metal rows. They need a Metal device, which only a macOS runner has, and the one a
+  # hosted runner has is real rather than emulated -- the presentation probe records `Apple
+  # Paravirtual device`, a real Metal device behind a hypervisor, which is stronger than the
+  # Windows rows' WARP. No release profile is needed, unlike the Windows job: `gpui_apple`'s build
+  # script compiles the shaders with `xcrun metal` in every profile. The filter is the
+  # imported-texture rows and not the crate's whole suite, and `grep` is what keeps the gate from
+  # passing vacuously if the filter ever stops matching anything.
+  macos-path-a:
+    name: cargo test -p gpui_apple imported_texture (macos-14)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p gpui_apple imported_texture 2>&1 | tee imported-texture-metal.log
+          grep -qE "test result: ok\. [1-9][0-9]* passed" imported-texture-metal.log
+
+  # The macOS wgpu-producer probe's job was here and went away once it answered: the printout is
+  # `decisions/macos-wgpu-producer-probe.md` in `bite-gpui/bite-gpui-project`, and the crate at
+  # `probes/macos-wgpu-producer` stays as the reproduction.
+
   # The Direct3D backend, on Windows. Release rather than debug, because that is the
   # profile whose build script compiles the HLSL with `fxc` and whose Rust includes
   # the result; in debug those shaders are compiled at run time by
@@ -58,19 +80,44 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo check --release -p gpui
 
+  # Path A's Direct3D rows. They need a swap chain and a device, which no Linux gate has and no
+  # cross-compile reaches, and a hosted runner has both because it has WARP -- the probes record
+  # `Microsoft Basic Render Driver`, which is enough for a readback even though it is not enough
+  # to call a result "works on hardware". Release for the `windows` job's reason, which is also
+  # what compiles the new fragment with `fxc` rather than type-checking the Rust that calls it.
+  #
+  # The filter is the imported-texture rows and not the crate's whole suite: the tests already in
+  # `gpui_windows` -- rasterization, clipboard, keyboard -- have never run on a runner, and
+  # deciding what a GPU-less or headless run means for them is its own change. `grep` is what
+  # keeps the gate from passing vacuously if the filter ever stops matching anything.
+  windows-path-a:
+    name: cargo test --release -p gpui_windows imported_texture (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: bash
+        run: |
+          set -o pipefail
+          cargo test --release -p gpui_windows imported_texture 2>&1 | tee imported-texture.log
+          grep -qE "test result: ok\. [1-9][0-9]* passed" imported-texture.log
+
   # The first tests these pull requests run. Upstream's `run_tests.yml` triggers here and is
   # then skipped: every test job in it is gated on `github.repository_owner` being
   # `zed-industries` or `zed-extensions`, and this fork is neither. So a branch can be green
   # with nothing executed, which is what this job is for.
   #
-  # `-p gpui_authoring --lib` is where the renderer seam's test lives. It opens a window
-  # through `TestPlatform`, so it needs no display and one runner is enough; `script/linux`
-  # installs what its build needs. The filter is narrow on purpose -- widening it is the
-  # work, not this job.
+  # `-p gpui_authoring --lib` is where the renderer seam's test lives, and `-p gpui_engine --lib`
+  # is where Path A's encoding tests do. Neither needs a display: the first opens a window through
+  # `TestPlatform`, the second builds engine types and no window at all, so one runner is enough
+  # and `script/linux` installs what their build needs. `gpui_wgpu`'s tests stay out, and not for
+  # lack of trying: the three Path A rows they hold need a GPU *adapter*, which a bare runner is
+  # not guaranteed to have, and the suite's older tests fail rather than skip without one. Widening
+  # the filter to them means deciding what a GPU-less runner should do -- making those tests skip,
+  # or the tests that need a device gated some other way -- which is its own change.
   tests:
-    name: cargo test -p gpui_authoring --lib (ubuntu-latest)
+    name: cargo test -p gpui_authoring -p gpui_engine --lib (ubuntu-latest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: ./script/linux
-      - run: cargo test -p gpui_authoring --lib
+      - run: cargo test -p gpui_authoring -p gpui_engine --lib

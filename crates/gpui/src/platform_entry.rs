@@ -31,6 +31,25 @@ pub fn headless() -> Application {
 #[cfg(target_family = "wasm")]
 pub use gpui_web::WebBackendPreference;
 
+/// The producer's half of Path A on Windows: [`Window::device_any`](crate::Window::device_any)
+/// lends the renderer's device, and a texture made on it becomes a token through this extension.
+#[cfg(target_os = "windows")]
+pub use gpui_windows::{DirectXImportedTexture, DirectXTextureExt};
+
+/// The producer's half of Path A on macOS, the same shape as the Windows pair above: the device
+/// comes from Window::device_any, and a texture made on it becomes a token through this extension.
+/// Unlike the Windows one it names no payload type of its own -- the engine's MetalTexture is the
+/// handle the renderer resolves.
+#[cfg(target_os = "macos")]
+pub use gpui_macos::MetalTextureExt;
+
+/// The producer's half of Path A where wgpu is the renderer, which is the platform's own default on
+/// these two targets: the same shape, from the crate that re-exports the wgpu renderer. A window on
+/// Windows whose factory installed `WgpuRenderer` takes the trait from `gpui_wgpu` instead, which
+/// is the crate that renderer comes from.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub use gpui_linux::ImportedTextureExt;
+
 #[cfg(target_family = "wasm")]
 pub fn application_with_web_backend(backend_preference: WebBackendPreference) -> Application {
     let platform = Rc::new(gpui_web::WebPlatform::new_with_backend(

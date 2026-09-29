@@ -7,10 +7,12 @@ use crate::profiler;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
-    Capslock, ContentMask, Context, Corners, CursorHideMode, CursorStyle, DEFAULT_WINDOW_SIZE,
+    Capslock, ContentMask, Context, Corners, CursorHideMode, CursorStyle, CustomRenderPrimitive,
+    DEFAULT_WINDOW_SIZE,
     Decorations, DevicePixels, DispatchActionListener, DispatchEventResult, DispatchNodeId,
     DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, FontId,
-    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero, KeyBinding, KeyContext,
+    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, ImportedTextureHandle, InputHandler, IsZero,
+    KeyBinding, KeyContext,
     KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, MeasureContext,
     MeasureHandles, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
     MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
@@ -2993,7 +2995,12 @@ impl Window<'_> {
         self.core.platform_window.with_renderer(&mut |renderer| {
             result = Some(renderer.render_scene_to_image(scene, size));
         });
-        result.unwrap_or_else(|| anyhow::bail!("platform window does not support image capture"))
+        let pixels = result
+            .unwrap_or_else(|| anyhow::bail!("platform window does not support image capture"))?;
+        let (width, height) = (pixels.width(), pixels.height());
+        image::RgbaImage::from_raw(width, height, pixels.into_data()).ok_or_else(|| {
+            anyhow::anyhow!("the renderer returned a {width}x{height} pixel buffer of the wrong length")
+        })
     }
 
     /// Returns the quads in the most recently rendered frame's scene, so tests can assert on
@@ -3009,6 +3016,26 @@ impl Window<'_> {
     #[cfg(any(test, feature = "test-support"))]
     pub fn painted_underlines(&self) -> Vec<Underline> {
         self.frame_state.rendered_frame.scene.underlines.clone()
+    }
+
+    /// The graphics device this window's renderer draws on, if it has one to lend.
+    ///
+    /// This is how a producer reaches it, and it is the only route: the device belongs to whoever
+    /// built the window's renderer, and a texture has to be made on *that* device for the
+    /// renderer to sample it. The value is erased because one `Window` type cannot name
+    /// `ID3D11Device` or `MTLDevice` — the crate that owns the payload is where a caller
+    /// downcasts, and `None` means this window's renderer has no device to lend.
+    pub fn device_any(&self) -> Option<Rc<dyn Any>> {
+        self.core.platform_window.device_any()
+    }
+
+    /// Returns the custom-render primitives in the most recently rendered frame's scene: the
+    /// textures an application produced elsewhere and painted into this window. Like
+    /// [`painted_quads`](Self::painted_quads), this is the scene as painted, before any renderer
+    /// has resolved the handle inside them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn painted_imported_textures(&self) -> Vec<CustomRenderPrimitive> {
+        self.frame_state.rendered_frame.scene.custom.clone()
     }
 
     /// Set the content size of the window.
@@ -4959,6 +4986,37 @@ impl Window<'_> {
         } else {
             vertical_band
         }
+    }
+
+    /// Paint a texture that was produced outside GPUI, on this window's renderer's own device.
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    /// It is an error to hand over a texture from another device: the renderer's binding will
+    /// reject it.
+    /// Part of the [authoring surface](crate::_authoring) for custom elements.
+    pub fn paint_imported_texture(
+        &mut self,
+        handle: ImportedTextureHandle,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        opacity: f32,
+        flip_v: bool,
+    ) {
+        self.core.invalidator.debug_assert_paint();
+
+        let primitive = CustomRenderPrimitive::Texture {
+            order: 0,
+            handle,
+            bounds: self.snap_bounds(bounds),
+            content_mask: self.snapped_content_mask(),
+            radii: corner_radii.scale(self.scale_factor()),
+            opacity: opacity * self.element_opacity(),
+            flip_v,
+        };
+        self.frame_state
+            .next_frame
+            .scene
+            .insert_primitive(primitive);
     }
 
     /// Paint one or more quads into the scene for the next frame at the current stacking context.
@@ -8283,14 +8341,14 @@ mod tests {
 
     use crate::{
         AnyWindowHandle, App, AppContext as _, ArenaClearNeeded, Bounds, ContentMask, Context,
-        DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload, ExternalPaths, FileDragPaths,
-        FileDropEvent, FocusHandle, FocusId, FramePipeline, InputEvent as _,
-        InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, LongPressEvent, MouseButton,
-        MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, PlatformInput, Point, Render,
-        RequestFrameOptions, ScaledPixels, StandardImmediatePipeline,
-        StatefulInteractiveElement as _, Styled, TestAppContext, TouchDragEvent, TouchEvent,
-        TouchId, TouchPhase, Underline, UnderlineStyle, Window, WindowAppearance, WindowMetrics,
-        WindowOptions, canvas, div, hsla, point, px, size,
+        Corners, CustomRenderPrimitive, DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload,
+        ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle, FocusId, FramePipeline,
+        ImportedTextureHandle, InputEvent as _, InteractiveElement as _, IntoElement,
+        KeyDownEvent, Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+        ParentElement, Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
+        StandardImmediatePipeline, StatefulInteractiveElement as _, Styled, TestAppContext,
+        TouchDragEvent, TouchEvent, TouchId, TouchPhase, Underline, UnderlineStyle, Window,
+        WindowAppearance, WindowMetrics, WindowOptions, canvas, div, hsla, point, px, size,
     };
 
     /// Visibility transitions reach observers exactly once each, with the new
@@ -10033,6 +10091,86 @@ mod tests {
                 );
             })
             .unwrap();
+    }
+
+    /// The paint path is where a primitive's radii stop being `Pixels`. A renderer is handed
+    /// scaled pixels and has no scale factor of its own, so the element has to convert -- as
+    /// `paint_quad` does -- or a rounded corner is drawn too tight on a HiDPI display. The test
+    /// platform reports a scale factor of 2, so a radius of 4 is drawn as 8.
+    #[gpui::test]
+    fn a_painted_imported_texture_converts_its_radii_at_paint_time(cx: &mut TestAppContext) {
+        struct PaintedTexture {
+            handle: ImportedTextureHandle,
+            bounds: Bounds<Pixels>,
+            corner_radii: Corners<Pixels>,
+            opacity: f32,
+            flip_v: bool,
+        }
+
+        impl Render for PaintedTexture {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                let handle = self.handle.clone();
+                let bounds = self.bounds;
+                let corner_radii = self.corner_radii;
+                let opacity = self.opacity;
+                let flip_v = self.flip_v;
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        window.paint_imported_texture(
+                            handle.clone(),
+                            bounds,
+                            corner_radii,
+                            opacity,
+                            flip_v,
+                        );
+                    },
+                )
+            }
+        }
+
+        let corner_radii = Corners {
+            top_left: px(4.),
+            top_right: px(0.),
+            bottom_right: px(0.),
+            bottom_left: px(0.),
+        };
+        let window = cx.add_window(|_, _| PaintedTexture {
+            handle: ImportedTextureHandle::new(()),
+            bounds: Bounds::new(point(px(10.), px(20.)), size(px(30.), px(40.))),
+            corner_radii,
+            opacity: 0.5,
+            flip_v: true,
+        });
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+
+        cx.update_window(window.into(), |_, window, _| {
+            let painted = window.painted_imported_textures();
+            assert_eq!(painted.len(), 1, "the window should have painted the texture");
+
+            let CustomRenderPrimitive::Texture {
+                radii,
+                opacity,
+                flip_v,
+                bounds,
+                ..
+            } = &painted[0];
+            assert_eq!(
+                *radii,
+                corner_radii.scale(window.scale_factor()),
+                "the radii must be converted to scaled pixels at paint time"
+            );
+            assert_eq!(*opacity, 0.5);
+            assert!(*flip_v);
+            assert_eq!(bounds.size.width, ScaledPixels(30. * window.scale_factor()));
+            assert_eq!(bounds.size.height, ScaledPixels(40. * window.scale_factor()));
+        })
+        .unwrap();
     }
 }
 
