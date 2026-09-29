@@ -24,6 +24,10 @@ pub mod metal_renderer {
     pub use gpui_apple::metal_renderer::MetalHeadlessRenderer;
 }
 
+/// The producer's half of Path A on macOS. Re-exported here because this is the crate a macOS
+/// application already reaches the platform through, and the facade re-exports it from here.
+pub use gpui_apple::imported_texture::MetalTextureExt;
+
 #[cfg(feature = "font-kit")]
 mod open_type;
 

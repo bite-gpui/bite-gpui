@@ -6,6 +6,7 @@ using namespace metal;
 float4 hsla_to_rgba(Hsla hsla);
 float3 srgb_to_linear(float3 color);
 float3 linear_to_srgb(float3 color);
+float3 linear_to_srgb_exact(float3 color);
 float4 srgb_to_oklab(float4 color);
 float4 oklab_to_srgb(float4 color);
 float4 to_device_position(float2 unit_vertex, Bounds_ScaledPixels bounds,
@@ -930,8 +931,10 @@ fragment float4 imported_texture_fragment(
   // The texture is sRGB, so the sampler decodes to linear. GPUI's target is a non-sRGB
   // `_UNORM` and its shaders write sRGB-encoded values -- the atlas is non-sRGB for the
   // same reason -- so re-encode. On a producer whose content is sRGB-encoded this round
-  // trip is the identity on its bytes.
-  sample.rgb = linear_to_srgb(sample.rgb);
+  // trip is the identity on its bytes -- which needs the exact transfer, not
+  // `linear_to_srgb`'s power approximation, or a byte comes back near where it started
+  // instead of equal to it.
+  sample.rgb = linear_to_srgb_exact(sample.rgb);
 
   float distance = quad_sdf(input.position.xy, quad.bounds, quad.corner_radii);
   float alpha = sample.a * input.background_solid.a * saturate(0.5 - distance);
@@ -992,6 +995,16 @@ float3 srgb_to_linear(float3 color) {
 
 float3 linear_to_srgb(float3 color) {
   return pow(color, float3(1.0 / 2.2));
+}
+
+// The exact piecewise sRGB transfer. The rest of the pipeline uses the power approximation above,
+// which is what the UI's look was built on; the imported-texture fragment is the one place whose
+// contract is that a producer's bytes come back unchanged, and the approximation does not satisfy
+// it. Kept beside `linear_to_srgb` in the WGSL shader, which has only this one.
+float3 linear_to_srgb_exact(float3 color) {
+  float3 lower = color * 12.92;
+  float3 higher = 1.055 * pow(color, float3(1.0 / 2.4)) - 0.055;
+  return select(higher, lower, color < 0.0031308);
 }
 
 // Converts a sRGB color to the Oklab color space.
