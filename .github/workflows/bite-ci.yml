@@ -58,6 +58,27 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo check --release -p gpui
 
+  # Path A's Direct3D rows. They need a swap chain and a device, which no Linux gate has and no
+  # cross-compile reaches, and a hosted runner has both because it has WARP -- the probes record
+  # `Microsoft Basic Render Driver`, which is enough for a readback even though it is not enough
+  # to call a result "works on hardware". Release for the `windows` job's reason, which is also
+  # what compiles the new fragment with `fxc` rather than type-checking the Rust that calls it.
+  #
+  # The filter is the imported-texture rows and not the crate's whole suite: the tests already in
+  # `gpui_windows` -- rasterization, clipboard, keyboard -- have never run on a runner, and
+  # deciding what a GPU-less or headless run means for them is its own change. `grep` is what
+  # keeps the gate from passing vacuously if the filter ever stops matching anything.
+  windows-path-a:
+    name: cargo test --release -p gpui_windows imported_texture (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: bash
+        run: |
+          set -o pipefail
+          cargo test --release -p gpui_windows imported_texture 2>&1 | tee imported-texture.log
+          grep -qE "test result: ok\. [1-9][0-9]* passed" imported-texture.log
+
   # The first tests these pull requests run. Upstream's `run_tests.yml` triggers here and is
   # then skipped: every test job in it is gated on `github.repository_owner` being
   # `zed-industries` or `zed-extensions`, and this fork is neither. So a branch can be green
