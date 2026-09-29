@@ -1767,6 +1767,13 @@ impl PlatformWindow for X11Window {
         self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
     }
 
+    /// This window's renderer's device — the client's shared `GpuContext`, which every wgpu window
+    /// in the process draws through, so a texture a producer makes on it is one this window can
+    /// sample.
+    fn device_any(&self) -> Option<std::rc::Rc<dyn std::any::Any>> {
+        self.0.state.borrow().renderer.device_any()
+    }
+
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {
         let mut inner = self.0.state.borrow_mut();
         f(&mut *inner.renderer);

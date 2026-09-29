@@ -31,6 +31,11 @@ pub fn headless() -> Application {
 #[cfg(target_family = "wasm")]
 pub use gpui_web::WebBackendPreference;
 
+/// The producer's half of Path A on Windows: [`Window::device_any`](crate::Window::device_any)
+/// lends the renderer's device, and a texture made on it becomes a token through this extension.
+#[cfg(target_os = "windows")]
+pub use gpui_windows::{DirectXImportedTexture, DirectXTextureExt};
+
 #[cfg(target_family = "wasm")]
 pub fn application_with_web_backend(backend_preference: WebBackendPreference) -> Application {
     let platform = Rc::new(gpui_web::WebPlatform::new_with_backend(
