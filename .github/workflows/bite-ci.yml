@@ -46,6 +46,24 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo check -p gpui
 
+  # Path A's Metal rows. They need a Metal device, which only a macOS runner has, and the one a
+  # hosted runner has is real rather than emulated -- the presentation probe records `Apple
+  # Paravirtual device`, a real Metal device behind a hypervisor, which is stronger than the
+  # Windows rows' WARP. No release profile is needed, unlike the Windows job: `gpui_apple`'s build
+  # script compiles the shaders with `xcrun metal` in every profile. The filter is the
+  # imported-texture rows and not the crate's whole suite, and `grep` is what keeps the gate from
+  # passing vacuously if the filter ever stops matching anything.
+  macos-path-a:
+    name: cargo test -p gpui_apple imported_texture (macos-14)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p gpui_apple imported_texture 2>&1 | tee imported-texture-metal.log
+          grep -qE "test result: ok\. [1-9][0-9]* passed" imported-texture-metal.log
+
   # The Direct3D backend, on Windows. Release rather than debug, because that is the
   # profile whose build script compiles the HLSL with `fxc` and whose Rust includes
   # the result; in debug those shaders are compiled at run time by
