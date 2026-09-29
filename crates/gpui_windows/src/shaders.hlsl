@@ -849,6 +849,45 @@ float4 quad_fragment(QuadFragmentInput input): SV_Target {
 
 /*
 **
+**              Imported textures
+**
+*/
+
+// A texture produced outside GPUI, drawn across the custom primitive's quad. The instance
+// record, the geometry, the clip distances and the vertex entry point are the quad path's, so
+// a textured quad and an ordinary one land in the same place; only the fragment differs.
+
+QuadVertexOutput imported_texture_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID) {
+    return quad_vertex(vertex_id, instance_id);
+}
+
+float4 imported_texture_fragment(QuadFragmentInput input): SV_Target {
+    Quad quad = quads[input.quad_id];
+
+    // The builtin position is in device pixels, and the quad's bounds are in the same
+    // space, so the two recover the unit vertex the fragment came from without a varying.
+    float2 texture_position = (input.position.xy - quad.bounds.origin) / quad.bounds.size;
+    // A producer's textures usually have a top-left origin and a quad's unit vertex does not;
+    // `flip_v` rides in the border style, which a textured quad has no other use for.
+    if (quad.border_style == 1u) {
+        texture_position.y = 1.0 - texture_position.y;
+    }
+
+    // The view is the producer's own non-sRGB format, so the sample is the bytes it wrote and
+    // there is no transfer function to cancel: the target is the non-sRGB `_UNORM` the atlas is
+    // in, and these shaders work on sRGB-encoded values there directly.
+    float4 sample = t_sprite.Sample(s_sprite, texture_position);
+
+    // The primitive's opacity rides in the solid background's alpha, which `quad_vertex`
+    // forwards as a scratch field the texturing path does not read; the rest is the corner
+    // signed distance field's coverage, exactly as it is for a quad or a polychrome sprite.
+    float distance = quad_sdf(input.position.xy, quad.bounds, quad.corner_radii);
+    sample.a *= input.background_solid.a * saturate(0.5 - distance);
+    return sample;
+}
+
+/*
+**
 **              Shadows
 **
 */
