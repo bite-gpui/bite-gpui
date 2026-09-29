@@ -1053,6 +1053,13 @@ impl PlatformWindow for WindowsWindow {
             .set(Some(callback));
     }
 
+    /// This window's renderer's device, which is the platform's own: the renderer is built from the
+    /// `DirectXDevices` the platform holds, so a texture a producer makes on it is one this window
+    /// can sample.
+    fn device_any(&self) -> Option<std::rc::Rc<dyn std::any::Any>> {
+        self.state.renderer.borrow().device_any()
+    }
+
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {
         let mut renderer = self.state.renderer.borrow_mut();
         f(&mut **renderer);
