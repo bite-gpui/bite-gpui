@@ -1333,10 +1333,8 @@ impl MetalRenderer {
                 continue;
             }
 
-            command_encoder.set_fragment_texture(
-                ImportedTextureInputIndex::Texture as u64,
-                Some(texture),
-            );
+            command_encoder
+                .set_fragment_texture(ImportedTextureInputIndex::Texture as u64, Some(texture));
 
             command_encoder.draw_primitives_instanced_base_instance(
                 metal::MTLPrimitiveType::Triangle,
@@ -1545,8 +1543,12 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
             bounds: surface.bounds,
             content_mask: surface.content_mask,
         }))?,
-        imported_textures: writer
-            .write_iter(scene.custom.iter().map(CustomRenderPrimitive::to_quad_record))?,
+        imported_textures: writer.write_iter(
+            scene
+                .custom
+                .iter()
+                .map(CustomRenderPrimitive::to_quad_record),
+        )?,
     })
 }
 
