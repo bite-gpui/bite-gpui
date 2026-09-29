@@ -20,7 +20,7 @@ use windows::Win32::Graphics::{
 /// synchronise. The per-primitive values — bounds, clip, radii, opacity — travel in the scene's
 /// custom primitive rather than here.
 #[derive(Clone)]
-pub(crate) struct DirectXImportedTexture {
+pub struct DirectXImportedTexture {
     /// The texture the imported-texture fragment samples.
     pub(crate) texture: ID3D11Texture2D,
 }
@@ -33,14 +33,14 @@ unsafe impl Sync for DirectXImportedTexture {}
 
 /// Builds an [`ImportedTextureHandle`] from a Direct3D texture.
 ///
-/// This is the producer's half, and nothing outside this crate can reach it yet: a texture has to
-/// be made on the renderer's own device, a window's renderer is the only holder of it, and the
-/// seam exposes no way in. What that leaves open is the question `foreign-texture.md` §8 records,
-/// and its answer is a device accessor rather than anything here.
-// `allow` rather than `expect`, because the tests do use it and an unfulfilled expectation is
-// itself a warning.
-#[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
-pub(crate) trait DirectXTextureExt {
+/// This is the producer's half of Path A on Windows, and it is public because an application has
+/// to be able to call it: the device comes from the window's erased accessor, and the token from
+/// here.
+///
+/// What the device does not settle is *which* device: a texture has to be made on the window's
+/// own renderer's, which is the same-device rule 0002 states, and a texture the renderer cannot
+/// view fails in `draw_custom` rather than composing the wrong memory.
+pub trait DirectXTextureExt {
     /// Wrap this texture as a handle.
     ///
     /// Validates up front, at the boundary, where the failure is a producer's mistake and the
