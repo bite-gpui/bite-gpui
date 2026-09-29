@@ -18,6 +18,8 @@ use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
     RawWindowHandle, WindowHandle,
 };
+use std::any::Any;
+use std::rc::Rc;
 
 use crate::WgpuRenderer;
 
@@ -32,6 +34,14 @@ impl PlatformRenderer for WgpuRenderer {
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         Some(WgpuRenderer::gpu_specs(self))
+    }
+
+    /// The shared context slot, which is where a producer on this path reaches the device and the
+    /// queue: it is the same `Rc` every window in the process draws through, so reading them out
+    /// of it is the rendezvous it exists for. `None` for a renderer built offscreen, which holds
+    /// no context because it has no window to coordinate with.
+    fn device_any(&self) -> Option<Rc<dyn Any>> {
+        WgpuRenderer::gpu_context(self).map(|context| context as Rc<dyn Any>)
     }
 
     fn set_subpixel_layout(&mut self, is_bgr: bool) {
