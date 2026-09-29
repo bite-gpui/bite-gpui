@@ -36,6 +36,13 @@ pub use gpui_web::WebBackendPreference;
 #[cfg(target_os = "windows")]
 pub use gpui_windows::{DirectXImportedTexture, DirectXTextureExt};
 
+/// The producer's half of Path A on macOS, the same shape as the Windows pair above: the device
+/// comes from Window::device_any, and a texture made on it becomes a token through this extension.
+/// Unlike the Windows one it names no payload type of its own -- the engine's MetalTexture is the
+/// handle the renderer resolves.
+#[cfg(target_os = "macos")]
+pub use gpui_macos::MetalTextureExt;
+
 #[cfg(target_family = "wasm")]
 pub fn application_with_web_backend(backend_preference: WebBackendPreference) -> Application {
     let platform = Rc::new(gpui_web::WebPlatform::new_with_backend(
