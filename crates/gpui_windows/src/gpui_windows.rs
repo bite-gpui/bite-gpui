@@ -30,7 +30,10 @@ pub(crate) use directx_renderer::*;
 pub(crate) use dispatcher::*;
 pub(crate) use display::*;
 pub(crate) use events::*;
-pub(crate) use imported_texture::*;
+// The one module a window's contents are published through rather than re-exported: an imported
+// texture is built by the *application*, from a device it reached through the window's own
+// accessor, so the extension that builds one and the payload it wraps are public API.
+pub use imported_texture::*;
 pub(crate) use keyboard::*;
 pub(crate) use platform::*;
 pub(crate) use system_notifications::*;

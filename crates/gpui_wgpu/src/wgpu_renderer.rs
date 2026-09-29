@@ -389,17 +389,25 @@ impl WgpuRenderer {
     ///
     /// A producer on this path renders its texture on *this* device -- that is the whole of the
     /// same-device rule -- so a renderer that can be built without a window is where an
-    /// application reaches one from. Test-gated with [`new_offscreen`](Self::new_offscreen),
-    /// which is the only way to own a renderer with no window today.
-    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    /// application that owns one reaches a device from. A window's is reached through
+    /// `Window::device_any`, which is the same device by another route.
     pub fn device(&self) -> &wgpu::Device {
         &self.resources().device
     }
 
     /// The queue this renderer submits on.
-    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
     pub fn queue(&self) -> &wgpu::Queue {
         &self.resources().queue
+    }
+
+    /// The shared context slot this renderer draws through, if it has one.
+    ///
+    /// A window's renderer is built with it and adopts whatever context the first renderer filled;
+    /// an offscreen renderer has none, because it has no window to coordinate with. This is what
+    /// `PlatformRenderer::device_any` hands a producer: the same `Rc` a factory was given.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn gpu_context(&self) -> Option<GpuContext> {
+        self.context.clone()
     }
 
     #[cfg(target_family = "wasm")]
