@@ -63,14 +63,18 @@ jobs:
   # `zed-industries` or `zed-extensions`, and this fork is neither. So a branch can be green
   # with nothing executed, which is what this job is for.
   #
-  # `-p gpui_authoring --lib` is where the renderer seam's test lives. It opens a window
-  # through `TestPlatform`, so it needs no display and one runner is enough; `script/linux`
-  # installs what its build needs. The filter is narrow on purpose -- widening it is the
-  # work, not this job.
+  # `-p gpui_authoring --lib` is where the renderer seam's test lives, and `-p gpui_engine --lib`
+  # is where Path A's encoding tests do. Neither needs a display: the first opens a window through
+  # `TestPlatform`, the second builds engine types and no window at all, so one runner is enough
+  # and `script/linux` installs what their build needs. `gpui_wgpu`'s tests stay out, and not for
+  # lack of trying: the three Path A rows they hold need a GPU *adapter*, which a bare runner is
+  # not guaranteed to have, and the suite's older tests fail rather than skip without one. Widening
+  # the filter to them means deciding what a GPU-less runner should do -- making those tests skip,
+  # or the tests that need a device gated some other way -- which is its own change.
   tests:
-    name: cargo test -p gpui_authoring --lib (ubuntu-latest)
+    name: cargo test -p gpui_authoring -p gpui_engine --lib (ubuntu-latest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: ./script/linux
-      - run: cargo test -p gpui_authoring --lib
+      - run: cargo test -p gpui_authoring -p gpui_engine --lib
