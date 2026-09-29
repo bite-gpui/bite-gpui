@@ -1627,8 +1627,10 @@ impl SceneRenderer for MetalRenderer {
         &mut self,
         scene: &Scene,
         size: Size<DevicePixels>,
-    ) -> anyhow::Result<image::RgbaImage> {
-        MetalRenderer::render_scene_to_image(self, scene, size)
+    ) -> anyhow::Result<gpui_engine::PixelBuffer> {
+        let image = MetalRenderer::render_scene_to_image(self, scene, size)?;
+        let (width, height) = image.dimensions();
+        gpui_engine::PixelBuffer::new(width, height, image.into_raw())
     }
 
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
@@ -1706,8 +1708,10 @@ impl SceneRenderer for MetalHeadlessRenderer {
         &mut self,
         scene: &Scene,
         size: Size<DevicePixels>,
-    ) -> anyhow::Result<image::RgbaImage> {
-        self.renderer.render_scene_to_image(scene, size)
+    ) -> anyhow::Result<gpui_engine::PixelBuffer> {
+        let image = self.renderer.render_scene_to_image(scene, size)?;
+        let (width, height) = image.dimensions();
+        gpui_engine::PixelBuffer::new(width, height, image.into_raw())
     }
 
     fn render_scene(&mut self, scene: &Scene, size: Size<DevicePixels>) -> anyhow::Result<()> {
