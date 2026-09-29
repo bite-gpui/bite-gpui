@@ -1613,6 +1613,8 @@ impl WgpuRendererCore {
                     // Surfaces are macOS-only for video playback and are not
                     // implemented by the WGPU renderer.
                     PrimitiveBatch::Surfaces(_surfaces) => {}
+                    // The imported-texture arm lands with the wgpu sampler.
+                    PrimitiveBatch::Custom(_custom) => {}
                 }
             }
         }
