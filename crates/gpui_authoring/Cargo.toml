@@ -32,6 +32,7 @@ test-support = [
 bench-support = [
     "profiler",
     "dep:criterion",
+    "dep:bench_metrics",
     "gpui_engine/bench-support",
     "gpui_engine_default/bench-support",
     "gpui_platform/bench-support",
@@ -55,6 +56,7 @@ async-task.workspace = true
 backtrace = { workspace = true, optional = true }
 collections.workspace = true
 bench_metrics = { workspace = true, optional = true }
+libc.workspace = true
 criterion = { workspace = true, optional = true }
 ctor.workspace = true
 derive_more.workspace = true
