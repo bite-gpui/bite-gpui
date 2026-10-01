@@ -1435,6 +1435,7 @@ mod tests {
         fn from_window(window: &Window) -> Self {
             Self {
                 quads: window
+                    .frame_state
                     .rendered_frame
                     .scene
                     .quads
@@ -1442,6 +1443,7 @@ mod tests {
                     .map(QuadSnapshot::from)
                     .collect(),
                 element_ids: window
+                    .frame_state
                     .rendered_frame
                     .element_states
                     .keys()
