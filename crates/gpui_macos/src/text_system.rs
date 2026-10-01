@@ -770,8 +770,7 @@ mod lenient_font_attributes {
 #[cfg(test)]
 mod tests {
     use crate::MacTextSystem;
-    use gpui::font;
-    use gpui_engine::{FontRun, GlyphId, PlatformTextSystem};
+    use gpui_engine::{FontRun, GlyphId, PlatformTextSystem, font};
     use gpui_platform::px;
 
     #[test]
