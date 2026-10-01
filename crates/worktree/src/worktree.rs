@@ -3563,7 +3563,7 @@ impl BackgroundScannerState {
             }
         };
 
-        let dot_git_abs_path = Arc::from(self.snapshot.absolutize(&dot_git_path).as_ref());
+        let dot_git_abs_path = Arc::from(self.snapshot.absolutize(&dot_git_path).as_path());
 
         self.insert_git_repository_for_path(
             WorkDirectory::InProject {
