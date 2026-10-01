@@ -3,8 +3,8 @@ use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
 use gpui_engine::{
-    AtlasTextureId, CustomRenderPrimitive, Path, PlatformAtlas, PrimitiveBatch, Scene,
-    SceneRenderer, get_gamma_correction_ratios,
+    AtlasTextureId, CustomRenderPrimitive, Path, PixelBuffer, PlatformAtlas, PrimitiveBatch,
+    Scene, SceneRenderer, get_gamma_correction_ratios,
 };
 use gpui_platform::{Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size};
 use log::warn;

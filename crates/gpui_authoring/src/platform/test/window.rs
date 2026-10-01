@@ -1,5 +1,5 @@
 use crate::{
-    Bounds, DevicePixels, DispatchEventResult, GpuSpecs, HeadlessAtlas, Pixels,
+    Bounds, DevicePixels, DispatchEventResult, GpuSpecs, HeadlessAtlas, PixelBuffer, Pixels,
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     PromptButton, RequestFrameOptions, Scene, SceneRenderer, Size, TestPlatform,
     TextInputConfiguration, TextInputStateChange, WindowAppearance, WindowBackgroundAppearance,
