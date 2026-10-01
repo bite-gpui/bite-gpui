@@ -1660,7 +1660,6 @@ mod tests {
     use std::ffi::{OsStr, OsString};
 
     use crate::{read_from_clipboard, write_to_clipboard};
-    use gpui::ClipboardItem;
     use gpui_platform::ClipboardItem;
     use windows::{Win32::{Security::{Credentials::{CREDENTIALW, CRED_PERSIST_SESSION, CRED_TYPE_GENERIC, CredDeleteW, CredFree, CredReadW, CredWriteW}}}, core::{PCWSTR, PWSTR}};
 

@@ -25,8 +25,8 @@ use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, Sh
 use crate::*;
 use gpui_engine::{
     AtlasTextureId, CustomRenderPrimitive, MonochromeSprite, PaintSurface, Path, PlatformAtlas,
-    PolychromeSprite, PrimitiveBatch, Quad, Scene, SceneRenderer, SubpixelSprite, Underline,
-    get_gamma_correction_ratios,
+    PolychromeSprite, PrimitiveBatch, Quad, Scene, SceneRenderer, SubpixelSprite, SurfaceSource,
+    Underline, get_gamma_correction_ratios,
 };
 use gpui_platform::*;
 
@@ -106,6 +106,10 @@ struct DirectXRenderPipelines {
     /// The quads' instance record and vertex entry point with the imported-texture fragment, so a
     /// producer's texture lands with a quad's geometry, clip and corner coverage.
     imported_texture_pipeline: PipelineState<Quad>,
+    /// The same record and fragment as `imported_texture_pipeline`, with a buffer of its own: the
+    /// surfaces are a batch separate from the custom primitives, and each pipeline indexes its own
+    /// instance buffer from zero.
+    surfaces_pipeline: PipelineState<Quad>,
 }
 
 struct DirectXGlobalElements {
@@ -416,7 +420,9 @@ impl DirectXRenderer {
                 PrimitiveBatch::PolychromeSprites { texture_id, range } => {
                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
                 }
-                PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
+                PrimitiveBatch::Surfaces(range) => {
+                    self.draw_surfaces(range.start, &scene.surfaces[range])
+                }
                 PrimitiveBatch::Custom(range) => {
                     self.draw_custom(range.start, &scene.custom[range])
                 }
@@ -607,6 +613,22 @@ impl DirectXRenderer {
                 .map(CustomRenderPrimitive::to_quad_record)
                 .collect();
             self.pipelines.imported_texture_pipeline.update_buffer(
+                &devices.device,
+                &devices.device_context,
+                &instances,
+            )?;
+        }
+
+        if !scene.surfaces.is_empty() {
+            // The same record again, from the surface primitive: the geometry and the clip are the
+            // quad path's, and `draw_surfaces` only supplies the view to sample
+            // (`PaintSurface::to_quad_record`).
+            let instances: Vec<Quad> = scene
+                .surfaces
+                .iter()
+                .map(PaintSurface::to_quad_record)
+                .collect();
+            self.pipelines.surfaces_pipeline.update_buffer(
                 &devices.device,
                 &devices.device_context,
                 &instances,
@@ -849,14 +871,52 @@ impl DirectXRenderer {
         )
     }
 
-    fn draw_surfaces(&mut self, surfaces: &[PaintSurface]) -> Result<()> {
+    fn draw_surfaces(&mut self, start: usize, surfaces: &[PaintSurface]) -> Result<()> {
         if surfaces.is_empty() {
             return Ok(());
         }
-        // Surface primitives are a macOS path today, so this arm is unreachable on Windows.
-        // It says so rather than returning Ok, which would let a scene with surfaces report a
-        // frame it never drew.
-        anyhow::bail!("the Direct3D renderer does not draw surface primitives")
+        let devices = self.devices.as_ref().context("devices missing")?;
+        let batch_params_buffer = self
+            .globals
+            .batch_params_buffer
+            .as_ref()
+            .context("batch params buffer missing")?;
+
+        // One draw per surface: the view is the surface's own and the engine never names it, so
+        // there is no batch to group beyond the record slice the encoding already shares — the
+        // shape the imported-texture arm takes, for the same reason.
+        for (offset, surface) in surfaces.iter().enumerate() {
+            let view = match &surface.source {
+                SurfaceSource::DirectX(view) => view,
+                #[allow(unreachable_patterns)]
+                _ => continue,
+            };
+
+            // Fault softly, and for one frame only: a view that does not name a sampleable 2D
+            // texture is dropped rather than allowed to fault the frame the rest of the UI is in.
+            if !surface_view_is_sampleable(view) {
+                continue;
+            }
+
+            self.pipelines.surfaces_pipeline.draw_range_with_texture(
+                &devices.device_context,
+                slice::from_ref(&Some(view.clone())),
+                batch_params_buffer,
+                slice::from_ref(&self.globals.imported_texture_sampler),
+                (start + offset) as u32,
+                1,
+            )?;
+
+            // Unbind immediately. The producer may write the resource again next frame, and a slot
+            // kept bound after the draw is a hazard: the draw is what ordered the read, not the
+            // binding.
+            unsafe {
+                devices
+                    .device_context
+                    .PSSetShaderResources(0, Some(&[None]));
+            }
+        }
+        Ok(())
     }
 
     fn draw_custom(&mut self, start: usize, customs: &[CustomRenderPrimitive]) -> Result<()> {
@@ -1075,6 +1135,13 @@ impl DirectXRenderPipelines {
             64,
             create_blend_state(device)?,
         )?;
+        let surfaces_pipeline = PipelineState::new(
+            device,
+            "surfaces_pipeline",
+            ShaderModule::ImportedTexture,
+            64,
+            create_blend_state(device)?,
+        )?;
 
         Ok(Self {
             shadow_pipeline,
@@ -1086,6 +1153,7 @@ impl DirectXRenderPipelines {
             subpixel_sprites,
             poly_sprites,
             imported_texture_pipeline,
+            surfaces_pipeline,
         })
     }
 }
@@ -1696,6 +1764,25 @@ fn create_fragment_shader(device: &ID3D11Device, bytes: &[u8]) -> Result<ID3D11P
 ///
 /// A texture from another device fails here rather than composing silently: `D3D11` resolves a
 /// resource through the device that made it.
+/// Whether a surface's view names a 2D texture the fragment can sample.
+///
+/// The renderer did not make this view — a producer did — so the checks it would make while
+/// building one happen here, at the draw, and a view that fails is skipped for the frame rather
+/// than allowed to fault the frame the rest of the UI shares.
+fn surface_view_is_sampleable(view: &ID3D11ShaderResourceView) -> bool {
+    unsafe {
+        let Ok(resource) = view.GetResource() else {
+            return false;
+        };
+        let Ok(texture) = resource.cast::<ID3D11Texture2D>() else {
+            return false;
+        };
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        texture.GetDesc(&mut desc);
+        desc.Width > 0 && desc.Height > 0
+    }
+}
+
 #[inline]
 fn create_imported_texture_view(
     device: &ID3D11Device,
@@ -2449,6 +2536,28 @@ mod tests {
         scene
     }
 
+    /// A scene whose only primitive is a surface covering the whole target.
+    fn surface_scene(source: SurfaceSource, viewport: Size<DevicePixels>) -> Scene {
+        let bounds = Bounds {
+            origin: Point {
+                x: 0.0.into(),
+                y: 0.0.into(),
+            },
+            size: Size {
+                width: (viewport.width.0 as f32).into(),
+                height: (viewport.height.0 as f32).into(),
+            },
+        };
+        let mut scene = Scene::default();
+        scene.surfaces.push(PaintSurface {
+            order: 0,
+            bounds,
+            content_mask: ContentMask { bounds },
+            source,
+        });
+        scene
+    }
+
     /// The colour row. A producer's bytes have to come back unchanged, and on this renderer they
     /// do so exactly rather than approximately: the sampler reads the texture's own non-sRGB view
     /// and the fragment writes that straight into the non-sRGB target, so there is no transfer
@@ -2480,6 +2589,44 @@ mod tests {
             [fixture[2], fixture[1], fixture[0], fixture[3]],
         )?;
         let scene = imported_texture_scene(texture.to_imported_handle()?, viewport);
+
+        let pixels = renderer.render_scene_to_image(&scene, viewport)?;
+        assert_eq!((pixels.width(), pixels.height()), (8, 8));
+        for (index, pixel) in pixels.data().chunks_exact(4).enumerate() {
+            assert_eq!(pixel, fixture, "pixel {index} did not round trip");
+        }
+        Ok(())
+    }
+
+    /// The surface row — the byte-for-byte round trip through `draw_surfaces` rather than
+    /// `draw_custom`. A surface carries its `ID3D11ShaderResourceView` already made, so the
+    /// producer's half is the same texture plus the view `create_imported_texture_view` builds;
+    /// the fragment samples it straight through, exactly as it samples an imported texture's.
+    #[test]
+    fn a_surface_round_trips_its_bytes() -> Result<()> {
+        let viewport = Size {
+            width: DevicePixels(8),
+            height: DevicePixels(8),
+        };
+        let Some(mut renderer) = test_renderer(viewport) else {
+            return Ok(());
+        };
+
+        // Distinct per channel, and far from either end, so a transfer function applied once in
+        // the wrong direction cannot round back to the same byte.
+        let fixture = [200u8, 100, 50, 255];
+        let device = renderer
+            .device_any()
+            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+            .context("the renderer lends its device through the seam")?;
+        let texture = imported_texture(
+            &device,
+            1,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            [fixture[2], fixture[1], fixture[0], fixture[3]],
+        )?;
+        let view = create_imported_texture_view(&device, &texture)?;
+        let scene = surface_scene(SurfaceSource::DirectX(view), viewport);
 
         let pixels = renderer.render_scene_to_image(&scene, viewport)?;
         assert_eq!((pixels.width(), pixels.height()), (8, 8));

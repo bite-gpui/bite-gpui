@@ -32,7 +32,7 @@ impl MacWindowExt for Window<'_> {
                 order: 0,
                 bounds,
                 content_mask,
-                image_buffer,
+                source: image_buffer.into(),
             });
     }
 }

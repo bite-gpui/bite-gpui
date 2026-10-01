@@ -1,6 +1,6 @@
 # The fork's own CI, in one file.
 #
-# It is here, and not only in `bite-gpui/distribution`, because of how a
+# It is here, and not only in `bite-gpui/bite-distribution`, because of how a
 # `pull_request` run resolves its workflow files: from the pull request's *merge*
 # commit, base and head together. A file that only a pull request adds therefore
 # runs for that pull request and no other, so gating the pull requests that target a
@@ -17,7 +17,7 @@
 # the real platforms costs wall-clock and nothing else.
 #
 # The checks that read the tree rather than the release tag stay in
-# `bite-gpui/distribution` and are called rather than copied. `verify.yml` verifies a
+# `bite-gpui/bite-distribution` and are called rather than copied. `verify.yml` verifies a
 # *target*, which means staging the branch, and staging refuses an untagged tip —
 # exactly what a pull request's head is.
 name: Bite CI
@@ -31,7 +31,7 @@ jobs:
   # The target table and the naming rule. The ref is the distribution branch until
   # the entry point reaches `main`.
   checks:
-    uses: bite-gpui/distribution/.github/workflows/pr-checks.yml@pr-checks
+    uses: bite-gpui/bite-distribution/.github/workflows/pr-checks.yml@pr-checks
     with:
       repository: ${{ github.repository }}
       ref: ${{ github.sha }}
@@ -86,12 +86,13 @@ jobs:
   # to call a result "works on hardware". Release for the `windows` job's reason, which is also
   # what compiles the new fragment with `fxc` rather than type-checking the Rust that calls it.
   #
-  # The filter is the imported-texture rows and not the crate's whole suite: the tests already in
-  # `gpui_windows` -- rasterization, clipboard, keyboard -- have never run on a runner, and
-  # deciding what a GPU-less or headless run means for them is its own change. `grep` is what
-  # keeps the gate from passing vacuously if the filter ever stops matching anything.
+  # The filter is the external-pixel rows -- imported textures and the unified surface -- and not
+  # the crate's whole suite: the tests already in `gpui_windows` -- rasterization, clipboard,
+  # keyboard -- have never run on a runner, and deciding what a GPU-less or headless run means for
+  # them is its own change. `grep` is what keeps the gate from passing vacuously if a filter ever
+  # stops matching anything.
   windows-path-a:
-    name: cargo test --release -p gpui_windows imported_texture (windows-latest)
+    name: cargo test --release -p gpui_windows imported_texture|surface (windows-latest)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,6 +101,8 @@ jobs:
           set -o pipefail
           cargo test --release -p gpui_windows imported_texture 2>&1 | tee imported-texture.log
           grep -qE "test result: ok\. [1-9][0-9]* passed" imported-texture.log
+          cargo test --release -p gpui_windows surface 2>&1 | tee surface.log
+          grep -qE "test result: ok\. [1-9][0-9]* passed" surface.log
 
   # The first tests these pull requests run. Upstream's `run_tests.yml` triggers here and is
   # then skipped: every test job in it is gated on `github.repository_owner` being

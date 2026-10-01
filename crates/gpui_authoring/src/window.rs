@@ -71,11 +71,15 @@ mod frame_pipeline;
 #[cfg(target_os = "macos")]
 mod mac;
 mod prompts;
+#[cfg(target_os = "windows")]
+mod win;
 
 pub use a11y::A11ySubtreeBuilder;
 pub use frame_pipeline::{FramePipeline, StandardImmediatePipeline};
 #[cfg(target_os = "macos")]
 pub use mac::*;
+#[cfg(target_os = "windows")]
+pub use win::*;
 
 use self::a11y::A11y;
 #[cfg(not(target_family = "wasm"))]

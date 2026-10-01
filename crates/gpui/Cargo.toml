@@ -95,6 +95,7 @@ scap = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 gpui_windows = { workspace = true, optional = true }
+windows.workspace = true
 
 
 [dev-dependencies]

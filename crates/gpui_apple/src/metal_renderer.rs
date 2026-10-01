@@ -8,7 +8,7 @@ use cocoa::{
 };
 use gpui_engine::{
     AtlasTextureId, CustomRenderPrimitive, MetalTexture, PaintSurface, Path, PlatformAtlas,
-    PrimitiveBatch, Scene, SceneRenderer,
+    PrimitiveBatch, Scene, SceneRenderer, SurfaceSource,
 };
 use gpui_platform::{
     Background, Bounds, ContentMask, DevicePixels, GpuSpecs, MacSceneRenderer, PlatformRenderer,
@@ -1183,35 +1183,43 @@ impl MetalRenderer {
         );
 
         for (index, surface) in surfaces.iter().enumerate() {
+            // The Metal arm draws the one transport it has: a CoreVideo buffer. The unified
+            // `SurfaceSource` is single-variant on macOS, so the fallback is unreachable here.
+            let image_buffer = match &surface.source {
+                SurfaceSource::CoreVideo(image_buffer) => image_buffer,
+                #[allow(unreachable_patterns)]
+                _ => continue,
+            };
+
             let texture_size = size(
-                DevicePixels::from(surface.image_buffer.get_width() as i32),
-                DevicePixels::from(surface.image_buffer.get_height() as i32),
+                DevicePixels::from(image_buffer.get_width() as i32),
+                DevicePixels::from(image_buffer.get_height() as i32),
             );
 
             assert_eq!(
-                surface.image_buffer.get_pixel_format(),
+                image_buffer.get_pixel_format(),
                 kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
             );
 
             let y_texture = self
                 .core_video_texture_cache
                 .create_texture_from_image(
-                    surface.image_buffer.as_concrete_TypeRef(),
+                    image_buffer.as_concrete_TypeRef(),
                     None,
                     MTLPixelFormat::R8Unorm,
-                    surface.image_buffer.get_width_of_plane(0),
-                    surface.image_buffer.get_height_of_plane(0),
+                    image_buffer.get_width_of_plane(0),
+                    image_buffer.get_height_of_plane(0),
                     0,
                 )
                 .unwrap();
             let cb_cr_texture = self
                 .core_video_texture_cache
                 .create_texture_from_image(
-                    surface.image_buffer.as_concrete_TypeRef(),
+                    image_buffer.as_concrete_TypeRef(),
                     None,
                     MTLPixelFormat::RG8Unorm,
-                    surface.image_buffer.get_width_of_plane(1),
-                    surface.image_buffer.get_height_of_plane(1),
+                    image_buffer.get_width_of_plane(1),
+                    image_buffer.get_height_of_plane(1),
                     1,
                 )
                 .unwrap();

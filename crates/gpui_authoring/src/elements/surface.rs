@@ -1,27 +1,16 @@
 #[cfg(target_os = "macos")]
 use crate::MacWindowExt;
+#[cfg(target_os = "windows")]
+use crate::WindowsWindowExt;
 use crate::{
     App, Bounds, Element, ElementId, GlobalElementId, IntoElement, LayoutId, ObjectFit, Pixels,
     Style, StyleRefinement, Styled, Window,
 };
-#[cfg(target_os = "macos")]
-use core_video::pixel_buffer::CVPixelBuffer;
+// The payload lives in the engine beside `PaintSurface`, the primitive it becomes: `surface()`
+// takes one and `draw_surfaces` reads it, and neither the element nor a renderer invents a
+// transport of its own.
+use gpui_engine::SurfaceSource;
 use refineable::Refineable;
-
-/// A source of a surface's content.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SurfaceSource {
-    /// A macOS image buffer from CoreVideo
-    #[cfg(target_os = "macos")]
-    Surface(CVPixelBuffer),
-}
-
-#[cfg(target_os = "macos")]
-impl From<CVPixelBuffer> for SurfaceSource {
-    fn from(value: CVPixelBuffer) -> Self {
-        SurfaceSource::Surface(value)
-    }
-}
 
 /// A surface element.
 pub struct Surface {
@@ -31,7 +20,6 @@ pub struct Surface {
 }
 
 /// Create a new surface element.
-#[cfg(target_os = "macos")]
 pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
     Surface {
         source: source.into(),
@@ -85,19 +73,39 @@ impl Element for Surface {
     fn paint(
         &mut self,
         _global_id: Option<&GlobalElementId>,
-        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] bounds: Bounds<Pixels>,
+        #[cfg_attr(
+            not(any(target_os = "macos", target_os = "windows")),
+            allow(unused_variables)
+        )]
+        bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
-        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] window: &mut Window,
+        #[cfg_attr(
+            not(any(target_os = "macos", target_os = "windows")),
+            allow(unused_variables)
+        )]
+        window: &mut Window,
         _: &mut App,
     ) {
         match &self.source {
             #[cfg(target_os = "macos")]
-            SurfaceSource::Surface(surface) => {
-                let size = crate::size(surface.get_width().into(), surface.get_height().into());
+            SurfaceSource::CoreVideo(image_buffer) => {
+                let size = crate::size(
+                    image_buffer.get_width().into(),
+                    image_buffer.get_height().into(),
+                );
                 let new_bounds = self.object_fit.get_bounds(bounds, size);
                 // TODO: Add support for corner_radii
-                window.paint_surface(new_bounds, surface.clone());
+                window.paint_surface(new_bounds, image_buffer.clone());
+            }
+            #[cfg(target_os = "windows")]
+            SurfaceSource::DirectX(view) => {
+                let new_bounds = match directx_view_size(view) {
+                    Some(size) => self.object_fit.get_bounds(bounds, size),
+                    None => bounds,
+                };
+                // TODO: Add support for corner_radii
+                window.paint_surface(new_bounds, view.clone());
             }
             #[allow(unreachable_patterns)]
             _ => {}
@@ -116,5 +124,29 @@ impl IntoElement for Surface {
 impl Styled for Surface {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
+    }
+}
+
+/// The pixel size of the texture behind a Direct3D shader resource view.
+///
+/// The Windows arm fits the surface to its bounds exactly as the macOS arm does, and a view carries
+/// no size of its own — the resource behind it does. A view whose resource is not a texture, or
+/// whose query fails, has no size to fit, and the element falls back to its bounds.
+#[cfg(target_os = "windows")]
+fn directx_view_size(
+    view: &windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView,
+) -> Option<crate::Size<crate::DevicePixels>> {
+    use windows::Win32::Graphics::Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Texture2D};
+    use windows::core::Interface as _;
+
+    unsafe {
+        let resource = view.GetResource().ok()?;
+        let texture: ID3D11Texture2D = resource.cast().ok()?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        texture.GetDesc(&mut desc);
+        Some(crate::size(
+            crate::DevicePixels::from(desc.Width as i32),
+            crate::DevicePixels::from(desc.Height as i32),
+        ))
     }
 }
