@@ -33,7 +33,7 @@ impl PlatformRenderer for WgpuRenderer {
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        Some(WgpuRenderer::gpu_specs(self))
+        WgpuRenderer::gpu_specs(self)
     }
 
     /// The shared context slot, which is where a producer on this path reaches the device and the
