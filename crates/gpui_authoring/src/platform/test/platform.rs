@@ -516,7 +516,6 @@ impl Platform for TestPlatform {
                 None => None,
             },
         };
-        };
         let window = TestWindow::new(
             handle,
             params,
