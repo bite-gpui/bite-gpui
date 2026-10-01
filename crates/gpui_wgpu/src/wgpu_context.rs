@@ -205,7 +205,7 @@ impl WgpuContext {
         let instance = Self::instance(None);
         let device_id_filter = Self::device_id_filter();
         let (adapter, device, queue, dual_source_blending, color_texture_format, target_format) =
-            gpui::block_on(async {
+            pollster::block_on(async {
                 let mut adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
                 Self::sort_adapters(&mut adapters, device_id_filter, None);
 

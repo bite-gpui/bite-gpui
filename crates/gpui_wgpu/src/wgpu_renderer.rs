@@ -1,10 +1,10 @@
-use crate::{CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext};
+use crate::{CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext, WgpuImportedTexture};
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
 use gpui_engine::{
-    AtlasTextureId, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer,
-    get_gamma_correction_ratios,
+    AtlasTextureId, CustomRenderPrimitive, Path, PlatformAtlas, PrimitiveBatch, Scene,
+    SceneRenderer, get_gamma_correction_ratios,
 };
 use gpui_platform::{Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size};
 use log::warn;
@@ -135,6 +135,7 @@ struct WgpuPipelines {
     poly_sprites: wgpu::RenderPipeline,
     #[allow(dead_code)]
     surfaces: wgpu::RenderPipeline,
+    imported_textures: wgpu::RenderPipeline,
 }
 
 /// One frame allocation of instance data, ready to bind.
@@ -155,6 +156,7 @@ struct InstanceBindings {
     monochrome_sprites: InstanceBinding,
     subpixel_sprites: InstanceBinding,
     polychrome_sprites: InstanceBinding,
+    imported_textures: InstanceBinding,
 }
 
 struct WgpuBindGroupLayouts {
@@ -162,6 +164,7 @@ struct WgpuBindGroupLayouts {
     instances: wgpu::BindGroupLayout,
     texture: wgpu::BindGroupLayout,
     surfaces: wgpu::BindGroupLayout,
+    imported_texture: wgpu::BindGroupLayout,
 }
 
 /// Shared GPU context reference, used to coordinate device recovery across multiple windows.
@@ -186,6 +189,7 @@ struct WgpuResources {
     pipelines: WgpuPipelines,
     bind_group_layouts: WgpuBindGroupLayouts,
     atlas_sampler: wgpu::Sampler,
+    imported_texture_sampler: wgpu::Sampler,
     atlas_texture_bind_groups: FxHashMap<AtlasTextureId, CachedTextureBindGroup>,
     globals_buffer: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
@@ -609,11 +613,34 @@ impl WgpuRendererCore {
             ],
         });
 
+        let imported_texture = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("imported_texture_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
         WgpuBindGroupLayouts {
             globals,
             instances,
             texture,
             surfaces,
+            imported_texture,
         }
     }
 
@@ -918,6 +945,19 @@ impl WgpuRendererCore {
             &shader_module,
         );
 
+        let imported_textures = create_pipeline(
+            "imported_textures",
+            "vs_quad",
+            "fs_imported_texture",
+            &layouts.globals,
+            &layouts.instances,
+            Some(&layouts.imported_texture),
+            wgpu::PrimitiveTopology::TriangleStrip,
+            &[Some(color_target.clone())],
+            1,
+            &shader_module,
+        );
+
         let surfaces = create_pipeline(
             "surfaces",
             "vs_surface",
@@ -941,6 +981,7 @@ impl WgpuRendererCore {
             subpixel_sprites,
             poly_sprites,
             surfaces,
+            imported_textures,
         }
     }
 
@@ -1107,6 +1148,25 @@ impl WgpuRenderer {
 
     /// Returns `None` once GPU resources have been released by `destroy` or a pending
     /// device recovery.
+    /// A producer on this path renders its texture on *this* device -- that is the whole of the
+    /// same-device rule -- so a renderer that can be built without a window is where an
+    /// application that owns one reaches a device from. A window's is reached through
+    /// `Window::device_any`, which is the same device by another route.
+    pub fn device(&self) -> &wgpu::Device {
+        self.core().expect("renderer has no core").resources.device.as_ref()
+    }
+
+    /// The queue this renderer submits on.
+    pub fn queue(&self) -> &wgpu::Queue {
+        self.core().expect("renderer has no core").resources.queue.as_ref()
+    }
+
+    /// The shared context slot this renderer draws through, if it has one.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn gpu_context(&self) -> Option<GpuContext> {
+        self.context.clone()
+    }
+
     pub fn gpu_specs(&self) -> Option<GpuSpecs> {
         let adapter_info = &self.core()?.adapter_info;
         Some(GpuSpecs {
@@ -1242,6 +1302,18 @@ impl WgpuRendererCore {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+
+        // §4: a clip against a rounded corner must not bleed the opposite edge in,
+        // so the address mode is pinned rather than inherited from the defaults.
+        let imported_texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("imported_texture_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let uniform_alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
         let globals_size = std::mem::size_of::<GlobalParams>() as u64;
         let gamma_size = std::mem::size_of::<GammaParams>() as u64;
@@ -1345,6 +1417,7 @@ impl WgpuRendererCore {
                 pipelines,
                 bind_group_layouts,
                 atlas_sampler,
+                imported_texture_sampler,
                 atlas_texture_bind_groups: FxHashMap::default(),
                 globals_buffer,
                 globals_bind_group,
@@ -1612,6 +1685,16 @@ impl WgpuRendererCore {
                     }
                     // Surfaces are macOS-only for video playback and are not
                     // implemented by the WGPU renderer.
+                    PrimitiveBatch::Custom(range) => {
+                        self.draw_imported_textures(
+                            &instance_bindings.imported_textures,
+                            &scene.custom[range.clone()],
+                            instance_bindings.imported_textures.first_instance + range.start as u32,
+                            &mut pass,
+                        )?;
+                    }
+                    // Surfaces are macOS-only for video playback and are not
+                    // implemented by the WGPU renderer.
                     PrimitiveBatch::Surfaces(_surfaces) => {}
                 }
             }
@@ -1659,6 +1742,15 @@ impl WgpuRendererCore {
                 "polychrome_sprites_bind_group",
                 instance_offset,
                 &scene.polychrome_sprites,
+            )?,
+            imported_textures: self.write_instance_binding(
+                "imported_textures_bind_group",
+                instance_offset,
+                &scene
+                    .custom
+                    .iter()
+                    .map(CustomRenderPrimitive::to_quad_record)
+                    .collect::<Vec<_>>(),
             )?,
         })
     }
@@ -1779,6 +1871,59 @@ impl WgpuRendererCore {
                 ..sprite_instances.first_instance + range.end,
         );
         Ok(())
+    }
+
+    fn draw_imported_textures(
+        &self,
+        instances: &InstanceBinding,
+        primitives: &[CustomRenderPrimitive],
+        first_instance: u32,
+        pass: &mut wgpu::RenderPass<'_>,
+    ) -> Result<()> {
+        if primitives.is_empty() {
+            return Ok(());
+        }
+
+        let resources = self.resources();
+        pass.set_pipeline(&resources.pipelines.imported_textures);
+        pass.set_bind_group(0, &resources.globals_bind_group, &[]);
+        pass.set_bind_group(1, &instances.bind_group, &[]);
+
+        for (offset, primitive) in primitives.iter().enumerate() {
+            let CustomRenderPrimitive::Texture { handle, .. } = primitive;
+            let Some(texture) = handle.payload.downcast_ref::<WgpuImportedTexture>() else {
+                anyhow::bail!("imported texture handle does not hold a wgpu texture view");
+            };
+
+            let bind_group = self.create_imported_texture_bind_group(&texture.view);
+            pass.set_bind_group(2, &bind_group, &[]);
+
+            let instance = first_instance + offset as u32;
+            pass.draw(0..4, instance..instance + 1);
+        }
+        Ok(())
+    }
+
+    fn create_imported_texture_bind_group(&self, view: &wgpu::TextureView) -> wgpu::BindGroup {
+        let resources = self.resources();
+        resources
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("imported_texture_bind_group"),
+                layout: &resources.bind_group_layouts.imported_texture,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(
+                            &resources.imported_texture_sampler,
+                        ),
+                    },
+                ],
+            })
     }
 
     unsafe fn instance_bytes<T>(instances: &[T]) -> &[u8] {
@@ -2312,6 +2457,7 @@ pub struct WgpuHeadlessRenderer {
     core: WgpuRendererCore,
     render_target: Option<HeadlessRenderTarget>,
     observed_error_generation: u64,
+    viewport_size: Option<Size<DevicePixels>>,
 }
 
 #[cfg(all(
@@ -2337,6 +2483,7 @@ impl WgpuHeadlessRenderer {
             core,
             render_target: None,
             observed_error_generation,
+            viewport_size: None,
         })
     }
 
@@ -2527,22 +2674,32 @@ impl WgpuHeadlessRenderer {
     not(target_family = "wasm"),
     any(test, feature = "bench-support", feature = "test-support")
 ))]
-impl gpui::PlatformHeadlessRenderer for WgpuHeadlessRenderer {
-    fn render_scene_to_image(
-        &mut self,
-        scene: &Scene,
-        size: Size<DevicePixels>,
-    ) -> anyhow::Result<image::RgbaImage> {
-        self.render(scene, size)?;
-        self.read_image()
+impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
+    fn draw(&mut self, scene: &Scene) -> bool {
+        // A headless renderer has no compositor to observe, so it reports presented and
+        // renders offscreen at the size the caller last set.
+        if let Some(size) = self.viewport_size {
+            let _ = self.render(scene, size);
+        }
+        true
+    }
+
+    fn sprite_atlas(&self) -> Arc<dyn gpui_engine::PlatformAtlas> {
+        self.core.atlas.clone()
+    }
+
+    fn set_viewport_size(&mut self, size: Size<DevicePixels>) {
+        self.viewport_size = Some(size);
     }
 
     fn render_scene(&mut self, scene: &Scene, size: Size<DevicePixels>) -> anyhow::Result<()> {
         self.render(scene, size)
     }
 
-    fn sprite_atlas(&self) -> Arc<dyn gpui::PlatformAtlas> {
-        self.core.atlas.clone()
+    fn read_pixels(&mut self) -> anyhow::Result<PixelBuffer> {
+        let image = self.read_image()?;
+        let (width, height) = image.dimensions();
+        gpui_engine::PixelBuffer::new(width, height, image.into_raw())
     }
 }
 
