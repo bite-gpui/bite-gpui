@@ -3,8 +3,8 @@ use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
 use gpui_engine::{
-    AtlasTextureId, CustomRenderPrimitive, Path, PixelBuffer, PlatformAtlas, PrimitiveBatch,
-    Scene, SceneRenderer, get_gamma_correction_ratios,
+    AtlasTextureId, CustomRenderPrimitive, Path, PlatformAtlas, PrimitiveBatch, Scene,
+    SceneRenderer, get_gamma_correction_ratios,
 };
 use gpui_platform::{Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size};
 use log::warn;
@@ -2696,7 +2696,7 @@ impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
         self.render(scene, size)
     }
 
-    fn read_pixels(&mut self) -> anyhow::Result<PixelBuffer> {
+    fn read_pixels(&mut self) -> anyhow::Result<gpui_engine::PixelBuffer> {
         let image = self.read_image()?;
         let (width, height) = image.dimensions();
         gpui_engine::PixelBuffer::new(width, height, image.into_raw())
