@@ -1,5 +1,5 @@
 use crate::{
-    Bounds, DevicePixels, DispatchEventResult, GpuSpecs, HeadlessAtlas, PixelBuffer, Pixels,
+    Bounds, DevicePixels, DispatchEventResult, GpuSpecs, HeadlessAtlas, Pixels,
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     PromptButton, RequestFrameOptions, Scene, SceneRenderer, Size, TestPlatform,
     TextInputConfiguration, TextInputStateChange, WindowAppearance, WindowBackgroundAppearance,
@@ -596,7 +596,7 @@ impl SceneRenderer for TestRenderer {
         &mut self,
         _scene: &Scene,
         _size: Size<DevicePixels>,
-    ) -> anyhow::Result<PixelBuffer> {
+    ) -> anyhow::Result<gpui_engine::PixelBuffer> {
         anyhow::bail!("render_to_image not available: no HeadlessRenderer configured")
     }
 }
