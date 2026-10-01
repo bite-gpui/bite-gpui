@@ -130,8 +130,14 @@ impl Scene {
                 self.polychrome_sprites.push(*sprite);
             }
             Primitive::Surface(surface) => {
-                surface.order = order;
-                self.surfaces.push(surface.clone());
+                // On a platform with no surface arm yet, `SurfaceSource` — and so `PaintSurface` —
+                // is uninhabited and this arm is unreachable. It stays for the platforms that do
+                // carry a source (macOS and Windows today, Linux once the dma-buf arm lands).
+                #[allow(unreachable_code)]
+                {
+                    surface.order = order;
+                    self.surfaces.push(surface.clone());
+                }
             }
             Primitive::Custom(custom) => {
                 *custom.order_mut() = order;
@@ -779,14 +785,76 @@ impl From<PolychromeSprite> for Primitive {
     }
 }
 
+/// A source of a surface's content: pixels GPUI did not draw, arriving on the renderer's own
+/// device or from another one.
+///
+/// The variant is a cfg-gated payload, exactly as the field it replaces was, so the engine names
+/// only the transport it is compiled against and stays free of every graphics API but that one. A
+/// same-device texture and a cross-process handle are the same value here: both reach the renderer
+/// as a view it samples, and the renderer cannot tell how the view was made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub enum SurfaceSource {
+    /// A CoreVideo image buffer, backed by an IOSurface.
+    #[cfg(target_os = "macos")]
+    CoreVideo(core_video::pixel_buffer::CVPixelBuffer),
+    /// A Direct3D 11 shader resource view, made on the window renderer's own device.
+    #[cfg(target_os = "windows")]
+    DirectX(windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView),
+}
+
+#[cfg(target_os = "macos")]
+impl From<core_video::pixel_buffer::CVPixelBuffer> for SurfaceSource {
+    fn from(image_buffer: core_video::pixel_buffer::CVPixelBuffer) -> Self {
+        SurfaceSource::CoreVideo(image_buffer)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView> for SurfaceSource {
+    fn from(view: windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView) -> Self {
+        SurfaceSource::DirectX(view)
+    }
+}
+
 #[derive(Clone, Debug)]
 #[allow(missing_docs)]
 pub struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
-    #[cfg(target_os = "macos")]
-    pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
+    /// The pixels to composite, and the transport they arrived on.
+    pub source: SurfaceSource,
+}
+
+impl PaintSurface {
+    /// Encode this surface into the quad instance record the backends' shaders read.
+    ///
+    /// The geometry and the content-mask clip are the quad path's rather than a second
+    /// implementation of them, which is the whole reason the surface rides `PaintSurface` and not
+    /// a primitive of its own. The surface carries no opacity, y-flip or corner radii yet: the
+    /// element sets no rounded corners, and the payload is sampled straight through, so the record
+    /// is the plain one a quad with no styling would build.
+    pub fn to_quad_record(&self) -> Quad {
+        let mut background = Background::default();
+        background.solid = Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 1.0,
+        };
+
+        Quad {
+            order: self.order,
+            border_style: BorderStyle::Solid,
+            bounds: self.bounds,
+            content_mask: self.content_mask,
+            background,
+            border_color: Hsla::default(),
+            corner_radii: Corners::default(),
+            border_widths: Edges::default(),
+        }
+    }
 }
 
 impl From<PaintSurface> for Primitive {
