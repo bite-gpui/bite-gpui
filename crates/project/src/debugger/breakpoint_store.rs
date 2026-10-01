@@ -234,7 +234,7 @@ impl BreakpointStore {
         this.update(&mut cx, move |this, cx| {
             let bps = this
                 .breakpoints
-                .entry(Arc::<Path>::from(message.payload.path.as_ref()))
+                .entry(Arc::<Path>::from(Path::new(&message.payload.path)))
                 .or_insert_with(|| BreakpointsInFile::new(buffer, cx));
 
             bps.breakpoints = message
