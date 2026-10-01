@@ -1472,7 +1472,7 @@ impl WorkspaceDb {
                     && relative_worktree_path != String::default()
                 {
                     ToolchainScope::Subproject(
-                        Arc::from(worktree_root_path.as_ref()),
+                        Arc::from(Path::new(&worktree_root_path)),
                         relative_path.into(),
                     )
                 } else {
@@ -2540,7 +2540,7 @@ impl WorkspaceDb {
                                 language_name: LanguageName::new(&language),
                                 as_json: serde_json::Value::from_str(&json).ok()?,
                             },
-                           Arc::from(worktree_root_path.as_ref()),
+                           Arc::from(Path::new(&worktree_root_path)),
                             RelPath::from_unix_str(&relative_worktree_path).log_err()?.into(),
                         ))
                     },

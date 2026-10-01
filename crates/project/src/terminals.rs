@@ -71,7 +71,7 @@ impl Project {
 
         let path: Option<Arc<Path>> = if let Some(cwd) = &spawn_task.cwd {
             if is_via_remote {
-                Some(Arc::from(cwd.as_ref()))
+                Some(Arc::from(cwd.as_path()))
             } else {
                 let cwd = cwd.to_string_lossy();
                 let tilde_substituted = shellexpand::tilde(&cwd);
