@@ -29,7 +29,7 @@ impl PlatformRenderer for WgpuRenderer {
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        Some(WgpuRenderer::gpu_specs(self))
+        WgpuRenderer::gpu_specs(self)
     }
 
     fn set_subpixel_layout(&mut self, is_bgr: bool) {
