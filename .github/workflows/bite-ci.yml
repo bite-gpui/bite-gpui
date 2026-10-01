@@ -1,6 +1,6 @@
 # The fork's own CI, in one file.
 #
-# It is here, and not only in `bite-gpui/distribution`, because of how a
+# It is here, and not only in `bite-gpui/bite-distribution`, because of how a
 # `pull_request` run resolves its workflow files: from the pull request's *merge*
 # commit, base and head together. A file that only a pull request adds therefore
 # runs for that pull request and no other, so gating the pull requests that target a
@@ -17,7 +17,7 @@
 # the real platforms costs wall-clock and nothing else.
 #
 # The checks that read the tree rather than the release tag stay in
-# `bite-gpui/distribution` and are called rather than copied. `verify.yml` verifies a
+# `bite-gpui/bite-distribution` and are called rather than copied. `verify.yml` verifies a
 # *target*, which means staging the branch, and staging refuses an untagged tip —
 # exactly what a pull request's head is.
 name: Bite CI
@@ -31,7 +31,7 @@ jobs:
   # The target table and the naming rule. The ref is the distribution branch until
   # the entry point reaches `main`.
   checks:
-    uses: bite-gpui/distribution/.github/workflows/pr-checks.yml@pr-checks
+    uses: bite-gpui/bite-distribution/.github/workflows/pr-checks.yml@pr-checks
     with:
       repository: ${{ github.repository }}
       ref: ${{ github.sha }}
