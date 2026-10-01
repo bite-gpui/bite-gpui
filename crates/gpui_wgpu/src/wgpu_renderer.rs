@@ -2696,7 +2696,7 @@ impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
         self.render(scene, size)
     }
 
-    fn read_pixels(&mut self) -> anyhow::Result<PixelBuffer> {
+    fn read_pixels(&mut self) -> anyhow::Result<gpui_engine::PixelBuffer> {
         let image = self.read_image()?;
         let (width, height) = image.dimensions();
         gpui_engine::PixelBuffer::new(width, height, image.into_raw())
