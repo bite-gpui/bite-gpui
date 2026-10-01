@@ -244,7 +244,7 @@ impl PythonDebugAdapter {
                     }
                 }
 
-                Ok(Arc::from(adapter_path.as_ref()))
+                Ok(Arc::from(adapter_path.as_path()))
             })
             .await
             .clone()
