@@ -596,7 +596,7 @@ impl SceneRenderer for TestRenderer {
         &mut self,
         _scene: &Scene,
         _size: Size<DevicePixels>,
-    ) -> anyhow::Result<PixelBuffer> {
+    ) -> anyhow::Result<gpui_engine::PixelBuffer> {
         anyhow::bail!("render_to_image not available: no HeadlessRenderer configured")
     }
 }
