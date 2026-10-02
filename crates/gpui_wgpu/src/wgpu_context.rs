@@ -177,7 +177,7 @@ impl WgpuContext {
 
     #[cfg(all(
         not(target_family = "wasm"),
-        any(test, feature = "bench-support", feature = "test-support")
+        any(test, feature = "bench-support", feature = "test-support", feature = "headless")
     ))]
     pub(crate) fn new_headless() -> anyhow::Result<(Self, wgpu::TextureFormat)> {
         // Creating a device takes tens of milliseconds, and benchmarks create a headless
@@ -199,7 +199,7 @@ impl WgpuContext {
 
     #[cfg(all(
         not(target_family = "wasm"),
-        any(test, feature = "bench-support", feature = "test-support")
+        any(test, feature = "bench-support", feature = "test-support", feature = "headless")
     ))]
     fn create_headless() -> anyhow::Result<(Self, wgpu::TextureFormat)> {
         let instance = Self::instance(None);
@@ -265,7 +265,7 @@ impl WgpuContext {
 
     #[cfg(all(
         not(target_family = "wasm"),
-        any(test, feature = "bench-support", feature = "test-support")
+        any(test, feature = "bench-support", feature = "test-support", feature = "headless")
     ))]
     /// Both candidates are 8-bit RGBA-ordered or BGRA-ordered formats: headless readback
     /// copies rows as 4 bytes per pixel and only swizzles, so no other formats may be added
