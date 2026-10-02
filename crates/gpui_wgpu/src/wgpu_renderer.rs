@@ -2530,7 +2530,7 @@ impl WgpuRenderer {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support")
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 struct HeadlessRenderTarget {
     texture: wgpu::Texture,
@@ -2539,7 +2539,7 @@ struct HeadlessRenderTarget {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support")
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 impl HeadlessRenderTarget {
     fn size(&self) -> Size<DevicePixels> {
@@ -2552,7 +2552,7 @@ impl HeadlessRenderTarget {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support")
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 pub struct WgpuHeadlessRenderer {
     context: WgpuContext,
@@ -2564,7 +2564,7 @@ pub struct WgpuHeadlessRenderer {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support")
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 impl WgpuHeadlessRenderer {
     pub fn new() -> anyhow::Result<Self> {
@@ -2774,7 +2774,7 @@ impl WgpuHeadlessRenderer {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support")
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
     fn draw(&mut self, scene: &Scene) -> bool {

@@ -44,7 +44,7 @@ mod demo {
         AnyWindowHandle, AppContext as _, Context, DmaBufFormat, DmaBufHandle, DmaBufPlane,
         HeadlessAppContext, IntoElement, Render, Window, div, prelude::*, px, size, surface,
     };
-    use gpui_wgpu::{CosmicTextSystem, WgpuHeadlessRenderer};
+    use gpui_wgpu::CosmicTextSystem;
 
     const WIDTH: u32 = 64;
     const HEIGHT: u32 = 64;
@@ -186,12 +186,10 @@ mod demo {
     /// Open a window with the surface, draw a frame, and read the centre pixel back.
     fn composite(handle: DmaBufHandle) -> Result<[u8; 4]> {
         let text_system = Arc::new(CosmicTextSystem::new("fallback"));
-        // The Linux platform has no headless renderer of its own (unlike macOS's Metal one), so the
-        // example supplies the wgpu one — the same renderer a window uses.
+        // The Linux platform has no renderer of its own, so `current_headless_renderer` returns the
+        // wgpu one here, and the context builds it like any platform's.
         let mut cx = HeadlessAppContext::with_platform(text_system, Arc::new(()), || {
-            Ok(Some(
-                Box::new(WgpuHeadlessRenderer::new()?) as Box<dyn gpui::SceneRenderer>
-            ))
+            Ok(gpui::current_headless_renderer())
         });
 
         let window = cx.open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |_window, cx| {

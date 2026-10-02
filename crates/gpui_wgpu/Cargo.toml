@@ -15,6 +15,10 @@ doctest = false
 [features]
 default = []
 bench-support = ["gpui/bench-support", "dep:image"]
+# Exposes the headless renderer (and the `image` dependency it reads back with) without pulling in
+# `gpui/test-support`, so a platform crate can build one from `current_headless_renderer` without a
+# feature cycle.
+headless = ["dep:image"]
 font-kit = ["dep:font-kit"]
 test-support = ["gpui/test-support", "dep:image"]
 
@@ -55,7 +59,7 @@ ash = "0.38"
 
 [dev-dependencies]
 criterion.workspace = true
-gpui = { workspace = true, features = ["bench-support"] }
+gpui = { workspace = true, features = ["bench-support", "platform"] }
 image.workspace = true
 naga = { version = "29.0.4", features = ["wgsl-in"] }
 
