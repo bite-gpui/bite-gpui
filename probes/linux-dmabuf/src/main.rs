@@ -554,10 +554,16 @@ fn run_fence_probe(
     Ok(())
 }
 
-/// Stage 5 — a tiled (vendor-modifier) round trip: create a tiled image, clear it through a command
-/// buffer (a tiled image cannot be mapped), export its fd and modifier, import it back and read the
-/// bytes through a copy. The import path uses the modifier list on both sides, relying on the same
-/// device laying the same modifier out deterministically.
+/// Stage 5 — a tiled (vendor-modifier) round trip: the producer creates a tiled image, fills it from
+/// a linear staging buffer, exports its fd, modifier and plane layout, and the consumer imports the
+/// fd, pins its image to that exact layout with `VkImageDrmFormatModifierExplicitCreateInfoEXT`, and
+/// reads the bytes back. The fill is a gradient (not a clear): a tiled image cannot be mapped, and a
+/// solid colour reads back solid under every tiling, so a clear would hide a layout mismatch.
+///
+/// The producer requests `STORAGE` usage to stop ANV enabling implicit (CCS) compression: that
+/// compression state is not carried by the single-plane `I915_FORMAT_MOD_Y_TILED` dma-buf, so a
+/// compressed producer imports as garbage. With an uncompressed surface the round trip is byte-exact
+/// — a tiled dma-buf is importable and sampleable with no CPU copy.
 fn run_tiled_round_trip(
     instance: &ash::Instance,
     physical_device: ash::vk::PhysicalDevice,
@@ -570,6 +576,64 @@ fn run_tiled_round_trip(
         "=== tiled round trip, {} ({modifier:#018x}) ===",
         modifier_name(modifier)
     );
+
+    // Does the driver advertise compression control (and thereby expose whether it compresses
+    // tiled images by default)?
+    {
+        let extensions = unsafe { instance.enumerate_device_extension_properties(physical_device) }
+            .unwrap_or_default();
+        let names: Vec<String> = extensions
+            .iter()
+            .map(|e| c_char_slice_to_string(&e.extension_name))
+            .collect();
+        for name in [
+            "VK_EXT_image_compression_control",
+            "VK_EXT_image_drm_format_modifier",
+        ] {
+            println!("  {name}: {}", names.iter().any(|n| n == name));
+        }
+    }
+
+    // Does the driver even allow dma-buf export/import for this modifier? Query the external
+    // capabilities of the tiled format before doing anything else.
+    {
+        let mut external_info = vk::PhysicalDeviceExternalImageFormatInfo::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+        let mut drm_info = vk::PhysicalDeviceImageDrmFormatModifierInfoEXT::default()
+            .drm_format_modifier(modifier)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let image_info = vk::PhysicalDeviceImageFormatInfo2::default()
+            .format(vk::Format::R8G8B8A8_UNORM)
+            .ty(vk::ImageType::TYPE_2D)
+            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+            .usage(
+                vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST,
+            )
+            .push_next(&mut external_info)
+            .push_next(&mut drm_info);
+        let mut external_props = vk::ExternalImageFormatProperties::default();
+        let mut image_props = vk::ImageFormatProperties2::default().push_next(&mut external_props);
+        match unsafe {
+            instance.get_physical_device_image_format_properties2(
+                physical_device,
+                &image_info,
+                &mut image_props,
+            )
+        } {
+            Ok(()) => println!(
+                "  external dma-buf features: {:?}, compatible handle types: {:?}",
+                external_props
+                    .external_memory_properties
+                    .external_memory_features,
+                external_props
+                    .external_memory_properties
+                    .compatible_handle_types,
+            ),
+            Err(code) => println!("  external dma-buf query failed: {code:?}"),
+        }
+    }
 
     let queue_families =
         unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
@@ -596,6 +660,7 @@ fn run_tiled_round_trip(
     let device = unsafe { instance.create_device(physical_device, &device_create_info, None) }
         .context("create device")?;
     let external_memory_fd = ExternalMemoryFd::new(instance, &device);
+    let ext_drm = ash::ext::image_drm_format_modifier::Device::new(instance, &device);
     let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
     let command_pool = unsafe {
         device.create_command_pool(
@@ -616,11 +681,242 @@ fn run_tiled_round_trip(
     }
     .context("command buffer")?[0];
 
-    // --- producer: a tiled image, cleared, then exported -----------------
+    let memory_properties =
+        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+
+    // The producer's source pattern: a gradient, so a mis-imported tiling shows up as scrambled
+    // bytes rather than a solid colour that every layout would reproduce.
+    let mut pattern = vec![0u8; (PIXELS * PIXELS * 4) as usize];
+    for y in 0..PIXELS {
+        for x in 0..PIXELS {
+            let offset = ((y * PIXELS + x) * 4) as usize;
+            pattern[offset] = (x * 16) as u8;
+            pattern[offset + 1] = (y * 16) as u8;
+            pattern[offset + 2] = 128;
+            pattern[offset + 3] = 255;
+        }
+    }
+
+    // --- producer: a tiled image, filled from a linear staging buffer, then exported ---
     let modifiers = [modifier];
     let mut modifier_list =
         vk::ImageDrmFormatModifierListCreateInfoEXT::default().drm_format_modifiers(&modifiers);
+    let mut producer_external = vk::ExternalMemoryImageCreateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
     let image_create_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .extent(vk::Extent3D {
+            width: PIXELS,
+            height: PIXELS,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+        // STORAGE is load-bearing, not cosmetic: ANV enables lossless (CCS) compression by default
+        // for a sampled Y_TILED R8G8B8A8 image, and that compression state is *not* carried by the
+        // exported single-plane `I915_FORMAT_MOD_Y_TILED` dma-buf. A consumer importing the fd then
+        // reads the compressed payload as raw bytes and the image is garbage. Requesting STORAGE
+        // makes ANV allocate the surface uncompressed, so the plane is self-describing and the
+        // import is byte-exact.
+        .usage(
+            vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::STORAGE,
+        )
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .push_next(&mut modifier_list)
+        .push_next(&mut producer_external);
+    let producer_image = unsafe { device.create_image(&image_create_info, None) }
+        .context("create tiled producer image")?;
+    let requirements = unsafe { device.get_image_memory_requirements(producer_image) };
+
+    // DIAGNOSTIC: host-visible so the shared memory can be poked from the CPU.
+    let memory_type_index = memory_properties
+        .memory_types
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            requirements.memory_type_bits & (1 << index) != 0
+                && memory_type.property_flags.contains(
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+        })
+        .map(|(index, _)| index as u32)
+        .context("no host-visible image memory type")?;
+
+    let mut export_info = vk::ExportMemoryAllocateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let mut producer_dedicated = vk::MemoryDedicatedAllocateInfo::default().image(producer_image);
+    let allocate_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(requirements.size)
+        .memory_type_index(memory_type_index)
+        .push_next(&mut export_info)
+        .push_next(&mut producer_dedicated);
+    let memory = unsafe { device.allocate_memory(&allocate_info, None) }
+        .context("allocate tiled export memory")?;
+    unsafe { device.bind_image_memory(producer_image, memory, 0) }
+        .context("bind tiled producer image")?;
+
+    // A linear, host-visible staging buffer holding the source pattern.
+    let pattern_size = (PIXELS * PIXELS * 4) as u64;
+    let staging_buffer = unsafe {
+        device.create_buffer(
+            &vk::BufferCreateInfo::default()
+                .size(pattern_size)
+                .usage(vk::BufferUsageFlags::TRANSFER_SRC),
+            None,
+        )
+    }
+    .context("staging buffer")?;
+    let staging_requirements = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
+    let staging_memory_type_index = memory_properties
+        .memory_types
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            staging_requirements.memory_type_bits & (1 << index) != 0
+                && memory_type.property_flags.contains(
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+        })
+        .map(|(index, _)| index as u32)
+        .context("no host-visible memory for staging")?;
+    let staging_memory = unsafe {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(staging_requirements.size)
+                .memory_type_index(staging_memory_type_index),
+            None,
+        )
+    }
+    .context("staging memory")?;
+    unsafe { device.bind_buffer_memory(staging_buffer, staging_memory, 0) }
+        .context("bind staging")?;
+    let staging_mapped =
+        unsafe { device.map_memory(staging_memory, 0, pattern_size, vk::MemoryMapFlags::empty()) }
+            .context("map staging")? as *mut u8;
+    unsafe { std::ptr::copy_nonoverlapping(pattern.as_ptr(), staging_mapped, pattern.len()) };
+    unsafe { device.unmap_memory(staging_memory) };
+
+    let subresource_range = vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .level_count(1)
+        .layer_count(1);
+    let region = vk::BufferImageCopy::default()
+        .buffer_offset(0)
+        .buffer_row_length(0)
+        .buffer_image_height(0)
+        .image_subresource(
+            vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .mip_level(0)
+                .base_array_layer(0)
+                .layer_count(1),
+        )
+        .image_offset(vk::Offset3D::default())
+        .image_extent(vk::Extent3D {
+            width: PIXELS,
+            height: PIXELS,
+            depth: 1,
+        });
+    unsafe {
+        device
+            .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
+            .context("begin command buffer")?;
+        let to_dst = vk::ImageMemoryBarrier::default()
+            .image(producer_image)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .subresource_range(subresource_range);
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_dst],
+        );
+        device.cmd_copy_buffer_to_image(
+            command_buffer,
+            staging_buffer,
+            producer_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[region],
+        );
+        // Hand the buffer off in GENERAL: the layout a cross-process consumer is told to expect.
+        let to_general = vk::ImageMemoryBarrier::default()
+            .image(producer_image)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::MEMORY_READ)
+            .subresource_range(subresource_range);
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_general],
+        );
+        device
+            .end_command_buffer(command_buffer)
+            .context("end command buffer")?;
+    }
+    let command_buffers = [command_buffer];
+    let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+    unsafe { device.queue_submit(queue, &[submit_info], vk::Fence::null()) }
+        .context("submit fill")?;
+    unsafe { device.queue_wait_idle(queue) }.context("wait fill")?;
+
+    // Read back the modifier the driver chose and the producer's exact plane layout. For a DRM
+    // image the layout is queried with the memory-plane aspect, not COLOR.
+    let mut chosen_modifier = vk::ImageDrmFormatModifierPropertiesEXT::default();
+    unsafe {
+        ext_drm.get_image_drm_format_modifier_properties(producer_image, &mut chosen_modifier)
+    }
+    .context("producer modifier")?;
+    let producer_plane = unsafe {
+        device.get_image_subresource_layout(
+            producer_image,
+            vk::ImageSubresource::default()
+                .aspect_mask(vk::ImageAspectFlags::MEMORY_PLANE_0_EXT)
+                .mip_level(0)
+                .array_layer(0),
+        )
+    };
+    println!(
+        "producer: modifier {:#x}, plane layout offset={} size={} row_pitch={}",
+        chosen_modifier.drm_format_modifier,
+        producer_plane.offset,
+        producer_plane.size,
+        producer_plane.row_pitch,
+    );
+
+    let get_fd_info = vk::MemoryGetFdInfoKHR::default()
+        .memory(memory)
+        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let fd =
+        unsafe { external_memory_fd.get_memory_fd(&get_fd_info) }.context("export tiled fd")?;
+    println!("producer: exported fd {fd}, {PIXELS}x{PIXELS} tiled");
+
+    // --- consumer: create the image pinned to the producer's modifier and plane layout, then import
+    // the fd as a dedicated allocation (a DRM-modifier image requires one) ---
+    let plane_layouts = [producer_plane];
+    let mut explicit_create = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+        .drm_format_modifier(chosen_modifier.drm_format_modifier)
+        .plane_layouts(&plane_layouts);
+    let mut consumer_external = vk::ExternalMemoryImageCreateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let consumer_image_create_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
         .format(vk::Format::R8G8B8A8_UNORM)
         .extent(vk::Extent3D {
@@ -639,139 +935,48 @@ fn run_tiled_round_trip(
         )
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED)
-        .push_next(&mut modifier_list);
-    let producer_image = unsafe { device.create_image(&image_create_info, None) }
-        .context("create tiled producer image")?;
-    let requirements = unsafe { device.get_image_memory_requirements(producer_image) };
+        .push_next(&mut explicit_create)
+        .push_next(&mut consumer_external);
+    let consumer_image = unsafe { device.create_image(&consumer_image_create_info, None) }
+        .context("create explicit-layout consumer image")?;
+    let consumer_requirements = unsafe { device.get_image_memory_requirements(consumer_image) };
 
-    let memory_properties =
-        unsafe { instance.get_physical_device_memory_properties(physical_device) };
-    let memory_type_index = memory_properties
-        .memory_types
-        .iter()
-        .enumerate()
-        .find(|(index, memory_type)| {
-            requirements.memory_type_bits & (1 << index) != 0
-                && memory_type
-                    .property_flags
-                    .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
-        })
-        .map(|(index, _)| index as u32)
-        .context("no device-local image memory type")?;
-
-    let mut export_info = vk::ExportMemoryAllocateInfo::default()
-        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-    let allocate_info = vk::MemoryAllocateInfo::default()
-        .allocation_size(requirements.size)
-        .memory_type_index(memory_type_index)
-        .push_next(&mut export_info);
-    let memory = unsafe { device.allocate_memory(&allocate_info, None) }
-        .context("allocate tiled export memory")?;
-    unsafe { device.bind_image_memory(producer_image, memory, 0) }
-        .context("bind tiled producer image")?;
-
-    // Clear the tiled image: a tiled image cannot be mapped, so write it through the queue.
-    let subresource_range = vk::ImageSubresourceRange::default()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .level_count(1)
-        .layer_count(1);
-    let clear_color = vk::ClearColorValue {
-        float32: [32.0 / 255.0, 192.0 / 255.0, 64.0 / 255.0, 1.0],
-    };
-    unsafe {
-        device
-            .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
-            .context("begin command buffer")?;
-        let barrier = vk::ImageMemoryBarrier::default()
-            .image(producer_image)
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .src_access_mask(vk::AccessFlags::empty())
-            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .subresource_range(subresource_range);
-        device.cmd_pipeline_barrier(
-            command_buffer,
-            vk::PipelineStageFlags::TOP_OF_PIPE,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier],
-        );
-        device.cmd_clear_color_image(
-            command_buffer,
-            producer_image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &clear_color,
-            &[subresource_range],
-        );
-        device
-            .end_command_buffer(command_buffer)
-            .context("end command buffer")?;
-    }
-    let command_buffers = [command_buffer];
-    let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
-    unsafe { device.queue_submit(queue, &[submit_info], vk::Fence::null()) }
-        .context("submit clear")?;
-    unsafe { device.queue_wait_idle(queue) }.context("wait clear")?;
-
-    // Export the fd. The modifier is the one the driver chose from the list (Y_TILED).
-    let get_fd_info = vk::MemoryGetFdInfoKHR::default()
-        .memory(memory)
-        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-    let fd =
-        unsafe { external_memory_fd.get_memory_fd(&get_fd_info) }.context("export tiled fd")?;
-    println!(
-        "producer: exported fd {fd}, {PIXELS}x{PIXELS} tiled, modifier {} ({modifier:#018x})",
-        modifier_name(modifier)
-    );
-
-    // --- consumer: import the fd as a tiled image, read back, verify -----
     let mut import_info = vk::ImportMemoryFdInfoKHR::default()
         .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
         .fd(fd);
+    let mut consumer_dedicated = vk::MemoryDedicatedAllocateInfo::default().image(consumer_image);
     let import_allocate_info = vk::MemoryAllocateInfo::default()
-        .allocation_size(requirements.size)
+        .allocation_size(consumer_requirements.size)
         .memory_type_index(memory_type_index)
-        .push_next(&mut import_info);
+        .push_next(&mut import_info)
+        .push_next(&mut consumer_dedicated);
     let imported = unsafe { device.allocate_memory(&import_allocate_info, None) }
         .context("import tiled fd")?;
-
-    let producer_subresource = vk::ImageSubresource::default()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .mip_level(0)
-        .array_layer(0);
-    let producer_layout =
-        unsafe { device.get_image_subresource_layout(producer_image, producer_subresource) };
-    let plane_layouts = [vk::SubresourceLayout::default()
-        .offset(producer_layout.offset)
-        .size(producer_layout.size)
-        .row_pitch(producer_layout.row_pitch)];
-    let mut consumer_explicit = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
-        .drm_format_modifier(modifier)
-        .plane_layouts(&plane_layouts);
-    let consumer_image_create_info = vk::ImageCreateInfo::default()
-        .image_type(vk::ImageType::TYPE_2D)
-        .format(vk::Format::R8G8B8A8_UNORM)
-        .extent(vk::Extent3D {
-            width: PIXELS,
-            height: PIXELS,
-            depth: 1,
-        })
-        .mip_levels(1)
-        .array_layers(1)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-        .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::SAMPLED)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .push_next(&mut consumer_explicit);
-    let consumer_image = unsafe { device.create_image(&consumer_image_create_info, None) }
-        .context("create tiled consumer image")?;
     unsafe { device.bind_image_memory(consumer_image, imported, 0) }
         .context("bind tiled consumer image")?;
+    let consumer_plane = unsafe {
+        device.get_image_subresource_layout(
+            consumer_image,
+            vk::ImageSubresource::default()
+                .aspect_mask(vk::ImageAspectFlags::MEMORY_PLANE_0_EXT)
+                .mip_level(0)
+                .array_layer(0),
+        )
+    };
+    let mut consumer_modifier = vk::ImageDrmFormatModifierPropertiesEXT::default();
+    unsafe {
+        ext_drm.get_image_drm_format_modifier_properties(consumer_image, &mut consumer_modifier)
+    }
+    .context("consumer modifier")?;
+    println!(
+        "consumer: imported fd, modifier {:#x}, plane layout offset={} size={} row_pitch={}",
+        consumer_modifier.drm_format_modifier,
+        consumer_plane.offset,
+        consumer_plane.size,
+        consumer_plane.row_pitch,
+    );
 
-    // Copy the tiled image into a linear, host-visible buffer and read it back.
+    // Copy the consumer's view of the tiled image into a linear, host-visible buffer.
     let readback_size = (PIXELS * PIXELS * 4) as u64;
     let readback_buffer = unsafe {
         device.create_buffer(
@@ -782,14 +987,13 @@ fn run_tiled_round_trip(
         )
     }
     .context("readback buffer")?;
-    let readback_memory_requirements =
-        unsafe { device.get_buffer_memory_requirements(readback_buffer) };
+    let readback_requirements = unsafe { device.get_buffer_memory_requirements(readback_buffer) };
     let readback_memory_type_index = memory_properties
         .memory_types
         .iter()
         .enumerate()
         .find(|(index, memory_type)| {
-            readback_memory_requirements.memory_type_bits & (1 << index) != 0
+            readback_requirements.memory_type_bits & (1 << index) != 0
                 && memory_type.property_flags.contains(
                     vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
                 )
@@ -799,7 +1003,7 @@ fn run_tiled_round_trip(
     let readback_memory = unsafe {
         device.allocate_memory(
             &vk::MemoryAllocateInfo::default()
-                .allocation_size(readback_memory_requirements.size)
+                .allocation_size(readback_requirements.size)
                 .memory_type_index(readback_memory_type_index),
             None,
         )
@@ -808,43 +1012,82 @@ fn run_tiled_round_trip(
     unsafe { device.bind_buffer_memory(readback_buffer, readback_memory, 0) }
         .context("bind readback")?;
 
+    // Sanity check: read the producer's *own* image back through the same copy path, so a mismatch
+    // can be attributed to the import rather than to the fill.
     unsafe {
         device
             .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
-            .context("begin copy")?;
-        let barrier = vk::ImageMemoryBarrier::default()
-            .image(consumer_image)
-            .old_layout(vk::ImageLayout::UNDEFINED)
+            .context("begin producer readback")?;
+        let to_src = vk::ImageMemoryBarrier::default()
+            .image(producer_image)
+            .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
             .src_access_mask(vk::AccessFlags::empty())
             .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
             .subresource_range(subresource_range);
         device.cmd_pipeline_barrier(
             command_buffer,
-            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::ALL_COMMANDS,
             vk::PipelineStageFlags::TRANSFER,
             vk::DependencyFlags::empty(),
             &[],
             &[],
-            &[barrier],
+            &[to_src],
         );
-        let region = vk::BufferImageCopy::default()
-            .buffer_offset(0)
-            .buffer_row_length(0)
-            .buffer_image_height(0)
-            .image_subresource(
-                vk::ImageSubresourceLayers::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .mip_level(0)
-                    .base_array_layer(0)
-                    .layer_count(1),
+        device.cmd_copy_image_to_buffer(
+            command_buffer,
+            producer_image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            readback_buffer,
+            &[region],
+        );
+        device
+            .end_command_buffer(command_buffer)
+            .context("end producer readback")?;
+    }
+    let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+    unsafe { device.queue_submit(queue, &[submit_info], vk::Fence::null()) }
+        .context("submit producer readback")?;
+    unsafe { device.queue_wait_idle(queue) }.context("wait producer readback")?;
+    {
+        let mapped = unsafe {
+            device.map_memory(
+                readback_memory,
+                0,
+                readback_size,
+                vk::MemoryMapFlags::empty(),
             )
-            .image_offset(vk::Offset3D::default())
-            .image_extent(vk::Extent3D {
-                width: PIXELS,
-                height: PIXELS,
-                depth: 1,
-            });
+        }
+        .context("map producer readback")? as *const u8;
+        let bytes = unsafe { std::slice::from_raw_parts(mapped, readback_size as usize) };
+        let matching = bytes.iter().zip(&pattern).filter(|(a, b)| a == b).count();
+        println!(
+            "  producer self-readback: {matching}/{} bytes match",
+            pattern.len()
+        );
+        unsafe { device.unmap_memory(readback_memory) };
+    }
+
+    unsafe {
+        device
+            .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
+            .context("begin copy")?;
+        let to_src = vk::ImageMemoryBarrier::default()
+            .image(consumer_image)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .subresource_range(subresource_range);
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_src],
+        );
         device.cmd_copy_image_to_buffer(
             command_buffer,
             consumer_image,
@@ -856,7 +1099,6 @@ fn run_tiled_round_trip(
             .end_command_buffer(command_buffer)
             .context("end copy")?;
     }
-    let command_buffers = [command_buffer];
     let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
     unsafe { device.queue_submit(queue, &[submit_info], vk::Fence::null()) }
         .context("submit copy")?;
@@ -872,21 +1114,27 @@ fn run_tiled_round_trip(
     }
     .context("map readback")? as *const u8;
     let bytes = unsafe { std::slice::from_raw_parts(mapped, readback_size as usize) };
-    let expected = [32u8, 192, 64, 255];
-    let matches = bytes.chunks(4).all(|pixel| pixel == expected);
+    let matching = bytes.iter().zip(&pattern).filter(|(a, b)| a == b).count();
+    let first_diff = bytes.iter().zip(&pattern).position(|(a, b)| a != b);
     println!(
-        "round trip: {} bytes {} through a tiled VkImage",
-        readback_size,
-        if matches { "match" } else { "MISMATCH" }
+        "round trip: tiled VkImage {matching}/{} bytes match the producer's gradient{}",
+        pattern.len(),
+        if matching == pattern.len() {
+            " — MATCH".to_string()
+        } else {
+            format!(" — MISMATCH at byte {first_diff:?}")
+        },
     );
     unsafe { device.unmap_memory(readback_memory) };
 
     unsafe {
         device.destroy_image(producer_image, None);
         device.destroy_image(consumer_image, None);
+        device.destroy_buffer(staging_buffer, None);
         device.destroy_buffer(readback_buffer, None);
         device.free_memory(memory, None);
         device.free_memory(imported, None);
+        device.free_memory(staging_memory, None);
         device.free_memory(readback_memory, None);
         device.destroy_command_pool(command_pool, None);
         device.destroy_device(None);
