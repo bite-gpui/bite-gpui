@@ -32,10 +32,6 @@ const NEEDED_EXTENSIONS: [&str; 4] = [
 /// The size of the probe's buffer: 16x16 RGBA pixels, tightly packed.
 const PIXELS: u32 = 16;
 
-/// `DRM_FORMAT_MOD_INVALID` — the value a modifier query uses to ask for *every* modifier rather
-/// than a named one.
-const DRM_FORMAT_MOD_INVALID: u64 = 0x00FF_FFFF_FFFF_FFFF;
-
 /// A format a producer emits: the Vulkan format, the wgpu format it maps to, the fourcc name, and
 /// the bytes of a solid colour (R=32, G=192, B=64, A=255) in that format's memory layout.
 struct Format {
@@ -84,6 +80,9 @@ fn main() -> Result<()> {
             for format in &FORMATS {
                 run_dmabuf_round_trip(&instance, device, format)?;
             }
+            // A vendor-tiled modifier with a single plane: the import the flat-linear pass does not
+            // cover.
+            run_tiled_round_trip(&instance, device, 0x0100_0000_0000_0002)?;
         }
         None => println!("no physical device to run the round trip on"),
     }
@@ -173,82 +172,410 @@ fn print_vulkan_devices(
     Ok(())
 }
 
-/// Stage 4 — the tiled (vendor) modifiers the driver offers for a sampled `B8G8R8A8` image, via
-/// `VK_EXT_image_drm_format_modifier`. A real producer emits a tiled layout with a vendor modifier,
-/// not only `DRM_FORMAT_MOD_LINEAR`; if none is listed, the flat-linear pass is the whole story.
+/// Stage 4 — the tiled (vendor) modifiers the driver offers for a sampled image, via
+/// `VK_EXT_image_drm_format_modifier`. The list is queried with `vkGetPhysicalDeviceFormatProperties2`
+/// (not the image query): `VkDrmFormatModifierPropertiesListEXT` extends `VkFormatProperties2`. A real
+/// producer emits a tiled layout with a vendor modifier, not only `DRM_FORMAT_MOD_LINEAR`; if none is
+/// listed, the flat-linear pass is the whole story.
 fn print_modifiers(instance: &ash::Instance, physical_device: ash::vk::PhysicalDevice) {
     use ash::vk;
 
-    let mut modifier_info = vk::PhysicalDeviceImageDrmFormatModifierInfoEXT::default()
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .drm_format_modifier(DRM_FORMAT_MOD_INVALID);
-    let format_info = vk::PhysicalDeviceImageFormatInfo2::default()
-        .format(vk::Format::R8G8B8A8_UNORM)
-        .ty(vk::ImageType::TYPE_2D)
-        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-        .usage(
-            vk::ImageUsageFlags::SAMPLED
-                | vk::ImageUsageFlags::COLOR_ATTACHMENT
-                | vk::ImageUsageFlags::TRANSFER_SRC
-                | vk::ImageUsageFlags::TRANSFER_DST,
-        )
-        .flags(vk::ImageCreateFlags::empty())
-        .push_next(&mut modifier_info);
-
-    // First query: how many modifiers does the driver report?
+    // Pass 1: how many modifiers does the driver report?
     let mut list = vk::DrmFormatModifierPropertiesListEXT::default();
-    let mut properties = vk::ImageFormatProperties2::default();
-    properties.p_next =
-        (&mut list as *mut vk::DrmFormatModifierPropertiesListEXT) as *mut std::ffi::c_void;
-    let count = match unsafe {
-        instance.get_physical_device_image_format_properties2(
+    let mut format_properties = vk::FormatProperties2::default().push_next(&mut list);
+    unsafe {
+        instance.get_physical_device_format_properties2(
             physical_device,
-            &format_info,
-            &mut properties,
-        )
-    } {
-        Ok(()) => list.drm_format_modifier_count,
-        Err(error) => {
-            println!("modifier query failed: {error:?}");
-            return;
-        }
-    };
+            vk::Format::R8G8B8A8_UNORM,
+            &mut format_properties,
+        );
+    }
+    let count = list.drm_format_modifier_count;
 
     if count == 0 {
-        println!("modifiers: none reported for B8G8R8A8_UNORM");
+        println!("modifiers: none reported for R8G8B8A8_UNORM");
         return;
     }
 
+    // Pass 2: the modifiers themselves.
     let mut modifiers = vec![vk::DrmFormatModifierPropertiesEXT::default(); count as usize];
     let mut list = vk::DrmFormatModifierPropertiesListEXT::default()
         .drm_format_modifier_properties(&mut modifiers);
-    let mut properties = vk::ImageFormatProperties2::default();
-    properties.p_next =
-        (&mut list as *mut vk::DrmFormatModifierPropertiesListEXT) as *mut std::ffi::c_void;
+    let mut format_properties = vk::FormatProperties2::default().push_next(&mut list);
     unsafe {
-        instance.get_physical_device_image_format_properties2(
+        instance.get_physical_device_format_properties2(
             physical_device,
-            &format_info,
-            &mut properties,
-        )
-    }
-    .context("query modifiers")
-    .unwrap_or(());
-
-    println!("modifiers for B8G8R8A8_UNORM:");
-    for modifier in &modifiers {
-        let name = if modifier.drm_format_modifier == 0 {
-            "DRM_FORMAT_MOD_LINEAR"
-        } else {
-            "vendor"
-        };
-        println!(
-            "  modifier {:#018x} ({name}), planes {}, {:?}",
-            modifier.drm_format_modifier,
-            modifier.drm_format_modifier_plane_count,
-            modifier.drm_format_modifier_tiling_features,
+            vk::Format::R8G8B8A8_UNORM,
+            &mut format_properties,
         );
     }
+
+    println!("modifiers for R8G8B8A8_UNORM:");
+    for modifier in &modifiers {
+        let sampled = modifier
+            .drm_format_modifier_tiling_features
+            .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE);
+        println!(
+            "  {} ({:#018x}), planes {}, sampled {sampled}",
+            modifier_name(modifier.drm_format_modifier),
+            modifier.drm_format_modifier,
+            modifier.drm_format_modifier_plane_count,
+        );
+    }
+}
+
+/// The name of a well-known DRM format modifier, or a placeholder for a vendor one (the caller prints
+/// the hex value beside it).
+fn modifier_name(modifier: u64) -> &'static str {
+    match modifier {
+        0 => "DRM_FORMAT_MOD_LINEAR",
+        0x0100_0000_0000_0001 => "I915_FORMAT_MOD_X_TILED",
+        0x0100_0000_0000_0002 => "I915_FORMAT_MOD_Y_TILED",
+        0x0100_0000_0000_0003 => "I915_FORMAT_MOD_Yf_TILED",
+        0x0100_0000_0000_0004 => "I915_FORMAT_MOD_Y_TILED_CCS",
+        0x0100_0000_0000_0009 => "I915_FORMAT_MOD_4_TILED",
+        _ => "vendor",
+    }
+}
+
+/// Stage 5 — a tiled (vendor-modifier) round trip: create a tiled image, clear it through a command
+/// buffer (a tiled image cannot be mapped), export its fd and modifier, import it back and read the
+/// bytes through a copy. The import path uses the modifier list on both sides, relying on the same
+/// device laying the same modifier out deterministically.
+fn run_tiled_round_trip(
+    instance: &ash::Instance,
+    physical_device: ash::vk::PhysicalDevice,
+    modifier: u64,
+) -> Result<()> {
+    use ash::khr::external_memory_fd::Device as ExternalMemoryFd;
+    use ash::vk;
+
+    println!(
+        "=== tiled round trip, {} ({modifier:#018x}) ===",
+        modifier_name(modifier)
+    );
+
+    let queue_families =
+        unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+    let queue_family_index = queue_families
+        .iter()
+        .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+        .context("no graphics queue family")? as u32;
+
+    let extension_names = [
+        vk::KHR_EXTERNAL_MEMORY_FD_NAME.as_ptr(),
+        vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
+        vk::KHR_IMAGE_FORMAT_LIST_NAME.as_ptr(),
+        vk::KHR_BIND_MEMORY2_NAME.as_ptr(),
+        vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME.as_ptr(),
+    ];
+    let queue_priorities = [1.0f32];
+    let queue_create_info = vk::DeviceQueueCreateInfo::default()
+        .queue_family_index(queue_family_index)
+        .queue_priorities(&queue_priorities);
+    let queue_create_infos = [queue_create_info];
+    let device_create_info = vk::DeviceCreateInfo::default()
+        .queue_create_infos(&queue_create_infos)
+        .enabled_extension_names(&extension_names);
+    let device = unsafe { instance.create_device(physical_device, &device_create_info, None) }
+        .context("create device")?;
+    let external_memory_fd = ExternalMemoryFd::new(instance, &device);
+    let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+    let command_pool = unsafe {
+        device.create_command_pool(
+            &vk::CommandPoolCreateInfo::default()
+                .queue_family_index(queue_family_index)
+                .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+            None,
+        )
+    }
+    .context("command pool")?;
+    let command_buffer = unsafe {
+        device.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1),
+        )
+    }
+    .context("command buffer")?[0];
+
+    // --- producer: a tiled image, cleared, then exported -----------------
+    let modifiers = [modifier];
+    let mut modifier_list =
+        vk::ImageDrmFormatModifierListCreateInfoEXT::default().drm_format_modifiers(&modifiers);
+    let image_create_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .extent(vk::Extent3D {
+            width: PIXELS,
+            height: PIXELS,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+        .usage(
+            vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::SAMPLED,
+        )
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .push_next(&mut modifier_list);
+    let producer_image = unsafe { device.create_image(&image_create_info, None) }
+        .context("create tiled producer image")?;
+    let requirements = unsafe { device.get_image_memory_requirements(producer_image) };
+
+    let memory_properties =
+        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let memory_type_index = memory_properties
+        .memory_types
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            requirements.memory_type_bits & (1 << index) != 0
+                && memory_type
+                    .property_flags
+                    .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+        })
+        .map(|(index, _)| index as u32)
+        .context("no device-local image memory type")?;
+
+    let mut export_info = vk::ExportMemoryAllocateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let allocate_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(requirements.size)
+        .memory_type_index(memory_type_index)
+        .push_next(&mut export_info);
+    let memory = unsafe { device.allocate_memory(&allocate_info, None) }
+        .context("allocate tiled export memory")?;
+    unsafe { device.bind_image_memory(producer_image, memory, 0) }
+        .context("bind tiled producer image")?;
+
+    // Clear the tiled image: a tiled image cannot be mapped, so write it through the queue.
+    let subresource_range = vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .level_count(1)
+        .layer_count(1);
+    let clear_color = vk::ClearColorValue {
+        float32: [32.0 / 255.0, 192.0 / 255.0, 64.0 / 255.0, 1.0],
+    };
+    unsafe {
+        device
+            .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
+            .context("begin command buffer")?;
+        let barrier = vk::ImageMemoryBarrier::default()
+            .image(producer_image)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .subresource_range(subresource_range);
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        );
+        device.cmd_clear_color_image(
+            command_buffer,
+            producer_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &clear_color,
+            &[subresource_range],
+        );
+        device
+            .end_command_buffer(command_buffer)
+            .context("end command buffer")?;
+    }
+    let command_buffers = [command_buffer];
+    let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+    unsafe { device.queue_submit(queue, &[submit_info], vk::Fence::null()) }
+        .context("submit clear")?;
+    unsafe { device.queue_wait_idle(queue) }.context("wait clear")?;
+
+    // Export the fd. The modifier is the one the driver chose from the list (Y_TILED).
+    let get_fd_info = vk::MemoryGetFdInfoKHR::default()
+        .memory(memory)
+        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let fd =
+        unsafe { external_memory_fd.get_memory_fd(&get_fd_info) }.context("export tiled fd")?;
+    println!(
+        "producer: exported fd {fd}, {PIXELS}x{PIXELS} tiled, modifier {} ({modifier:#018x})",
+        modifier_name(modifier)
+    );
+
+    // --- consumer: import the fd as a tiled image, read back, verify -----
+    let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+        .fd(fd);
+    let import_allocate_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(requirements.size)
+        .memory_type_index(memory_type_index)
+        .push_next(&mut import_info);
+    let imported = unsafe { device.allocate_memory(&import_allocate_info, None) }
+        .context("import tiled fd")?;
+
+    let producer_subresource = vk::ImageSubresource::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .mip_level(0)
+        .array_layer(0);
+    let producer_layout =
+        unsafe { device.get_image_subresource_layout(producer_image, producer_subresource) };
+    let plane_layouts = [vk::SubresourceLayout::default()
+        .offset(producer_layout.offset)
+        .size(producer_layout.size)
+        .row_pitch(producer_layout.row_pitch)];
+    let mut consumer_explicit = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+        .drm_format_modifier(modifier)
+        .plane_layouts(&plane_layouts);
+    let consumer_image_create_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .extent(vk::Extent3D {
+            width: PIXELS,
+            height: PIXELS,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+        .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::SAMPLED)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .push_next(&mut consumer_explicit);
+    let consumer_image = unsafe { device.create_image(&consumer_image_create_info, None) }
+        .context("create tiled consumer image")?;
+    unsafe { device.bind_image_memory(consumer_image, imported, 0) }
+        .context("bind tiled consumer image")?;
+
+    // Copy the tiled image into a linear, host-visible buffer and read it back.
+    let readback_size = (PIXELS * PIXELS * 4) as u64;
+    let readback_buffer = unsafe {
+        device.create_buffer(
+            &vk::BufferCreateInfo::default()
+                .size(readback_size)
+                .usage(vk::BufferUsageFlags::TRANSFER_DST),
+            None,
+        )
+    }
+    .context("readback buffer")?;
+    let readback_memory_requirements =
+        unsafe { device.get_buffer_memory_requirements(readback_buffer) };
+    let readback_memory_type_index = memory_properties
+        .memory_types
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            readback_memory_requirements.memory_type_bits & (1 << index) != 0
+                && memory_type.property_flags.contains(
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+        })
+        .map(|(index, _)| index as u32)
+        .context("no host-visible memory for readback")?;
+    let readback_memory = unsafe {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(readback_memory_requirements.size)
+                .memory_type_index(readback_memory_type_index),
+            None,
+        )
+    }
+    .context("readback memory")?;
+    unsafe { device.bind_buffer_memory(readback_buffer, readback_memory, 0) }
+        .context("bind readback")?;
+
+    unsafe {
+        device
+            .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
+            .context("begin copy")?;
+        let barrier = vk::ImageMemoryBarrier::default()
+            .image(consumer_image)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .subresource_range(subresource_range);
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        );
+        let region = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .image_offset(vk::Offset3D::default())
+            .image_extent(vk::Extent3D {
+                width: PIXELS,
+                height: PIXELS,
+                depth: 1,
+            });
+        device.cmd_copy_image_to_buffer(
+            command_buffer,
+            consumer_image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            readback_buffer,
+            &[region],
+        );
+        device
+            .end_command_buffer(command_buffer)
+            .context("end copy")?;
+    }
+    let command_buffers = [command_buffer];
+    let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+    unsafe { device.queue_submit(queue, &[submit_info], vk::Fence::null()) }
+        .context("submit copy")?;
+    unsafe { device.queue_wait_idle(queue) }.context("wait copy")?;
+
+    let mapped = unsafe {
+        device.map_memory(
+            readback_memory,
+            0,
+            readback_size,
+            vk::MemoryMapFlags::empty(),
+        )
+    }
+    .context("map readback")? as *const u8;
+    let bytes = unsafe { std::slice::from_raw_parts(mapped, readback_size as usize) };
+    let expected = [32u8, 192, 64, 255];
+    let matches = bytes.chunks(4).all(|pixel| pixel == expected);
+    println!(
+        "round trip: {} bytes {} through a tiled VkImage",
+        readback_size,
+        if matches { "match" } else { "MISMATCH" }
+    );
+    unsafe { device.unmap_memory(readback_memory) };
+
+    unsafe {
+        device.destroy_image(producer_image, None);
+        device.destroy_image(consumer_image, None);
+        device.destroy_buffer(readback_buffer, None);
+        device.free_memory(memory, None);
+        device.free_memory(imported, None);
+        device.free_memory(readback_memory, None);
+        device.destroy_command_pool(command_pool, None);
+        device.destroy_device(None);
+    }
+    Ok(())
 }
 
 /// Stages 2 and 3 — allocate a dma-buf on a raw Vulkan device (the "producer", which is not wgpu),
