@@ -32,6 +32,36 @@ const NEEDED_EXTENSIONS: [&str; 4] = [
 /// The size of the probe's buffer: 16x16 RGBA pixels, tightly packed.
 const PIXELS: u32 = 16;
 
+/// `DRM_FORMAT_MOD_INVALID` — the value a modifier query uses to ask for *every* modifier rather
+/// than a named one.
+const DRM_FORMAT_MOD_INVALID: u64 = 0x00FF_FFFF_FFFF_FFFF;
+
+/// A format a producer emits: the Vulkan format, the wgpu format it maps to, the fourcc name, and
+/// the bytes of a solid colour (R=32, G=192, B=64, A=255) in that format's memory layout.
+struct Format {
+    vk_format: ash::vk::Format,
+    wgpu_format: wgpu::TextureFormat,
+    fourcc: &'static str,
+    /// The byte order in memory for the solid colour: `[R, G, B, A]` for `R8G8B8A8`, `[B, G, R, A]`
+    /// for `B8G8R8A8`. The sampled channels always read back as R=32, G=192, B=64.
+    solid: [u8; 4],
+}
+
+const FORMATS: [Format; 2] = [
+    Format {
+        vk_format: ash::vk::Format::R8G8B8A8_UNORM,
+        wgpu_format: wgpu::TextureFormat::Rgba8Unorm,
+        fourcc: "ABGR8888",
+        solid: [32, 192, 64, 255],
+    },
+    Format {
+        vk_format: ash::vk::Format::B8G8R8A8_UNORM,
+        wgpu_format: wgpu::TextureFormat::Bgra8Unorm,
+        fourcc: "ARGB8888",
+        solid: [64, 192, 32, 255],
+    },
+];
+
 fn main() -> Result<()> {
     print_wgpu_adapters();
     let entry =
@@ -50,7 +80,11 @@ fn main() -> Result<()> {
         })
         .or(devices.first());
     match chosen {
-        Some(&device) => run_dmabuf_round_trip(&instance, device)?,
+        Some(&device) => {
+            for format in &FORMATS {
+                run_dmabuf_round_trip(&instance, device, format)?;
+            }
+        }
         None => println!("no physical device to run the round trip on"),
     }
     Ok(())
@@ -139,12 +173,91 @@ fn print_vulkan_devices(
     Ok(())
 }
 
+/// Stage 4 — the tiled (vendor) modifiers the driver offers for a sampled `B8G8R8A8` image, via
+/// `VK_EXT_image_drm_format_modifier`. A real producer emits a tiled layout with a vendor modifier,
+/// not only `DRM_FORMAT_MOD_LINEAR`; if none is listed, the flat-linear pass is the whole story.
+fn print_modifiers(instance: &ash::Instance, physical_device: ash::vk::PhysicalDevice) {
+    use ash::vk;
+
+    let mut modifier_info = vk::PhysicalDeviceImageDrmFormatModifierInfoEXT::default()
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .drm_format_modifier(DRM_FORMAT_MOD_INVALID);
+    let format_info = vk::PhysicalDeviceImageFormatInfo2::default()
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .ty(vk::ImageType::TYPE_2D)
+        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+        .usage(
+            vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST,
+        )
+        .flags(vk::ImageCreateFlags::empty())
+        .push_next(&mut modifier_info);
+
+    // First query: how many modifiers does the driver report?
+    let mut list = vk::DrmFormatModifierPropertiesListEXT::default();
+    let mut properties = vk::ImageFormatProperties2::default();
+    properties.p_next =
+        (&mut list as *mut vk::DrmFormatModifierPropertiesListEXT) as *mut std::ffi::c_void;
+    let count = match unsafe {
+        instance.get_physical_device_image_format_properties2(
+            physical_device,
+            &format_info,
+            &mut properties,
+        )
+    } {
+        Ok(()) => list.drm_format_modifier_count,
+        Err(error) => {
+            println!("modifier query failed: {error:?}");
+            return;
+        }
+    };
+
+    if count == 0 {
+        println!("modifiers: none reported for B8G8R8A8_UNORM");
+        return;
+    }
+
+    let mut modifiers = vec![vk::DrmFormatModifierPropertiesEXT::default(); count as usize];
+    let mut list = vk::DrmFormatModifierPropertiesListEXT::default()
+        .drm_format_modifier_properties(&mut modifiers);
+    let mut properties = vk::ImageFormatProperties2::default();
+    properties.p_next =
+        (&mut list as *mut vk::DrmFormatModifierPropertiesListEXT) as *mut std::ffi::c_void;
+    unsafe {
+        instance.get_physical_device_image_format_properties2(
+            physical_device,
+            &format_info,
+            &mut properties,
+        )
+    }
+    .context("query modifiers")
+    .unwrap_or(());
+
+    println!("modifiers for B8G8R8A8_UNORM:");
+    for modifier in &modifiers {
+        let name = if modifier.drm_format_modifier == 0 {
+            "DRM_FORMAT_MOD_LINEAR"
+        } else {
+            "vendor"
+        };
+        println!(
+            "  modifier {:#018x} ({name}), planes {}, {:?}",
+            modifier.drm_format_modifier,
+            modifier.drm_format_modifier_plane_count,
+            modifier.drm_format_modifier_tiling_features,
+        );
+    }
+}
+
 /// Stages 2 and 3 — allocate a dma-buf on a raw Vulkan device (the "producer", which is not wgpu),
 /// bind a linear `VkImage` over it, write known bytes, export the fd, then import that fd as a
 /// second `VkImage` and read the bytes back unchanged.
 fn run_dmabuf_round_trip(
     instance: &ash::Instance,
     physical_device: ash::vk::PhysicalDevice,
+    format: &Format,
 ) -> Result<()> {
     use ash::khr::external_memory_fd::Device as ExternalMemoryFd;
     use ash::vk;
@@ -161,12 +274,14 @@ fn run_dmabuf_round_trip(
         .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
         .context("no graphics queue family")? as u32;
 
-    // The device, with the four import extensions enabled so the export/import commands exist.
+    // The device, with the import extensions and `VK_EXT_image_drm_format_modifier` enabled, so
+    // both the export/import commands and the tiled-modifier query exist.
     let extension_names = [
         vk::KHR_EXTERNAL_MEMORY_FD_NAME.as_ptr(),
         vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
         vk::KHR_IMAGE_FORMAT_LIST_NAME.as_ptr(),
         vk::KHR_BIND_MEMORY2_NAME.as_ptr(),
+        vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME.as_ptr(),
     ];
     let queue_priorities = [1.0f32];
     let queue_create_info = vk::DeviceQueueCreateInfo::default()
@@ -180,11 +295,17 @@ fn run_dmabuf_round_trip(
         .context("create device")?;
     let external_memory_fd = ExternalMemoryFd::new(instance, &device);
 
+    // The tiled modifiers the driver offers, now that a device has enabled the extension the query
+    // needs.
+    if format.fourcc == "ABGR8888" {
+        print_modifiers(instance, physical_device);
+    }
+
     // The image the dma-buf will back: linear tiling, so the producer can map the memory and write
     // the bytes directly, and so a `DRM_FORMAT_MOD_LINEAR` import has a matching layout.
     let image_create_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
-        .format(vk::Format::R8G8B8A8_UNORM)
+        .format(format.vk_format)
         .extent(vk::Extent3D {
             width: PIXELS,
             height: PIXELS,
@@ -231,10 +352,9 @@ fn run_dmabuf_round_trip(
         .context("bind producer image")?;
 
     // A solid, opaque colour, so the sample can verify one pixel and the map readback can verify the
-    // whole buffer: [R, G, B, A] repeated.
-    const SOLID: [u8; 4] = [32, 192, 64, 255];
+    // whole buffer, in the format's own byte order.
     let known: Vec<u8> = (0..allocation_size)
-        .map(|index| SOLID[(index % 4) as usize])
+        .map(|index| format.solid[(index % 4) as usize])
         .collect();
     unsafe {
         let mapped = device
@@ -250,7 +370,8 @@ fn run_dmabuf_round_trip(
     let fd =
         unsafe { external_memory_fd.get_memory_fd(&get_fd_info) }.context("export memory fd")?;
     println!(
-        "producer: exported fd {fd}, {allocation_size} bytes, fourcc=ABGR8888 (R8G8B8A8_UNORM), modifier=linear"
+        "producer: exported fd {fd}, {allocation_size} bytes, fourcc={} ({:?}), modifier=linear",
+        format.fourcc, format.vk_format
     );
 
     // --- consumer: import the fd as a VkImage, read back, verify ------------------------
@@ -267,7 +388,10 @@ fn run_dmabuf_round_trip(
         .context("create consumer image")?;
     unsafe { device.bind_image_memory(consumer_image, imported, 0) }
         .context("bind consumer image")?;
-    println!("consumer: imported fd {fd} as a {PIXELS}x{PIXELS} linear R8G8B8A8_UNORM image");
+    println!(
+        "consumer: imported fd {fd} as a {PIXELS}x{PIXELS} linear {:?} image",
+        format.vk_format
+    );
 
     let mut read_back = vec![0u8; allocation_size as usize];
     unsafe {
@@ -291,7 +415,7 @@ fn run_dmabuf_round_trip(
         .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
     let fd = unsafe { external_memory_fd.get_memory_fd(&get_fd_info) }
         .context("export memory fd (2)")?;
-    run_wgpu_adoption(fd, allocation_size, memory_type_index)?;
+    run_wgpu_adoption(fd, allocation_size, memory_type_index, format)?;
 
     unsafe {
         device.destroy_image(producer_image, None);
@@ -318,7 +442,12 @@ fn c_char_slice_to_string(chars: &[c_char]) -> String {
 /// resulting `VkImage` into wgpu (`texture_from_raw` + `create_texture_from_hal`), and sample it
 /// through a pipeline. This is the adoption `shared-surface.md` §1 reads on every backend but has
 /// only ever run on Windows.
-fn run_wgpu_adoption(fd: i32, allocation_size: u64, memory_type_index: u32) -> Result<()> {
+fn run_wgpu_adoption(
+    fd: i32,
+    allocation_size: u64,
+    memory_type_index: u32,
+    format: &Format,
+) -> Result<()> {
     use ash::vk;
 
     // The renderer's own device, created the way `gpui_wgpu` would create it.
@@ -354,7 +483,7 @@ fn run_wgpu_adoption(fd: i32, allocation_size: u64, memory_type_index: u32) -> R
     // Import the fd as a linear VkImage on the renderer's device.
     let image_create_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
-        .format(vk::Format::R8G8B8A8_UNORM)
+        .format(format.vk_format)
         .extent(vk::Extent3D {
             width: PIXELS,
             height: PIXELS,
@@ -396,7 +525,7 @@ fn run_wgpu_adoption(fd: i32, allocation_size: u64, memory_type_index: u32) -> R
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: format.wgpu_format,
                 usage: wgpu::TextureUses::RESOURCE,
                 memory_flags: wgpu::hal::MemoryFlags::empty(),
                 view_formats: vec![],
@@ -418,7 +547,7 @@ fn run_wgpu_adoption(fd: i32, allocation_size: u64, memory_type_index: u32) -> R
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: format.wgpu_format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
