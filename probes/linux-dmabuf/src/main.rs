@@ -83,6 +83,8 @@ fn main() -> Result<()> {
             // A vendor-tiled modifier with a single plane: the import the flat-linear pass does not
             // cover.
             run_tiled_round_trip(&instance, device, 0x0100_0000_0000_0002)?;
+            // Stage 7 — an `NV12` two-plane dma-buf, converted to RGB in a shader.
+            run_nv12_round_trip(&instance, device)?;
             // The `sync_file` fence: the Linux counterpart of the keyed mutex and `MTLSharedEvent`.
             run_fence_probe(&instance, device)?;
         }
@@ -1315,6 +1317,668 @@ fn run_dmabuf_round_trip(
         device.free_memory(imported, None);
         device.destroy_device(None);
     }
+    Ok(())
+}
+
+/// Stage 7 — an `NV12` two-plane dma-buf. The producer allocates one linear buffer carrying a luma
+/// plane and an interleaved chroma plane, exports its fd, and the consumer imports it *twice*: once
+/// on a raw device to read each plane back byte-for-byte, and once on the renderer's own wgpu device,
+/// where the two planes are adopted as `R8Unorm` and `Rg8Unorm` textures and converted to RGB by a
+/// shader. This is the shape Chromium Ozone, mpv and WebCodecs use for a multi-plane dma-buf on an
+/// abstracted API, and the one `wgpu` can express: `VK_KHR_sampler_ycbcr_conversion` needs an
+/// immutable sampler baked into the pipeline layout, which `wgpu` has no abstraction for.
+fn run_nv12_round_trip(
+    instance: &ash::Instance,
+    physical_device: ash::vk::PhysicalDevice,
+) -> Result<()> {
+    use ash::khr::external_memory_fd::Device as ExternalMemoryFd;
+    use ash::vk;
+
+    const W: u32 = 32;
+    const H: u32 = 32;
+    const CHROMA_OFFSET: u64 = (W * H) as u64;
+    const TOTAL: u64 = CHROMA_OFFSET + (W / 2 * H / 2 * 2) as u64;
+
+    println!("=== NV12 two-plane round trip ({W}x{H}) ===");
+
+    // Informational only: the native conversion exists, but an immutable sampler is exactly what
+    // wgpu cannot bind, which is why the planes are sampled as two ordinary textures instead.
+    {
+        let extensions = unsafe { instance.enumerate_device_extension_properties(physical_device) }
+            .unwrap_or_default();
+        let has = extensions.iter().any(|e| {
+            c_char_slice_to_string(&e.extension_name) == "VK_KHR_sampler_ycbcr_conversion"
+        });
+        println!(
+            "  VK_KHR_sampler_ycbcr_conversion: {has} (unused — dual-plane shader conversion)"
+        );
+    }
+
+    let queue_families =
+        unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+    let queue_family_index = queue_families
+        .iter()
+        .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+        .context("no graphics queue family")? as u32;
+
+    let extension_names = [
+        vk::KHR_EXTERNAL_MEMORY_FD_NAME.as_ptr(),
+        vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
+        vk::KHR_IMAGE_FORMAT_LIST_NAME.as_ptr(),
+        vk::KHR_BIND_MEMORY2_NAME.as_ptr(),
+    ];
+    let queue_priorities = [1.0f32];
+    let queue_create_info = vk::DeviceQueueCreateInfo::default()
+        .queue_family_index(queue_family_index)
+        .queue_priorities(&queue_priorities);
+    let queue_create_infos = [queue_create_info];
+    let device_create_info = vk::DeviceCreateInfo::default()
+        .queue_create_infos(&queue_create_infos)
+        .enabled_extension_names(&extension_names);
+    let device = unsafe { instance.create_device(physical_device, &device_create_info, None) }
+        .context("create device")?;
+    let external_memory_fd = ExternalMemoryFd::new(instance, &device);
+    let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+    let command_pool = unsafe {
+        device.create_command_pool(
+            &vk::CommandPoolCreateInfo::default().queue_family_index(queue_family_index),
+            None,
+        )
+    }
+    .context("command pool")?;
+    let command_buffer = unsafe {
+        device.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1),
+        )
+    }
+    .context("command buffer")?[0];
+
+    let memory_properties =
+        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    // Host-visible, so the producer writes the planes and the raw consumer can also map them.
+    let memory_type_index = memory_properties
+        .memory_types
+        .iter()
+        .enumerate()
+        .find(|(_, memory_type)| {
+            memory_type.property_flags.contains(
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            )
+        })
+        .map(|(index, _)| index as u32)
+        .context("no host-visible memory type")?;
+
+    // --- producer: one linear dma-buf carrying both planes, exported as one fd --------------
+    let mut export_info = vk::ExportMemoryAllocateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let allocate_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(TOTAL)
+        .memory_type_index(memory_type_index)
+        .push_next(&mut export_info);
+    let memory = unsafe { device.allocate_memory(&allocate_info, None) }
+        .context("allocate NV12 export memory")?;
+
+    // The producer's bytes: a luma ramp and a *non-neutral* chroma, so the shader's colour matrix is
+    // actually exercised. Neutral chroma (128, 128) would make the conversion a pass-through.
+    let mut source = vec![0u8; TOTAL as usize];
+    for y in 0..H {
+        for x in 0..W {
+            source[(y * W + x) as usize] = (x * 8) as u8;
+        }
+    }
+    let (u, v) = (90u8, 200u8);
+    for row in 0..H / 2 {
+        for col in 0..W / 2 {
+            let offset = (CHROMA_OFFSET + (row * W + col * 2) as u64) as usize;
+            source[offset] = u;
+            source[offset + 1] = v;
+        }
+    }
+    unsafe {
+        let mapped = device
+            .map_memory(memory, 0, TOTAL, vk::MemoryMapFlags::empty())
+            .context("map NV12 export")? as *mut u8;
+        std::ptr::copy_nonoverlapping(source.as_ptr(), mapped, source.len());
+        device.unmap_memory(memory);
+    }
+
+    let fd = export_fd(&external_memory_fd, memory)?;
+    println!("producer: exported fd {fd}, {W}x{H} NV12, Y@0 U/V@{CHROMA_OFFSET}, {TOTAL} bytes");
+
+    // --- consumer (raw): import once, a plane image per plane, read each back ---------------
+    let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+        .fd(fd);
+    let import_allocate_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(TOTAL)
+        .memory_type_index(memory_type_index)
+        .push_next(&mut import_info);
+    let imported =
+        unsafe { device.allocate_memory(&import_allocate_info, None) }.context("import NV12 fd")?;
+
+    let y_image = create_linear_image(
+        &device,
+        vk::Format::R8_UNORM,
+        W,
+        H,
+        vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::SAMPLED,
+    )?;
+    let uv_image = create_linear_image(
+        &device,
+        vk::Format::R8G8_UNORM,
+        W / 2,
+        H / 2,
+        vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::SAMPLED,
+    )?;
+    unsafe { device.bind_image_memory(y_image, imported, 0) }.context("bind Y plane")?;
+    unsafe { device.bind_image_memory(uv_image, imported, CHROMA_OFFSET) }
+        .context("bind U/V plane")?;
+
+    let y_size = (W * H) as u64;
+    let uv_size = (W / 2 * H / 2 * 2) as u64;
+    let y_readback = create_host_buffer(&device, &memory_properties, y_size)?;
+    let uv_readback = create_host_buffer(&device, &memory_properties, uv_size)?;
+
+    unsafe {
+        device
+            .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())
+            .context("begin plane readback")?;
+        for image in [y_image, uv_image] {
+            let to_src = vk::ImageMemoryBarrier::default()
+                .image(image)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .level_count(1)
+                        .layer_count(1),
+                );
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_src],
+            );
+        }
+        let y_region = vk::BufferImageCopy::default()
+            .image_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .layer_count(1),
+            )
+            .image_extent(vk::Extent3D {
+                width: W,
+                height: H,
+                depth: 1,
+            });
+        let uv_region = vk::BufferImageCopy::default()
+            .image_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .layer_count(1),
+            )
+            .image_extent(vk::Extent3D {
+                width: W / 2,
+                height: H / 2,
+                depth: 1,
+            });
+        device.cmd_copy_image_to_buffer(
+            command_buffer,
+            y_image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            y_readback.buffer,
+            &[y_region],
+        );
+        device.cmd_copy_image_to_buffer(
+            command_buffer,
+            uv_image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            uv_readback.buffer,
+            &[uv_region],
+        );
+        device
+            .end_command_buffer(command_buffer)
+            .context("end plane readback")?;
+    }
+    let command_buffers = [command_buffer];
+    let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+    unsafe { device.queue_submit(queue, &[submit_info], vk::Fence::null()) }
+        .context("submit plane readback")?;
+    unsafe { device.queue_wait_idle(queue) }.context("wait plane readback")?;
+
+    let y_mapped = read_host_buffer(&device, &y_readback, y_size)?;
+    let uv_mapped = read_host_buffer(&device, &uv_readback, uv_size)?;
+    let y_plane = &source[..y_size as usize];
+    let uv_plane = &source[y_size as usize..];
+    println!(
+        "consumer: imported fd {fd}, read Y {}/{} and U/V {}/{} bytes back through VkImages",
+        y_mapped.iter().zip(y_plane).filter(|(a, b)| a == b).count(),
+        y_size,
+        uv_mapped
+            .iter()
+            .zip(uv_plane)
+            .filter(|(a, b)| a == b)
+            .count(),
+        uv_size,
+    );
+
+    // --- consumer (wgpu): the two planes as two textures, converted in a shader -------------
+    // Each plane is imported on its own fd, so each adopted texture owns its memory (wgpu's adoption
+    // model has no way for two textures to share one allocation).
+    let fd_y = export_fd(&external_memory_fd, memory)?;
+    let fd_uv = export_fd(&external_memory_fd, memory)?;
+    run_wgpu_nv12(
+        fd_y,
+        fd_uv,
+        W,
+        H,
+        CHROMA_OFFSET,
+        TOTAL,
+        memory_type_index,
+        u,
+        v,
+    )?;
+
+    unsafe {
+        device.destroy_image(y_image, None);
+        device.destroy_image(uv_image, None);
+        device.destroy_buffer(y_readback.buffer, None);
+        device.destroy_buffer(uv_readback.buffer, None);
+        device.free_memory(y_readback.memory, None);
+        device.free_memory(uv_readback.memory, None);
+        device.free_memory(memory, None);
+        device.free_memory(imported, None);
+        device.destroy_command_pool(command_pool, None);
+        device.destroy_device(None);
+    }
+    Ok(())
+}
+
+/// Exports the dma-buf fd for a memory object.
+fn export_fd(
+    external_memory_fd: &ash::khr::external_memory_fd::Device,
+    memory: ash::vk::DeviceMemory,
+) -> Result<i32> {
+    let info = ash::vk::MemoryGetFdInfoKHR::default()
+        .memory(memory)
+        .handle_type(ash::vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    unsafe { external_memory_fd.get_memory_fd(&info) }.context("export fd")
+}
+
+/// Creates a linear, single-plane image of the given format and extent.
+fn create_linear_image(
+    device: &ash::Device,
+    format: ash::vk::Format,
+    width: u32,
+    height: u32,
+    usage: ash::vk::ImageUsageFlags,
+) -> Result<ash::vk::Image> {
+    let info = ash::vk::ImageCreateInfo::default()
+        .image_type(ash::vk::ImageType::TYPE_2D)
+        .format(format)
+        .extent(ash::vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(ash::vk::SampleCountFlags::TYPE_1)
+        .tiling(ash::vk::ImageTiling::LINEAR)
+        .usage(usage)
+        .sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
+        .initial_layout(ash::vk::ImageLayout::UNDEFINED);
+    unsafe { device.create_image(&info, None) }.context("create linear image")
+}
+
+/// A host-visible buffer and its memory, for staging or readback.
+struct HostBuffer {
+    buffer: ash::vk::Buffer,
+    memory: ash::vk::DeviceMemory,
+}
+
+fn create_host_buffer(
+    device: &ash::Device,
+    memory_properties: &ash::vk::PhysicalDeviceMemoryProperties,
+    size: u64,
+) -> Result<HostBuffer> {
+    use ash::vk;
+    let buffer = unsafe {
+        device.create_buffer(
+            &vk::BufferCreateInfo::default()
+                .size(size)
+                .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC),
+            None,
+        )
+    }
+    .context("create host buffer")?;
+    let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+    let memory_type_index = memory_properties
+        .memory_types
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            requirements.memory_type_bits & (1 << index) != 0
+                && memory_type.property_flags.contains(
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+        })
+        .map(|(index, _)| index as u32)
+        .context("no host-visible memory for buffer")?;
+    let memory = unsafe {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(requirements.size)
+                .memory_type_index(memory_type_index),
+            None,
+        )
+    }
+    .context("allocate host buffer memory")?;
+    unsafe { device.bind_buffer_memory(buffer, memory, 0) }.context("bind host buffer")?;
+    Ok(HostBuffer { buffer, memory })
+}
+
+/// Maps a host buffer and copies its bytes out.
+fn read_host_buffer(device: &ash::Device, buffer: &HostBuffer, size: u64) -> Result<Vec<u8>> {
+    use ash::vk;
+    let mapped = unsafe {
+        device
+            .map_memory(buffer.memory, 0, size, vk::MemoryMapFlags::empty())
+            .context("map host buffer")? as *const u8
+    };
+    let bytes = unsafe { std::slice::from_raw_parts(mapped, size as usize) }.to_vec();
+    unsafe { device.unmap_memory(buffer.memory) };
+    Ok(bytes)
+}
+
+/// The `NV12` consumer that matters: import each plane's fd on the renderer's own wgpu device, adopt
+/// the `VkImage` as an `R8Unorm`/`Rg8Unorm` texture, and convert the pair to RGB in a compute shader
+/// (BT.709), reading every pixel back and checking it against the same matrix computed on the CPU.
+fn run_wgpu_nv12(
+    fd_y: i32,
+    fd_uv: i32,
+    width: u32,
+    height: u32,
+    chroma_offset: u64,
+    allocation_size: u64,
+    memory_type_index: u32,
+    u: u8,
+    v: u8,
+) -> Result<()> {
+    use ash::vk;
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        flags: wgpu::InstanceFlags::default(),
+        backend_options: wgpu::BackendOptions::default(),
+        memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        display: None,
+    });
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::LowPower,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    }))
+    .context("no wgpu adapter")?;
+    let adapter_info = adapter.get_info();
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("nv12-consumer"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::downlevel_defaults(),
+        memory_hints: wgpu::MemoryHints::MemoryUsage,
+        trace: wgpu::Trace::Off,
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+    }))
+    .context("no wgpu device")?;
+    let hal_device = unsafe { device.as_hal::<wgpu::hal::vulkan::Api>() }
+        .context("the wgpu adapter is not Vulkan")?;
+    let raw_device = hal_device.raw_device();
+
+    // Creates a linear plane image over an imported fd and adopts it into a wgpu texture.
+    let adopt_plane = |fd: i32,
+                       format: vk::Format,
+                       wgpu_format: wgpu::TextureFormat,
+                       plane_width: u32,
+                       plane_height: u32,
+                       offset: u64|
+     -> Result<wgpu::Texture> {
+        let image = create_linear_image(
+            raw_device,
+            format,
+            plane_width,
+            plane_height,
+            vk::ImageUsageFlags::SAMPLED,
+        )?;
+        let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+            .fd(fd);
+        let import_allocate_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(allocation_size)
+            .memory_type_index(memory_type_index)
+            .push_next(&mut import_info);
+        let imported_memory = unsafe { raw_device.allocate_memory(&import_allocate_info, None) }
+            .context("import plane fd on the wgpu device")?;
+        unsafe { raw_device.bind_image_memory(image, imported_memory, offset) }
+            .context("bind plane on the wgpu device")?;
+        let hal_texture = unsafe {
+            hal_device.texture_from_raw(
+                image,
+                &wgpu::hal::TextureDescriptor {
+                    label: Some("nv12 plane"),
+                    size: wgpu::Extent3d {
+                        width: plane_width,
+                        height: plane_height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu_format,
+                    usage: wgpu::TextureUses::RESOURCE,
+                    memory_flags: wgpu::hal::MemoryFlags::empty(),
+                    view_formats: vec![],
+                },
+                None,
+                wgpu::hal::vulkan::TextureMemory::Dedicated(imported_memory),
+            )
+        };
+        Ok(unsafe {
+            device.create_texture_from_hal::<wgpu::hal::vulkan::Api>(
+                hal_texture,
+                &wgpu::TextureDescriptor {
+                    label: Some("nv12 plane"),
+                    size: wgpu::Extent3d {
+                        width: plane_width,
+                        height: plane_height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu_format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+            )
+        })
+    };
+    let y_texture = adopt_plane(
+        fd_y,
+        vk::Format::R8_UNORM,
+        wgpu::TextureFormat::R8Unorm,
+        width,
+        height,
+        0,
+    )?;
+    let uv_texture = adopt_plane(
+        fd_uv,
+        vk::Format::R8G8_UNORM,
+        wgpu::TextureFormat::Rg8Unorm,
+        width / 2,
+        height / 2,
+        chroma_offset,
+    )?;
+    println!(
+        "consumer: adopted fd {fd_y} and fd {fd_uv} into wgpu textures on {:?}",
+        adapter_info.name
+    );
+
+    // The conversion, with the same BT.709 matrix the CPU check below uses.
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("nv12"),
+        source: wgpu::ShaderSource::Wgsl(
+            r#"
+@group(0) @binding(0) var tex_y: texture_2d<f32>;
+@group(0) @binding(1) var tex_uv: texture_2d<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x >= 32u || gid.y >= 32u {
+        return;
+    }
+    let coord = vec2<i32>(i32(gid.x), i32(gid.y));
+    let y = textureLoad(tex_y, coord, 0).r;
+    let cbcr = textureLoad(tex_uv, coord / vec2<i32>(2, 2), 0).rg - vec2<f32>(0.5, 0.5);
+    let r = y + 1.5748 * cbcr.y;
+    let g = y - 0.1873 * cbcr.x - 0.4681 * cbcr.y;
+    let b = y + 1.8556 * cbcr.x;
+    output[gid.y * 32u + gid.x] = vec4<f32>(
+        clamp(r, 0.0, 1.0),
+        clamp(g, 0.0, 1.0),
+        clamp(b, 0.0, 1.0),
+        1.0,
+    );
+}
+"#
+            .into(),
+        ),
+    });
+
+    let pixel_count = (width * height) as u64;
+    let output_bytes = pixel_count * 16;
+    let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("nv12 output"),
+        size: output_bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("nv12 readback"),
+        size: output_bytes,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let uv_view = uv_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("nv12 pipeline"),
+        layout: None,
+        module: &shader,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let bind_group_layout = pipeline.get_bind_group_layout(0);
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("nv12 bind group"),
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&y_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&uv_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: output_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nv12"),
+    });
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("nv12"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
+    }
+    encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_bytes);
+    queue.submit(Some(encoder.finish()));
+
+    let slice = readback_buffer.slice(..);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    receiver
+        .recv()
+        .context("map nv12 readback")?
+        .context("nv12 map")?;
+    let mapped = slice.get_mapped_range();
+    let got: Vec<f32> = mapped
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect();
+
+    // The same BT.709 matrix on the CPU, for the producer's bytes.
+    let bt709 = |y: f32, cb: f32, cr: f32| -> [f32; 3] {
+        [
+            (y + 1.5748 * cr).clamp(0.0, 1.0),
+            (y - 0.1873 * cb - 0.4681 * cr).clamp(0.0, 1.0),
+            (y + 1.8556 * cb).clamp(0.0, 1.0),
+        ]
+    };
+
+    let mut mismatches = 0usize;
+    let mut first = String::new();
+    for y in 0..height {
+        for x in 0..width {
+            let index = ((y * width + x) * 4) as usize;
+            let luma = (x * 8) as f32 / 255.0;
+            let cb = u as f32 / 255.0 - 0.5;
+            let cr = v as f32 / 255.0 - 0.5;
+            let expected = bt709(luma, cb, cr);
+            let got_pixel = [got[index], got[index + 1], got[index + 2]];
+            if (0..3).any(|c| (expected[c] - got_pixel[c]).abs() > 0.02) {
+                if mismatches == 0 {
+                    first = format!("pixel ({x},{y}): got {got_pixel:?}, expected {expected:?}");
+                }
+                mismatches += 1;
+            }
+        }
+    }
+    println!(
+        "sample: NV12 -> RGB, {} pixels, {}/{} match the BT.709 matrix{}",
+        pixel_count,
+        pixel_count as usize - mismatches,
+        pixel_count,
+        if mismatches == 0 {
+            String::new()
+        } else {
+            format!(" — first mismatch: {first}")
+        },
+    );
+
     Ok(())
 }
 
