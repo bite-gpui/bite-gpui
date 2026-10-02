@@ -136,7 +136,20 @@ pub fn current_headless_renderer() -> Option<Box<dyn crate::SceneRenderer>> {
         ))
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(
+        feature = "platform",
+        any(target_os = "linux", target_os = "freebsd")
+    ))]
+    {
+        // The Linux platform owns no renderer of its own: wgpu is the renderer a window uses here,
+        // so a headless context renders through the same code a window drives.
+        Some(Box::new(gpui_linux::WgpuHeadlessRenderer::new().ok()?))
+    }
+
+    #[cfg(not(any(
+        target_os = "macos",
+        all(feature = "platform", any(target_os = "linux", target_os = "freebsd")),
+    )))]
     {
         None
     }

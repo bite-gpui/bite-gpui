@@ -15,6 +15,10 @@ doctest = false
 [features]
 default = []
 bench-support = ["gpui/bench-support", "dep:image"]
+# Exposes the headless renderer (and the `image` dependency it reads back with) without pulling in
+# `gpui/test-support`, so a platform crate can build one from `current_headless_renderer` without a
+# feature cycle.
+headless = ["dep:image"]
 font-kit = ["dep:font-kit"]
 test-support = ["gpui/test-support", "dep:image"]
 
@@ -48,9 +52,16 @@ font-kit = { git = "https://github.com/zed-industries/font-kit", rev = "94b0f281
 web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
 wgpu = { workspace = true, features = ["webgl"] }
 
+# The dma-buf surface arm imports a raw `VkImage` over an external descriptor, which `wgpu` can adopt
+# (`texture_from_raw`) but cannot create. The version must match the one `wgpu-hal` links against.
+[target.'cfg(target_os = "linux")'.dependencies]
+ash = "0.38"
+# `poll(2)`, to wait on a surface's acquire fence. See `src/dmabuf.rs`.
+libc.workspace = true
+
 [dev-dependencies]
 criterion.workspace = true
-gpui = { workspace = true, features = ["bench-support"] }
+gpui = { workspace = true, features = ["bench-support", "platform"] }
 image.workspace = true
 naga = { version = "29.0.4", features = ["wgsl-in"] }
 

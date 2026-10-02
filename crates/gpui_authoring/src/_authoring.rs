@@ -59,8 +59,9 @@
 //! custom element keeps working when the layout engine is replaced.
 //!
 //! Anything that only applies to one platform lives in an extension trait
-//! beside [`Window`](crate::Window) instead of on it: on macOS, `MacWindowExt`
-//! adds `paint_surface` for CoreVideo buffers.
+//! beside [`Window`](crate::Window) instead of on it: `MacWindowExt` adds
+//! `paint_surface` for a CoreVideo buffer, `WindowsWindowExt` for a Direct3D
+//! shader resource view, and `LinuxWindowExt` for a dma-buf.
 //!
 //! ## What is not authoring API
 //!

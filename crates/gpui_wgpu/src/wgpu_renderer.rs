@@ -3,7 +3,7 @@ use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
 use gpui_engine::{
-    AtlasTextureId, CustomRenderPrimitive, Path, PlatformAtlas, PrimitiveBatch, Scene,
+    AtlasTextureId, CustomRenderPrimitive, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene,
     SceneRenderer, get_gamma_correction_ratios,
 };
 use gpui_platform::{Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size};
@@ -85,6 +85,10 @@ impl From<Bounds<ScaledPixels>> for PodBounds {
 struct SurfaceParams {
     bounds: PodBounds,
     content_mask: PodBounds,
+    /// `0` = `NV12` (sample and convert), `1` = a single RGBA/BGRA plane (sample straight through).
+    /// Mirrors the shader's `SurfaceParams`; the padding keeps the size a multiple of 16.
+    surface_format: u32,
+    _pad: [u32; 3],
 }
 
 #[repr(C)]
@@ -133,7 +137,6 @@ struct WgpuPipelines {
     mono_sprites: wgpu::RenderPipeline,
     subpixel_sprites: Option<wgpu::RenderPipeline>,
     poly_sprites: wgpu::RenderPipeline,
-    #[allow(dead_code)]
     surfaces: wgpu::RenderPipeline,
     imported_textures: wgpu::RenderPipeline,
 }
@@ -199,6 +202,9 @@ struct WgpuResources {
     path_intermediate_view: Option<wgpu::TextureView>,
     path_msaa_texture: Option<wgpu::Texture>,
     path_msaa_view: Option<wgpu::TextureView>,
+    /// The imported dma-buf textures, kept across frames like the Metal arm's `CVMetalTextureCache`.
+    #[cfg(target_os = "linux")]
+    dmabuf_textures: crate::DmaBufTextureCache,
 }
 
 struct CachedTextureBindGroup {
@@ -1427,6 +1433,8 @@ impl WgpuRendererCore {
                 path_intermediate_view: None,
                 path_msaa_texture: None,
                 path_msaa_view: None,
+                #[cfg(target_os = "linux")]
+                dmabuf_textures: crate::DmaBufTextureCache::new(),
             },
             atlas,
             path_globals_offset,
@@ -1683,8 +1691,6 @@ impl WgpuRendererCore {
                             &mut pass,
                         )?;
                     }
-                    // Surfaces are macOS-only for video playback and are not
-                    // implemented by the WGPU renderer.
                     PrimitiveBatch::Custom(range) => {
                         self.draw_imported_textures(
                             &instance_bindings.imported_textures,
@@ -1693,9 +1699,12 @@ impl WgpuRendererCore {
                             &mut pass,
                         )?;
                     }
-                    // Surfaces are macOS-only for video playback and are not
-                    // implemented by the WGPU renderer.
-                    PrimitiveBatch::Surfaces(_surfaces) => {}
+                    // Surfaces arrive as a texture (or a plane pair) the renderer samples: a
+                    // dma-buf on Linux, and nothing under this renderer on the other platforms
+                    // yet.
+                    PrimitiveBatch::Surfaces(range) => {
+                        self.draw_surfaces(&scene.surfaces[range.clone()], &mut pass)?;
+                    }
                 }
             }
         }
@@ -1924,6 +1933,114 @@ impl WgpuRendererCore {
                     },
                 ],
             })
+    }
+
+    /// Composite the scene's surfaces.
+    ///
+    /// A surface's source becomes one or two textures: a single RGBA/BGRA plane samples straight
+    /// through, and an `NV12` pair samples luma and chroma and converts in the fragment shader. The
+    /// geometry is the shader's (`vs_surface`), driven by a per-surface uniform, so a surface needs
+    /// no instance record and no vertex buffer. A buffer the renderer cannot import drops its
+    /// surface rather than the frame.
+    fn draw_surfaces(
+        &mut self,
+        surfaces: &[PaintSurface],
+        pass: &mut wgpu::RenderPass<'_>,
+    ) -> Result<()> {
+        if surfaces.is_empty() {
+            return Ok(());
+        }
+        pass.set_pipeline(&self.resources().pipelines.surfaces);
+        pass.set_bind_group(0, &self.resources().globals_bind_group, &[]);
+
+        #[cfg(target_os = "linux")]
+        for surface in surfaces {
+            let gpui_engine::SurfaceSource::DmaBuf(handle) = &surface.source;
+            // Wait for the producer's fence before sampling; a producer that never signals loses
+            // this frame rather than stalling the UI.
+            if let Some(fence) = &handle.acquire_fence
+                && !crate::wait_for_acquire_fence(fence, crate::ACQUIRE_FENCE_TIMEOUT)
+            {
+                warn!("dropping a dma-buf surface: its acquire fence did not signal in time");
+                continue;
+            }
+            // The cache owns the imported textures and hands back cheap clones of their handles — as
+            // the Metal arm's `CVMetalTextureCache` does. The mutable borrow ends before the rest of
+            // the resources are read.
+            let textures = {
+                let resources = self.resources_mut();
+                match resources
+                    .dmabuf_textures
+                    .textures(&resources.device, handle)
+                {
+                    Ok(textures) => textures,
+                    Err(error) => {
+                        warn!("dropping a dma-buf surface: {error:#}");
+                        continue;
+                    }
+                }
+            };
+            let resources = self.resources();
+
+            let luma = textures[0].create_view(&wgpu::TextureViewDescriptor::default());
+            // A single plane samples as RGBA (format 1) and binds its own view for both texture
+            // slots; a second plane is chroma (format 0).
+            let (chroma, surface_format) = if textures.len() == 1 {
+                (luma.clone(), 1u32)
+            } else {
+                (
+                    textures[1].create_view(&wgpu::TextureViewDescriptor::default()),
+                    0u32,
+                )
+            };
+
+            let params = SurfaceParams {
+                bounds: surface.bounds.into(),
+                content_mask: surface.content_mask.bounds.into(),
+                surface_format,
+                _pad: [0; 3],
+            };
+            let params_buffer = resources.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("surface_params"),
+                size: std::mem::size_of::<SurfaceParams>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            resources
+                .queue
+                .write_buffer(&params_buffer, 0, bytemuck::bytes_of(&params));
+
+            let bind_group = resources
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("surface_bind_group"),
+                    layout: &resources.bind_group_layouts.surfaces,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: params_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&luma),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(&chroma),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Sampler(
+                                &resources.imported_texture_sampler,
+                            ),
+                        },
+                    ],
+                });
+            pass.set_bind_group(1, &bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
+
+        Ok(())
     }
 
     unsafe fn instance_bytes<T>(instances: &[T]) -> &[u8] {
@@ -2428,7 +2545,7 @@ impl WgpuRenderer {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support")
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 struct HeadlessRenderTarget {
     texture: wgpu::Texture,
@@ -2437,7 +2554,7 @@ struct HeadlessRenderTarget {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support")
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 impl HeadlessRenderTarget {
     fn size(&self) -> Size<DevicePixels> {
@@ -2450,7 +2567,7 @@ impl HeadlessRenderTarget {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support")
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 pub struct WgpuHeadlessRenderer {
     context: WgpuContext,
@@ -2462,7 +2579,7 @@ pub struct WgpuHeadlessRenderer {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support")
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 impl WgpuHeadlessRenderer {
     pub fn new() -> anyhow::Result<Self> {
@@ -2672,7 +2789,7 @@ impl WgpuHeadlessRenderer {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support")
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
     fn draw(&mut self, scene: &Scene) -> bool {
@@ -2772,13 +2889,14 @@ impl RenderingParameters {
 mod tests {
     use super::*;
     use gpui_engine::{
-        BorderStyle, MonochromeSprite, PolychromeSprite, Quad, SubpixelSprite, Underline,
+        BorderStyle, MonochromeSprite, PixelBuffer, PolychromeSprite, Quad, SubpixelSprite,
+        Underline,
     };
     use gpui_platform::{
         ColorSpace, ContentMask, Corners, Edges, Hsla, Shadow, linear_color_stop, linear_gradient,
     };
     #[cfg(target_os = "linux")]
-    use gpui::{DevicePixels, PlatformHeadlessRenderer, Scene};
+    use gpui::{DevicePixels, Scene};
 
     #[cfg(target_os = "linux")]
     fn device_size(width: i32, height: i32) -> Size<DevicePixels> {
@@ -2815,8 +2933,9 @@ mod tests {
     /// Channels are compared with a small tolerance so the assertions hold across
     /// drivers without pinning exact rasterizer output.
     #[cfg(target_os = "linux")]
-    fn assert_pixel(image: &image::RgbaImage, x: u32, y: u32, expected: [u8; 4]) {
-        let actual = image.get_pixel(x, y).0;
+    fn assert_pixel(image: &PixelBuffer, x: u32, y: u32, expected: [u8; 4]) {
+        let offset = ((y * image.width() + x) * 4) as usize;
+        let actual = &image.data()[offset..offset + 4];
         assert!(
             actual
                 .iter()
@@ -2843,7 +2962,7 @@ mod tests {
         scene.finish();
 
         let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
-        assert_eq!(image.dimensions(), (64, 32));
+        assert_eq!((image.width(), image.height()), (64, 32));
         assert_pixel(&image, 8, 16, RED);
         assert_pixel(&image, 24, 16, RED);
         assert_pixel(&image, 40, 16, BLUE);
@@ -2861,19 +2980,19 @@ mod tests {
 
         // 13 px rows are 52 bytes, forcing readback to strip copy-row padding.
         let image = renderer.render_scene_to_image(&scene, device_size(13, 7))?;
-        assert_eq!(image.dimensions(), (13, 7));
+        assert_eq!((image.width(), image.height()), (13, 7));
         assert_pixel(&image, 0, 0, BLACK);
         assert_pixel(&image, 3, 3, RED);
         assert_pixel(&image, 12, 6, BLACK);
 
         let image = renderer.render_scene_to_image(&scene, device_size(17, 9))?;
-        assert_eq!(image.dimensions(), (17, 9));
+        assert_eq!((image.width(), image.height()), (17, 9));
         assert_pixel(&image, 3, 3, RED);
         assert_pixel(&image, 16, 8, BLACK);
 
         let image = renderer.render_scene_to_image(&Scene::default(), device_size(13, 7))?;
-        assert_eq!(image.dimensions(), (13, 7));
-        assert!(image.pixels().all(|pixel| pixel.0 == BLACK));
+        assert_eq!((image.width(), image.height()), (13, 7));
+        assert!(image.data().chunks_exact(4).all(|pixel| pixel == BLACK));
         Ok(())
     }
 
@@ -2926,7 +3045,7 @@ mod tests {
 
         // Rejection must leave the renderer usable.
         let image = renderer.render_scene_to_image(&Scene::default(), device_size(4, 4))?;
-        assert_eq!(image.dimensions(), (4, 4));
+        assert_eq!((image.width(), image.height()), (4, 4));
         Ok(())
     }
 

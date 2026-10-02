@@ -9,3 +9,17 @@ pub use linux::current_platform;
 /// lives in a crate of its own.
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub use gpui_wgpu::ImportedTextureExt;
+
+/// The headless renderer, so `gpui::current_headless_renderer` can build one on this platform the way
+/// it builds Metal's on macOS. The Linux platform owns no renderer of its own; wgpu is the renderer a
+/// window uses here, so a headless context renders through the same code.
+#[cfg(all(
+    feature = "gpui_wgpu",
+    any(feature = "bench-support", feature = "test-support")
+))]
+pub use gpui_wgpu::WgpuHeadlessRenderer;
+
+/// The Linux surface transport, re-exported so an application reaches it through the platform crate
+/// it already depends on rather than through the engine.
+#[cfg(target_os = "linux")]
+pub use gpui_engine::{DmaBufFormat, DmaBufHandle, DmaBufPlane};

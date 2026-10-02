@@ -29,6 +29,10 @@ use crate::{
 };
 
 use crate::TouchEvent;
+
+/// Named only by the scene-reading accessors below, which exist for tests.
+#[cfg(any(test, feature = "test-support"))]
+use crate::PaintSurface;
 use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
 use anyhow::{Context as _, Result, anyhow};
 use arc_swap::ArcSwap;
@@ -68,6 +72,8 @@ use uuid::Uuid;
 
 pub(crate) mod a11y;
 mod frame_pipeline;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod mac;
 mod prompts;
@@ -76,6 +82,8 @@ mod win;
 
 pub use a11y::A11ySubtreeBuilder;
 pub use frame_pipeline::{FramePipeline, StandardImmediatePipeline};
+#[cfg(target_os = "linux")]
+pub use linux::*;
 #[cfg(target_os = "macos")]
 pub use mac::*;
 #[cfg(target_os = "windows")]
@@ -3023,6 +3031,14 @@ impl Window<'_> {
     #[cfg(any(test, feature = "test-support"))]
     pub fn painted_underlines(&self) -> Vec<Underline> {
         self.frame_state.rendered_frame.scene.underlines.clone()
+    }
+
+    /// Returns the surfaces in the most recently rendered frame's scene: the pixels an element
+    /// painted through [`surface`](crate::surface), before any renderer resolves the handle inside
+    /// them. Like [`painted_quads`](Self::painted_quads), this is the scene as painted.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn painted_surfaces(&self) -> Vec<PaintSurface> {
+        self.frame_state.rendered_frame.scene.surfaces.clone()
     }
 
     /// The graphics device this window's renderer draws on, if it has one to lend.
