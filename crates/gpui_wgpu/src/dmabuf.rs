@@ -145,7 +145,7 @@ fn import_plane(
         .context("duplicate the plane descriptor for the import")?
         .into_raw_fd();
 
-    let memory = import_memory(instance, physical, raw, image, requirements, fd)?;
+    let memory = import_memory(instance, physical, raw, image, requirements, plane.offset, fd)?;
     unsafe { raw.bind_image_memory(image, memory, plane.offset) }
         .context("bind the imported image at the plane's offset")?;
 
@@ -192,15 +192,18 @@ fn import_plane(
 
 /// Import `fd` into a dedicated allocation for `image`, trying every memory type it can live in.
 ///
-/// Which memory type a driver accepts a dma-buf into is not always the obvious one — the probe saw
-/// a discrete GPU refuse it on every type until the allocation was dedicated — so this tries them
-/// all rather than guessing.
+/// `offset` is where the image binds within the buffer, so the allocation must span
+/// `offset + requirements.size` — a plane at a non-zero offset (an `NV12` buffer's chroma) needs the
+/// whole buffer, not just its own tail. Which memory type a driver accepts a dma-buf into is not
+/// always the obvious one — the probe saw a discrete GPU refuse it on every type until the
+/// allocation was dedicated — so this tries them all rather than guessing.
 fn import_memory(
     instance: &ash::Instance,
     physical: vk::PhysicalDevice,
     raw: &ash::Device,
     image: vk::Image,
     requirements: vk::MemoryRequirements,
+    offset: u64,
     fd: std::os::fd::RawFd,
 ) -> Result<vk::DeviceMemory> {
     let properties = unsafe { instance.get_physical_device_memory_properties(physical) };
@@ -214,7 +217,7 @@ fn import_memory(
             .fd(fd);
         let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
         let allocate_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(requirements.size)
+            .allocation_size(offset + requirements.size)
             .memory_type_index(index)
             .push_next(&mut import_info)
             .push_next(&mut dedicated);

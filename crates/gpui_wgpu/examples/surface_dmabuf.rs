@@ -1,13 +1,14 @@
-//! Compose a dma-buf surface through the wgpu renderer and read the frame back.
+//! Compose a dma-buf through the authoring `surface()` element and read the frame back.
 //!
-//! This is W3's exit criterion — *a dma-buf composites on a Linux host with an adapter* — exercised
-//! without a compositor, for both shapes the surface arm takes: a single RGBA plane, and a two-plane
-//! `NV12` buffer converted in the fragment shader.
+//! This is W3's exit criterion — *a dma-buf composites on a Linux host with an adapter* — end to end,
+//! without a compositor. It is an ordinary GPUI app: a view whose `render` returns `surface(handle)`,
+//! mounted in a real window through [`HeadlessAppContext`], laid out and drawn by the real renderer,
+//! then captured with `capture_screenshot`. Nothing below reaches past the authoring API — the dma-buf
+//! becomes a `SurfaceSource::DmaBuf` in the scene the way any element's paint does, and the renderer
+//! composites it through the same `import_dmabuf` and `draw_surfaces` a window uses.
 //!
 //! The producer is a bare Vulkan device (not wgpu): it allocates an exportable buffer, writes a known
-//! pattern, and exports it as a linear dma-buf. The consumer is the same [`WgpuHeadlessRenderer`] a
-//! window drives; it renders a [`Scene`] carrying a [`PaintSurface`] with that dma-buf and reads the
-//! pixels back, through the very `import_dmabuf` and `draw_surfaces` code the window uses.
+//! colour, and exports it as a linear dma-buf.
 //!
 //! Run it on Linux with a Vulkan adapter:
 //!
@@ -15,34 +16,35 @@
 //! cargo run -p gpui_wgpu --example surface_dmabuf --features test-support
 //! ```
 //!
-//! It needs no display: the headless renderer renders offscreen and reads the target back.
-//!
 //! # Running this on a machine with two GPUs
 //!
 //! The headless renderer chooses an adapter itself, and on a laptop it may choose the discrete one.
 //! A userspace fault *while GPU work is in flight* can wedge that GPU: an earlier revision of this
 //! example dropped the Vulkan loader before the device it had made, and its crash produced
 //! `NVRM: Xid 13` followed by repeated `Xid 158` (`NV_UFLUSH_FB_FLUSH` timeout) on an NVIDIA 930M,
-//! hanging the machine until reboot. Keep the loader alive (this example does), and pin the adapter
-//! to the integrated GPU, whose driver is well behaved here:
+//! hanging the machine until reboot. The example keeps the loader alive and both the renderer and the
+//! producer on the integrated GPU, but you can pin the adapter explicitly too:
 //!
 //! ```text
-//! ZED_DEVICE_ID=6422 cargo run -p gpui_wgpu --example surface_dmabuf --features test-support
+//! ZED_DEVICE_ID=1916 cargo run -p gpui_wgpu --example surface_dmabuf --features test-support
 //! ```
 //!
-//! `ZED_DEVICE_ID` is a PCI device id; 6422 is the Intel HD 520 on the machine this was written on.
+//! `ZED_DEVICE_ID` is a **four-digit hexadecimal** PCI device id; `1916` is the Intel HD 520 on the
+//! machine this was written on (a decimal id like `6422` parses as the hex `0x6422`, matches nothing,
+//! and silently falls back to the default adapter — the discrete one here).
 
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 mod demo {
     use std::os::fd::{FromRawFd, OwnedFd};
+    use std::sync::Arc;
 
     use anyhow::{Context as _, Result, ensure};
     use ash::vk;
-    use gpui_engine::{
-        DmaBufFormat, DmaBufHandle, DmaBufPlane, PaintSurface, Scene, SceneRenderer, SurfaceSource,
+    use gpui::{
+        AnyWindowHandle, AppContext as _, Context, DmaBufFormat, DmaBufHandle, DmaBufPlane,
+        HeadlessAppContext, IntoElement, Render, Window, div, prelude::*, px, size, surface,
     };
-    use gpui_platform::{Bounds, ContentMask, DevicePixels, Point, Size};
-    use gpui_wgpu::WgpuHeadlessRenderer;
+    use gpui_wgpu::{CosmicTextSystem, WgpuHeadlessRenderer};
 
     const WIDTH: u32 = 64;
     const HEIGHT: u32 = 64;
@@ -68,7 +70,7 @@ mod demo {
         }
     }
 
-    /// Allocate a linear dma-buf holding `content`, and export its fd.
+    /// Allocate a linear dma-buf holding `content` on the integrated GPU, and export its fd.
     fn produce_dmabuf(content: &[u8]) -> Result<(Producer, OwnedFd)> {
         let entry = unsafe { ash::Entry::load() }
             .map_err(|error| anyhow::anyhow!("load vulkan: {error}"))?;
@@ -81,10 +83,18 @@ mod demo {
         }
         .context("create the producer instance")?;
 
-        let physical = unsafe { instance.enumerate_physical_devices() }
-            .context("enumerate physical devices")?
-            .into_iter()
-            .next()
+        // Prefer the integrated GPU, the same one the renderer is steered to: a fault on a discrete
+        // GPU under the proprietary driver can wedge it, and nothing here needs a discrete GPU.
+        let devices = unsafe { instance.enumerate_physical_devices() }
+            .context("enumerate physical devices")?;
+        let physical = devices
+            .iter()
+            .copied()
+            .find(|device| {
+                let properties = unsafe { instance.get_physical_device_properties(*device) };
+                properties.device_type == vk::PhysicalDeviceType::INTEGRATED_GPU
+            })
+            .or_else(|| devices.first().copied())
             .context("no Vulkan device for the producer")?;
         let properties = unsafe { instance.get_physical_device_memory_properties(physical) };
         let memory_type_index = properties
@@ -156,39 +166,48 @@ mod demo {
         ))
     }
 
-    /// Composite `handle` in a full-surface scene and return the centre pixel.
-    fn composite(handle: DmaBufHandle) -> Result<Vec<u8>> {
-        let bounds = Bounds {
-            origin: Point {
-                x: 0.0f32.into(),
-                y: 0.0f32.into(),
-            },
-            size: Size {
-                width: (WIDTH as f32).into(),
-                height: (HEIGHT as f32).into(),
-            },
-        };
-        let mut scene = Scene::default();
-        scene.insert_primitive(PaintSurface {
-            order: 0,
-            bounds,
-            content_mask: ContentMask { bounds },
-            source: SurfaceSource::DmaBuf(handle),
-        });
-        scene.finish();
+    /// The app: a view that paints the dma-buf as a surface filling the window.
+    struct SurfaceDemo {
+        handle: DmaBufHandle,
+    }
 
-        let mut renderer = WgpuHeadlessRenderer::new().context("create the headless renderer")?;
-        let image = renderer
-            .render_scene_to_image(
-                &scene,
-                Size {
-                    width: DevicePixels(WIDTH as i32),
-                    height: DevicePixels(HEIGHT as i32),
-                },
-            )
-            .context("render the scene")?;
-        let offset = ((HEIGHT / 2) * WIDTH + (WIDTH / 2)) as usize * 4;
-        Ok(image.data()[offset..offset + 4].to_vec())
+    impl Render for SurfaceDemo {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut Context<Self>,
+        ) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(surface(self.handle.clone()).w_full().h_full())
+        }
+    }
+
+    /// Open a window with the surface, draw a frame, and read the centre pixel back.
+    fn composite(handle: DmaBufHandle) -> Result<[u8; 4]> {
+        let text_system = Arc::new(CosmicTextSystem::new("fallback"));
+        // The Linux platform has no headless renderer of its own (unlike macOS's Metal one), so the
+        // example supplies the wgpu one — the same renderer a window uses.
+        let mut cx = HeadlessAppContext::with_platform(text_system, Arc::new(()), || {
+            Ok(Some(
+                Box::new(WgpuHeadlessRenderer::new()?) as Box<dyn gpui::SceneRenderer>
+            ))
+        });
+
+        let window = cx.open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |_window, cx| {
+            cx.new(|_| SurfaceDemo { handle })
+        })?;
+        let window: AnyWindowHandle = window.into();
+
+        // A view renders on the next frame; force one so `rendered_frame` holds our surface.
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            let _ = window.draw(cx);
+        })?;
+
+        let image = cx.capture_screenshot(window)?;
+        let pixel = image.get_pixel(WIDTH / 2, HEIGHT / 2).0;
+        Ok(pixel)
     }
 
     /// A single RGBA plane: the producer's bytes must survive unchanged.
@@ -208,11 +227,10 @@ mod demo {
         );
 
         let pixel = composite(handle)?;
-        let expected = RGBA_COLOUR;
-        println!("RGBA: producer wrote {expected:?}; composited {pixel:?}");
+        println!("RGBA: producer wrote {RGBA_COLOUR:?}; the composited pixel is {pixel:?}");
         ensure!(
-            pixel == expected,
-            "the composited pixel {pixel:?} does not match the producer's {expected:?}",
+            pixel == RGBA_COLOUR,
+            "the composited pixel {pixel:?} does not match the producer's {RGBA_COLOUR:?}",
         );
         Ok(())
     }
@@ -221,12 +239,12 @@ mod demo {
     fn nv12_case() -> Result<()> {
         let luma_size = (WIDTH * HEIGHT) as usize;
         let chroma_size = (WIDTH / 2 * HEIGHT / 2 * 2) as usize;
-        let mut content = vec![0u8; luma_size + chroma_size];
-        content[..luma_size].fill(128); // Y
-        content[luma_size..].fill(128); // U/V, neutral
+        let content = vec![128u8; luma_size + chroma_size];
 
         let (_producer, fd) = produce_dmabuf(&content)?;
-        let chroma_fd = fd.try_clone().context("duplicate the dma-buf for the chroma plane")?;
+        let chroma_fd = fd
+            .try_clone()
+            .context("duplicate the dma-buf for the chroma plane")?;
         let handle = DmaBufHandle::new(
             WIDTH,
             HEIGHT,
@@ -242,7 +260,7 @@ mod demo {
         let pixel = composite(handle)?;
         // The same BT.601 matrix the shader applies, on the CPU, for Y=U=V=128/255.
         let expected = ycbcr_to_rgb(128.0 / 255.0, 128.0 / 255.0, 128.0 / 255.0);
-        println!("NV12: Y=U=V=128 converts to {expected:?}; composited {pixel:?}");
+        println!("NV12: Y=U=V=128 converts to {expected:?}; the composited pixel is {pixel:?}");
         for channel in 0..3 {
             let got = i32::from(pixel[channel]);
             let want = (expected[channel] * 255.0).round() as i32;
@@ -251,7 +269,11 @@ mod demo {
                 "channel {channel} is {got}, but the shader's matrix predicts {want}",
             );
         }
-        ensure!(pixel[3] == 255, "the surface should be opaque, but alpha is {}", pixel[3]);
+        ensure!(
+            pixel[3] == 255,
+            "the surface should be opaque, but alpha is {}",
+            pixel[3],
+        );
         Ok(())
     }
 
@@ -278,7 +300,7 @@ mod demo {
     pub fn run() -> Result<()> {
         rgba_case()?;
         nv12_case()?;
-        println!("OK — dma-buf surfaces composited through wgpu and read back as expected");
+        println!("OK — dma-buf surfaces composited through the authoring API and read back as expected");
         Ok(())
     }
 }
