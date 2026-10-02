@@ -16,6 +16,7 @@
 //! message rather than sampled wrong.
 
 use std::os::fd::IntoRawFd;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use ash::vk;
@@ -60,7 +61,9 @@ pub(crate) fn import_dmabuf(
     match handle.format {
         DmaBufFormat::Bgra8 | DmaBufFormat::Rgba8 => {
             let (wgpu_format, vk_format) = match handle.format {
-                DmaBufFormat::Bgra8 => (wgpu::TextureFormat::Bgra8Unorm, vk::Format::B8G8R8A8_UNORM),
+                DmaBufFormat::Bgra8 => {
+                    (wgpu::TextureFormat::Bgra8Unorm, vk::Format::B8G8R8A8_UNORM)
+                }
                 _ => (wgpu::TextureFormat::Rgba8Unorm, vk::Format::R8G8B8A8_UNORM),
             };
             textures.push(import_plane(
@@ -134,8 +137,8 @@ fn import_plane(
         .usage(vk::ImageUsageFlags::SAMPLED)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
-    let image = unsafe { raw.create_image(&image_info, None) }
-        .context("create the imported image")?;
+    let image =
+        unsafe { raw.create_image(&image_info, None) }.context("create the imported image")?;
     let requirements = unsafe { raw.get_image_memory_requirements(image) };
 
     // The descriptor is consumed by the import, so hand over a duplicate and let the driver own it.
@@ -145,7 +148,15 @@ fn import_plane(
         .context("duplicate the plane descriptor for the import")?
         .into_raw_fd();
 
-    let memory = import_memory(instance, physical, raw, image, requirements, plane.offset, fd)?;
+    let memory = import_memory(
+        instance,
+        physical,
+        raw,
+        image,
+        requirements,
+        plane.offset,
+        fd,
+    )?;
     unsafe { raw.bind_image_memory(image, memory, plane.offset) }
         .context("bind the imported image at the plane's offset")?;
 
@@ -229,4 +240,226 @@ fn import_memory(
     Err(anyhow::anyhow!(
         "no memory type accepted the dma-buf import (last: {last_error:?})",
     ))
+}
+
+/// Reuses the textures imported for a dma-buf across frames.
+///
+/// The Apple arm has the platform's `CVMetalTextureCache` for exactly this: a CoreVideo texture cache
+/// held on the renderer that hands back the same `MTLTexture` for the same `CVPixelBuffer`. There is
+/// no such facility for dma-bufs, so this is it — and it is what keeps painting a live surface from
+/// re-creating a `VkImage`, a dedicated allocation and a `wgpu::Texture` every frame.
+///
+/// Identity is the handle's *descriptors*, compared by `Arc` identity, never the numbers. A producer
+/// that keeps its handle (the natural way — `surface(handle.clone())` each frame) hits, and a
+/// different buffer never aliases, even if the kernel hands the same descriptor number back.
+pub(crate) struct DmaBufTextureCache {
+    entries: Vec<CacheEntry>,
+    frame: u64,
+}
+
+struct CacheEntry {
+    handle: DmaBufHandle,
+    textures: Vec<PlaneTexture>,
+    last_used: u64,
+}
+
+/// At most this many buffers stay imported. A producer streams from a small pool — two or three
+/// buffers — so this covers the recycling without pinning an unbounded number of its buffers.
+const CAPACITY: usize = 8;
+
+impl DmaBufTextureCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            frame: 0,
+        }
+    }
+
+    /// The textures for `handle`, importing them the first time this buffer is seen since it was
+    /// last evicted.
+    ///
+    /// Clones are returned (cheap handles into the same allocation); the cache keeps the originals,
+    /// and with them the imported memory.
+    pub(crate) fn textures(
+        &mut self,
+        device: &wgpu::Device,
+        handle: &DmaBufHandle,
+    ) -> Result<Vec<wgpu::Texture>> {
+        self.frame += 1;
+        let frame = self.frame;
+
+        if let Some(index) = self.find(handle) {
+            self.entries[index].last_used = frame;
+            return Ok(self.entries[index]
+                .textures
+                .iter()
+                .map(|plane| plane.texture.clone())
+                .collect());
+        }
+
+        let imported = import_dmabuf(device, handle)?;
+        let textures = imported.iter().map(|plane| plane.texture.clone()).collect();
+
+        self.evict_if_full();
+        self.entries.push(CacheEntry {
+            handle: handle.clone(),
+            textures: imported,
+            last_used: frame,
+        });
+        Ok(textures)
+    }
+
+    /// The index of the entry for `handle`, if this buffer is already imported.
+    fn find(&self, handle: &DmaBufHandle) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|entry| same_buffer(&entry.handle, handle))
+    }
+
+    /// Make room for one more entry, dropping the least recently used when full, so a recycled
+    /// buffer is re-imported rather than pinned forever.
+    fn evict_if_full(&mut self) {
+        if self.entries.len() < CAPACITY {
+            return;
+        }
+        if let Some((index, _)) = self
+            .entries
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, entry)| entry.last_used)
+        {
+            self.entries.swap_remove(index);
+        }
+    }
+}
+
+/// Whether two handles describe the same buffer: the same descriptors (by `Arc` identity), layout
+/// and format. Deliberately ignores the acquire fence, which is per frame, not per buffer.
+fn same_buffer(a: &DmaBufHandle, b: &DmaBufHandle) -> bool {
+    a.width == b.width
+        && a.height == b.height
+        && a.format == b.format
+        && a.modifier == b.modifier
+        && a.planes.len() == b.planes.len()
+        && a.planes
+            .iter()
+            .zip(&b.planes)
+            .all(|(a, b)| Arc::ptr_eq(&a.fd, &b.fd) && a.offset == b.offset && a.stride == b.stride)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::OwnedFd;
+
+    /// A real descriptor without a GPU: `/dev/null` is an open file, and any open file is a valid
+    /// plane descriptor as far as the descriptor type is concerned.
+    fn descriptor() -> OwnedFd {
+        std::fs::File::open("/dev/null").expect("/dev/null").into()
+    }
+
+    fn handle(width: u32, offset: u64, stride: u32) -> DmaBufHandle {
+        DmaBufHandle::new(
+            width,
+            2,
+            DmaBufFormat::Bgra8,
+            DmaBufHandle::LINEAR,
+            [DmaBufPlane::new(descriptor(), offset, stride)],
+            None,
+        )
+    }
+
+    #[test]
+    fn a_cloned_handle_is_the_same_buffer() {
+        // The natural producer pattern: keep the handle, hand the renderer a clone each frame.
+        let handle = handle(4, 0, 16);
+        assert!(same_buffer(&handle, &handle.clone()));
+    }
+
+    #[test]
+    fn layout_and_format_differences_are_different_buffers() {
+        let base = handle(4, 0, 16);
+        assert!(!same_buffer(&base, &handle(8, 0, 16)), "width");
+        assert!(!same_buffer(&base, &handle(4, 16, 16)), "offset");
+        assert!(!same_buffer(&base, &handle(4, 0, 32)), "stride");
+
+        let rgba = DmaBufHandle::new(
+            4,
+            2,
+            DmaBufFormat::Rgba8,
+            DmaBufHandle::LINEAR,
+            [DmaBufPlane::new(descriptor(), 0, 16)],
+            None,
+        );
+        assert!(!same_buffer(&base, &rgba), "format");
+    }
+
+    #[test]
+    fn a_different_descriptor_is_a_different_buffer() {
+        // Two handles built from separate `/dev/null` opens: different descriptors, so no aliasing
+        // even though they describe the same shape.
+        assert!(!same_buffer(&handle(4, 0, 16), &handle(4, 0, 16)));
+    }
+
+    #[test]
+    fn the_fence_does_not_affect_identity() {
+        // The fence is per frame, not per buffer: a producer that attaches a fresh sync_file each
+        // frame must still hit the cache.
+        let handle = handle(4, 0, 16);
+        let mut with_fence = handle.clone();
+        with_fence.acquire_fence = Some(Arc::new(descriptor()));
+        assert!(same_buffer(&handle, &with_fence));
+    }
+
+    fn entry(handle: DmaBufHandle, last_used: u64) -> CacheEntry {
+        CacheEntry {
+            handle,
+            textures: Vec::new(),
+            last_used,
+        }
+    }
+
+    #[test]
+    fn find_locates_the_matching_buffer() {
+        let buffer = handle(4, 0, 16);
+        let other = handle(8, 0, 16);
+        let mut cache = DmaBufTextureCache::new();
+        assert_eq!(cache.find(&buffer), None);
+        cache.entries.push(entry(buffer.clone(), 1));
+        cache.entries.push(entry(other.clone(), 1));
+        assert_eq!(cache.find(&buffer), Some(0));
+        assert_eq!(cache.find(&other), Some(1));
+    }
+
+    #[test]
+    fn a_full_cache_evicts_the_least_recently_used() {
+        let buffers: Vec<_> = (0..CAPACITY)
+            .map(|i| handle((i + 1) as u32, 0, 16))
+            .collect();
+        let mut cache = DmaBufTextureCache::new();
+        for (i, buffer) in buffers.iter().enumerate() {
+            cache.entries.push(entry(buffer.clone(), i as u64));
+        }
+        // Touch everything but the oldest.
+        for entry in &mut cache.entries[1..] {
+            entry.last_used = 100;
+        }
+        cache.evict_if_full();
+        assert_eq!(cache.entries.len(), CAPACITY - 1);
+        assert!(
+            cache.find(&buffers[0]).is_none(),
+            "the oldest entry was evicted"
+        );
+        for buffer in &buffers[1..] {
+            assert!(cache.find(buffer).is_some());
+        }
+    }
+
+    #[test]
+    fn a_cache_with_room_evicts_nothing() {
+        let mut cache = DmaBufTextureCache::new();
+        cache.entries.push(entry(handle(4, 0, 16), 1));
+        cache.evict_if_full();
+        assert_eq!(cache.entries.len(), 1);
+    }
 }

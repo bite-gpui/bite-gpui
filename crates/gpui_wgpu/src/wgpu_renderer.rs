@@ -202,6 +202,9 @@ struct WgpuResources {
     path_intermediate_view: Option<wgpu::TextureView>,
     path_msaa_texture: Option<wgpu::Texture>,
     path_msaa_view: Option<wgpu::TextureView>,
+    /// The imported dma-buf textures, kept across frames like the Metal arm's `CVMetalTextureCache`.
+    #[cfg(target_os = "linux")]
+    dmabuf_textures: crate::DmaBufTextureCache,
 }
 
 struct CachedTextureBindGroup {
@@ -1430,6 +1433,8 @@ impl WgpuRendererCore {
                 path_intermediate_view: None,
                 path_msaa_texture: None,
                 path_msaa_view: None,
+                #[cfg(target_os = "linux")]
+                dmabuf_textures: crate::DmaBufTextureCache::new(),
             },
             atlas,
             path_globals_offset,
@@ -1686,8 +1691,6 @@ impl WgpuRendererCore {
                             &mut pass,
                         )?;
                     }
-                    // Surfaces are macOS-only for video playback and are not
-                    // implemented by the WGPU renderer.
                     PrimitiveBatch::Custom(range) => {
                         self.draw_imported_textures(
                             &instance_bindings.imported_textures,
@@ -1940,41 +1943,45 @@ impl WgpuRendererCore {
     /// no instance record and no vertex buffer. A buffer the renderer cannot import drops its
     /// surface rather than the frame.
     fn draw_surfaces(
-        &self,
+        &mut self,
         surfaces: &[PaintSurface],
         pass: &mut wgpu::RenderPass<'_>,
     ) -> Result<()> {
         if surfaces.is_empty() {
             return Ok(());
         }
-        let resources = self.resources();
-        pass.set_pipeline(&resources.pipelines.surfaces);
-        pass.set_bind_group(0, &resources.globals_bind_group, &[]);
+        pass.set_pipeline(&self.resources().pipelines.surfaces);
+        pass.set_bind_group(0, &self.resources().globals_bind_group, &[]);
 
         #[cfg(target_os = "linux")]
         for surface in surfaces {
             let gpui_engine::SurfaceSource::DmaBuf(handle) = &surface.source;
-            // The imported textures must outlive the draw, so they stay in this scope.
-            let planes = match crate::import_dmabuf(&resources.device, handle) {
-                Ok(planes) => planes,
-                Err(error) => {
-                    warn!("dropping a dma-buf surface: {error:#}");
-                    continue;
+            // The cache owns the imported textures and hands back cheap clones of their handles — as
+            // the Metal arm's `CVMetalTextureCache` does. The mutable borrow ends before the rest of
+            // the resources are read.
+            let textures = {
+                let resources = self.resources_mut();
+                match resources
+                    .dmabuf_textures
+                    .textures(&resources.device, handle)
+                {
+                    Ok(textures) => textures,
+                    Err(error) => {
+                        warn!("dropping a dma-buf surface: {error:#}");
+                        continue;
+                    }
                 }
             };
+            let resources = self.resources();
 
-            let luma = planes[0]
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
+            let luma = textures[0].create_view(&wgpu::TextureViewDescriptor::default());
             // A single plane samples as RGBA (format 1) and binds its own view for both texture
             // slots; a second plane is chroma (format 0).
-            let (chroma, surface_format) = if planes.len() == 1 {
+            let (chroma, surface_format) = if textures.len() == 1 {
                 (luma.clone(), 1u32)
             } else {
                 (
-                    planes[1]
-                        .texture
-                        .create_view(&wgpu::TextureViewDescriptor::default()),
+                    textures[1].create_view(&wgpu::TextureViewDescriptor::default()),
                     0u32,
                 )
             };
