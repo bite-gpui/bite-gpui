@@ -83,6 +83,8 @@ fn main() -> Result<()> {
             // A vendor-tiled modifier with a single plane: the import the flat-linear pass does not
             // cover.
             run_tiled_round_trip(&instance, device, 0x0100_0000_0000_0002)?;
+            // The `sync_file` fence: the Linux counterpart of the keyed mutex and `MTLSharedEvent`.
+            run_fence_probe(&instance, device)?;
         }
         None => println!("no physical device to run the round trip on"),
     }
@@ -236,6 +238,320 @@ fn modifier_name(modifier: u64) -> &'static str {
         0x0100_0000_0000_0009 => "I915_FORMAT_MOD_4_TILED",
         _ => "vendor",
     }
+}
+
+/// Stage 6 — the `sync_file` fence: the Linux counterpart of the keyed mutex and the
+/// `MTLSharedEvent`. The producer clears the image and signals a semaphore exported as a
+/// `SYNC_FD`; the consumer imports that fd and waits on it before copying the image out — a GPU-side
+/// order with no CPU stall between the two submissions.
+fn run_fence_probe(
+    instance: &ash::Instance,
+    physical_device: ash::vk::PhysicalDevice,
+) -> Result<()> {
+    use ash::khr::external_semaphore_fd::Device as ExternalSemaphoreFd;
+    use ash::vk;
+
+    println!("=== sync_file fence probe ===");
+
+    let queue_families =
+        unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+    let queue_family_index = queue_families
+        .iter()
+        .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+        .context("no graphics queue family")? as u32;
+
+    let extension_names = [
+        vk::KHR_EXTERNAL_MEMORY_FD_NAME.as_ptr(),
+        vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
+        vk::KHR_EXTERNAL_SEMAPHORE_FD_NAME.as_ptr(),
+        vk::KHR_BIND_MEMORY2_NAME.as_ptr(),
+    ];
+    let queue_priorities = [1.0f32];
+    let queue_create_info = vk::DeviceQueueCreateInfo::default()
+        .queue_family_index(queue_family_index)
+        .queue_priorities(&queue_priorities);
+    let queue_create_infos = [queue_create_info];
+    let device_create_info = vk::DeviceCreateInfo::default()
+        .queue_create_infos(&queue_create_infos)
+        .enabled_extension_names(&extension_names);
+    let device = unsafe { instance.create_device(physical_device, &device_create_info, None) }
+        .context("create fence device")?;
+    let external_semaphore_fd = ExternalSemaphoreFd::new(instance, &device);
+    let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+    let command_pool = unsafe {
+        device.create_command_pool(
+            &vk::CommandPoolCreateInfo::default()
+                .queue_family_index(queue_family_index)
+                .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+            None,
+        )
+    }
+    .context("fence command pool")?;
+    let command_buffers = unsafe {
+        device.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(2),
+        )
+    }
+    .context("fence command buffers")?;
+    let (producer_command_buffer, consumer_command_buffer) =
+        (command_buffers[0], command_buffers[1]);
+
+    // A linear image the producer clears and the consumer copies out.
+    let image_create_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .extent(vk::Extent3D {
+            width: PIXELS,
+            height: PIXELS,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::LINEAR)
+        .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image = unsafe { device.create_image(&image_create_info, None) }.context("fence image")?;
+    let requirements = unsafe { device.get_image_memory_requirements(image) };
+    let memory_properties =
+        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let memory_type_index = memory_properties
+        .memory_types
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            requirements.memory_type_bits & (1 << index) != 0
+                && memory_type
+                    .property_flags
+                    .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+        })
+        .map(|(index, _)| index as u32)
+        .context("no device-local memory for the fence image")?;
+    let mut export_info = vk::ExportMemoryAllocateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let allocate_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(requirements.size)
+        .memory_type_index(memory_type_index)
+        .push_next(&mut export_info);
+    let memory =
+        unsafe { device.allocate_memory(&allocate_info, None) }.context("fence image memory")?;
+    unsafe { device.bind_image_memory(image, memory, 0) }.context("bind fence image")?;
+
+    let subresource_range = vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .level_count(1)
+        .layer_count(1);
+
+    // --- producer: clear, signal a SYNC_FD semaphore, export it ----------
+    let producer_semaphore = unsafe {
+        device.create_semaphore(
+            &vk::SemaphoreCreateInfo::default().push_next(
+                &mut vk::ExportSemaphoreCreateInfo::default()
+                    .handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD),
+            ),
+            None,
+        )
+    }
+    .context("producer semaphore")?;
+    let clear_color = vk::ClearColorValue {
+        float32: [32.0 / 255.0, 192.0 / 255.0, 64.0 / 255.0, 1.0],
+    };
+    unsafe {
+        device
+            .begin_command_buffer(
+                producer_command_buffer,
+                &vk::CommandBufferBeginInfo::default(),
+            )
+            .context("begin producer")?;
+        let barrier = vk::ImageMemoryBarrier::default()
+            .image(image)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .subresource_range(subresource_range);
+        device.cmd_pipeline_barrier(
+            producer_command_buffer,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        );
+        device.cmd_clear_color_image(
+            producer_command_buffer,
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &clear_color,
+            &[subresource_range],
+        );
+        device
+            .end_command_buffer(producer_command_buffer)
+            .context("end producer")?;
+    }
+    let producer_command_buffers = [producer_command_buffer];
+    let signal_semaphores = [producer_semaphore];
+    let submit_info = vk::SubmitInfo::default()
+        .command_buffers(&producer_command_buffers)
+        .signal_semaphores(&signal_semaphores);
+    unsafe { device.queue_submit(queue, &[submit_info], vk::Fence::null()) }
+        .context("submit producer")?;
+
+    // Export the fence the producer just signaled, as a `sync_file` fd. No `queue_wait_idle`: the fd
+    // is the pending GPU fence, which is the point.
+    let get_fd_info = vk::SemaphoreGetFdInfoKHR::default()
+        .semaphore(producer_semaphore)
+        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+    let fence_fd = unsafe { external_semaphore_fd.get_semaphore_fd(&get_fd_info) }
+        .context("export fence as a sync_file")?;
+    println!("producer: cleared, signaled, exported sync_file fd {fence_fd}");
+
+    // --- consumer: import the fd, wait on it, copy the image out ---------
+    let consumer_semaphore =
+        unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }
+            .context("consumer semaphore")?;
+    let import_info = vk::ImportSemaphoreFdInfoKHR::default()
+        .semaphore(consumer_semaphore)
+        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
+        .fd(fence_fd);
+    unsafe { external_semaphore_fd.import_semaphore_fd(&import_info) }
+        .context("import the sync_file")?;
+
+    let readback_size = (PIXELS * PIXELS * 4) as u64;
+    let readback_buffer = unsafe {
+        device.create_buffer(
+            &vk::BufferCreateInfo::default()
+                .size(readback_size)
+                .usage(vk::BufferUsageFlags::TRANSFER_DST),
+            None,
+        )
+    }
+    .context("fence readback buffer")?;
+    let readback_requirements = unsafe { device.get_buffer_memory_requirements(readback_buffer) };
+    let readback_memory_type_index = memory_properties
+        .memory_types
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            readback_requirements.memory_type_bits & (1 << index) != 0
+                && memory_type.property_flags.contains(
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+        })
+        .map(|(index, _)| index as u32)
+        .context("no host-visible memory for the fence readback")?;
+    let readback_memory = unsafe {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(readback_requirements.size)
+                .memory_type_index(readback_memory_type_index),
+            None,
+        )
+    }
+    .context("fence readback memory")?;
+    unsafe { device.bind_buffer_memory(readback_buffer, readback_memory, 0) }
+        .context("bind fence readback")?;
+
+    unsafe {
+        device
+            .begin_command_buffer(
+                consumer_command_buffer,
+                &vk::CommandBufferBeginInfo::default(),
+            )
+            .context("begin consumer")?;
+        let barrier = vk::ImageMemoryBarrier::default()
+            .image(image)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .subresource_range(subresource_range);
+        device.cmd_pipeline_barrier(
+            consumer_command_buffer,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        );
+        let region = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .image_offset(vk::Offset3D::default())
+            .image_extent(vk::Extent3D {
+                width: PIXELS,
+                height: PIXELS,
+                depth: 1,
+            });
+        device.cmd_copy_image_to_buffer(
+            consumer_command_buffer,
+            image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            readback_buffer,
+            &[region],
+        );
+        device
+            .end_command_buffer(consumer_command_buffer)
+            .context("end consumer")?;
+    }
+    let consumer_command_buffers = [consumer_command_buffer];
+    let wait_semaphores = [consumer_semaphore];
+    let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+    let submit_info = vk::SubmitInfo::default()
+        .command_buffers(&consumer_command_buffers)
+        .wait_semaphores(&wait_semaphores)
+        .wait_dst_stage_mask(&wait_stages);
+    unsafe { device.queue_submit(queue, &[submit_info], vk::Fence::null()) }
+        .context("submit consumer")?;
+    unsafe { device.queue_wait_idle(queue) }.context("wait consumer")?;
+
+    let mapped = unsafe {
+        device.map_memory(
+            readback_memory,
+            0,
+            readback_size,
+            vk::MemoryMapFlags::empty(),
+        )
+    }
+    .context("map fence readback")? as *const u8;
+    let bytes = unsafe { std::slice::from_raw_parts(mapped, readback_size as usize) };
+    let expected = [32u8, 192, 64, 255];
+    let matches = bytes.chunks(4).all(|pixel| pixel == expected);
+    println!(
+        "fence: producer's clear read back after a sync_file wait — {}",
+        if matches {
+            "MATCH, no tear"
+        } else {
+            "MISMATCH"
+        }
+    );
+    unsafe { device.unmap_memory(readback_memory) };
+
+    unsafe {
+        device.destroy_semaphore(producer_semaphore, None);
+        device.destroy_semaphore(consumer_semaphore, None);
+        device.destroy_image(image, None);
+        device.destroy_buffer(readback_buffer, None);
+        device.free_memory(memory, None);
+        device.free_memory(readback_memory, None);
+        device.destroy_command_pool(command_pool, None);
+        device.destroy_device(None);
+    }
+    Ok(())
 }
 
 /// Stage 5 — a tiled (vendor-modifier) round trip: create a tiled image, clear it through a command
