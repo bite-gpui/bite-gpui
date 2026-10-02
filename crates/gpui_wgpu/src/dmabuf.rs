@@ -15,8 +15,9 @@
 //! enabled on this device and an explicit plane layout; a non-linear modifier is refused with a
 //! message rather than sampled wrong.
 
-use std::os::fd::IntoRawFd;
+use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use ash::vk;
@@ -106,6 +107,49 @@ pub(crate) fn import_dmabuf(
         }
     }
     Ok(textures)
+}
+
+/// How long the renderer waits for a producer's `sync_file` before dropping the surface for that
+/// frame — about one frame at 60 Hz, so a producer that is merely a frame late still composites.
+///
+/// A producer further behind loses a frame rather than stalling the UI, the same "fault softly"
+/// rule the rest of the surface path follows.
+pub(crate) const ACQUIRE_FENCE_TIMEOUT: Duration = Duration::from_millis(16);
+
+/// Wait, up to `timeout`, for a surface's acquire fence to signal; `true` if it signalled in time.
+///
+/// A `sync_file` becomes readable when its fence signals, so this is a `poll(2)`. It is a *host*
+/// wait on purpose: `wgpu` owns its queue and gives no hook to make one of its submissions wait on
+/// an external semaphore, and a queue-level wait has no timeout — a producer that never signals
+/// would stall the renderer forever. A poll can give up, so a broken producer costs a frame rather
+/// than the application.
+///
+/// The common case is free: a producer at or ahead of the frame rate has already signalled, and
+/// `poll` returns at once.
+pub(crate) fn wait_for_acquire_fence(fence: &OwnedFd, timeout: Duration) -> bool {
+    let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    let mut descriptor = libc::pollfd {
+        fd: fence.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        match unsafe { libc::poll(&mut descriptor, 1, timeout_ms) } {
+            // Readable: the fence signalled. An invalid descriptor (`POLLNVAL`) reports ready too
+            // and falls through to the import, which drops the surface.
+            1.. => return true,
+            // Timed out: the producer is not done, so give up rather than block the frame.
+            0 => return false,
+            // `-1`: retry an interrupted wait (a signal), otherwise treat the fence as unusable and
+            // drop the surface.
+            _ => {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return false;
+            }
+        }
+    }
 }
 
 /// Import one plane's descriptor as a linear `VkImage`, and adopt it into a `wgpu` texture.
@@ -461,5 +505,27 @@ mod tests {
         cache.entries.push(entry(handle(4, 0, 16), 1));
         cache.evict_if_full();
         assert_eq!(cache.entries.len(), 1);
+    }
+
+    #[test]
+    fn an_already_signalled_fence_does_not_block() {
+        // `/dev/null` is always readable — the shape of a `sync_file` whose fence has signalled.
+        let fence: OwnedFd = std::fs::File::open("/dev/null").expect("/dev/null").into();
+        assert!(wait_for_acquire_fence(&fence, Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn a_fence_that_never_signals_times_out() {
+        // A pipe with no data is the shape of a producer that has not finished; the wait must give
+        // up rather than hang. The write end is held open (a dropped writer reads as EOF, which is
+        // `ready`), so nothing ever signals.
+        let (read_end, _write_end) = std::io::pipe().expect("a pipe");
+        let fence = OwnedFd::from(read_end);
+        let started = std::time::Instant::now();
+        assert!(!wait_for_acquire_fence(&fence, Duration::from_millis(10)));
+        assert!(
+            started.elapsed() >= Duration::from_millis(5),
+            "it should have waited"
+        );
     }
 }

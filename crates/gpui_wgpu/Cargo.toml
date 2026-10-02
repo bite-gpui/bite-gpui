@@ -56,6 +56,8 @@ wgpu = { workspace = true, features = ["webgl"] }
 # (`texture_from_raw`) but cannot create. The version must match the one `wgpu-hal` links against.
 [target.'cfg(target_os = "linux")'.dependencies]
 ash = "0.38"
+# `poll(2)`, to wait on a surface's acquire fence. See `src/dmabuf.rs`.
+libc.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

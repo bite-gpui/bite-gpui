@@ -15,6 +15,7 @@
 
 #![cfg(all(target_os = "linux", feature = "test-support"))]
 
+use std::io::Write as _;
 use std::os::fd::{FromRawFd, OwnedFd};
 
 use ash::vk;
@@ -193,6 +194,37 @@ fn a_single_plane_surface_reads_back_byte_for_byte() {
         DmaBufHandle::LINEAR,
         [DmaBufPlane::new(fd, 0, WIDTH * 4)],
         None,
+    );
+
+    let pixel = composite(handle).expect("composite the surface");
+    assert_eq!(pixel, RGBA_COLOUR);
+}
+
+#[test]
+fn a_surface_with_a_signalled_acquire_fence_is_waited_on() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+    let mut content = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
+    for _ in 0..(WIDTH * HEIGHT) {
+        content.extend_from_slice(&RGBA_COLOUR);
+    }
+    let Some((_producer, fd)) = produce_dmabuf(&content) else {
+        eprintln!("skipping: could not allocate a dma-buf");
+        return;
+    };
+    // A `sync_file` is readable once its fence signals; a pipe holding a byte has that same shape,
+    // so the renderer's wait returns at once and the surface still composites.
+    let (read_end, mut write_end) = std::io::pipe().expect("a pipe to stand in for a sync_file");
+    write_end.write_all(&[1]).expect("signal the fence");
+    let handle = DmaBufHandle::new(
+        WIDTH,
+        HEIGHT,
+        DmaBufFormat::Rgba8,
+        DmaBufHandle::LINEAR,
+        [DmaBufPlane::new(fd, 0, WIDTH * 4)],
+        Some(OwnedFd::from(read_end)),
     );
 
     let pixel = composite(handle).expect("composite the surface");

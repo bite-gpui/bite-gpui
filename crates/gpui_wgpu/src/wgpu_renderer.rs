@@ -1956,6 +1956,14 @@ impl WgpuRendererCore {
         #[cfg(target_os = "linux")]
         for surface in surfaces {
             let gpui_engine::SurfaceSource::DmaBuf(handle) = &surface.source;
+            // Wait for the producer's fence before sampling; a producer that never signals loses
+            // this frame rather than stalling the UI.
+            if let Some(fence) = &handle.acquire_fence
+                && !crate::wait_for_acquire_fence(fence, crate::ACQUIRE_FENCE_TIMEOUT)
+            {
+                warn!("dropping a dma-buf surface: its acquire fence did not signal in time");
+                continue;
+            }
             // The cache owns the imported textures and hands back cheap clones of their handles — as
             // the Metal arm's `CVMetalTextureCache` does. The mutable borrow ends before the rest of
             // the resources are read.

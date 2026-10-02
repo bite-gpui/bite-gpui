@@ -90,7 +90,8 @@ pub struct DmaBufHandle {
     pub modifier: u64,
     /// One plane per [`DmaBufFormat`]: one for `Bgra8`/`Rgba8`, two for `Nv12`.
     pub planes: SmallVec<[DmaBufPlane; 2]>,
-    /// An optional `sync_file` fence the renderer waits on before sampling the buffer.
+    /// An optional `sync_file` fence the renderer waits on before sampling the buffer; a fence that
+    /// does not signal in time drops the surface for that frame rather than blocking the frame.
     pub acquire_fence: Option<Arc<OwnedFd>>,
 }
 
