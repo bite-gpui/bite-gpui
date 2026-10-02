@@ -11,9 +11,12 @@
 //! `dup` of its descriptor; that is also what lets an `NV12` buffer's two planes, which may share one
 //! descriptor, become two independently-owned textures.
 //!
-//! **Linear only for now.** The probe showed a tiled import needs `VK_EXT_image_drm_format_modifier`
-//! enabled on this device and an explicit plane layout; a non-linear modifier is refused with a
-//! message rather than sampled wrong.
+//! **Linear only — a tiled buffer is refused.** Sampling a vendor-tiled modifier needs
+//! `VK_EXT_image_drm_format_modifier` enabled on the device the image is made on, and that device is
+//! `wgpu`'s: its Vulkan backend does not enable the extension and exposes no way to add one, so a
+//! `DRM_FORMAT_MODIFIER_EXT` image cannot be created there. A non-linear modifier is refused with a
+//! message rather than sampled wrong; the paths are in
+//! `bite-gpui-project/issues/0008-dmabuf-tiled-modifiers-wgpu.md`.
 
 use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
@@ -38,8 +41,9 @@ pub(crate) fn import_dmabuf(
 ) -> Result<Vec<PlaneTexture>> {
     anyhow::ensure!(
         handle.modifier == DmaBufHandle::LINEAR,
-        "gpui_wgpu imports linear dma-bufs only, but this buffer declares modifier {:#x}; \
-         a producer sharing across GPUs must use DRM_FORMAT_MOD_LINEAR",
+        "gpui_wgpu imports linear dma-bufs only, but this buffer declares modifier {:#x}: a tiled \
+         modifier needs VK_EXT_image_drm_format_modifier, which wgpu does not enable on the renderer's \
+         device (issues/0008); a producer must use DRM_FORMAT_MOD_LINEAR",
         handle.modifier,
     );
     let expected = match handle.format {
