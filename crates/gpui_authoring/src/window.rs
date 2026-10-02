@@ -15,7 +15,6 @@ use crate::{
     InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
     KeystrokeEvent, LayoutId, LineLayoutIndex, MeasureContext, MeasureHandles, Modifiers,
     ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
-    PaintSurface,
     Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
     PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
     RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
@@ -30,6 +29,10 @@ use crate::{
 };
 
 use crate::TouchEvent;
+
+/// Named only by the scene-reading accessors below, which exist for tests.
+#[cfg(any(test, feature = "test-support"))]
+use crate::PaintSurface;
 use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
 use anyhow::{Context as _, Result, anyhow};
 use arc_swap::ArcSwap;
