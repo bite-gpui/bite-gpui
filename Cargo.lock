@@ -7714,6 +7714,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_interop"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "wgpu",
+]
+
+[[package]]
 name = "gpui_linux"
 version = "0.1.0"
 dependencies = [
