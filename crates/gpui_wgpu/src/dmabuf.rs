@@ -15,8 +15,8 @@
 //! `VK_EXT_image_drm_format_modifier` enabled on the device the image is made on, and that device is
 //! `wgpu`'s: its Vulkan backend does not enable the extension and exposes no way to add one, so a
 //! `DRM_FORMAT_MODIFIER_EXT` image cannot be created there. A non-linear modifier is refused with a
-//! message rather than sampled wrong; the paths are in
-//! `bite-gpui-project/issues/0008-dmabuf-tiled-modifiers-wgpu.md`.
+//! message rather than sampled wrong; it is an accepted limitation, and the future `wgpu-hal` change
+//! that would lift it is recorded in `bite-gpui-project/issues/0008-dmabuf-tiled-modifiers-wgpu.md`.
 
 use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
