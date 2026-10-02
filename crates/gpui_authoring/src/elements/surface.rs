@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+use crate::LinuxWindowExt;
 #[cfg(target_os = "macos")]
 use crate::MacWindowExt;
 #[cfg(target_os = "windows")]
@@ -106,6 +108,16 @@ impl Element for Surface {
                 };
                 // TODO: Add support for corner_radii
                 window.paint_surface(new_bounds, view.clone());
+            }
+            #[cfg(target_os = "linux")]
+            SurfaceSource::DmaBuf(handle) => {
+                let size = crate::size(
+                    crate::DevicePixels::from(handle.width as i32),
+                    crate::DevicePixels::from(handle.height as i32),
+                );
+                let new_bounds = self.object_fit.get_bounds(bounds, size);
+                // TODO: Add support for corner_radii
+                window.paint_surface(new_bounds, handle.clone());
             }
             #[allow(unreachable_patterns)]
             _ => {}

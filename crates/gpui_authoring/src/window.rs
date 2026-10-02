@@ -68,6 +68,8 @@ use uuid::Uuid;
 
 pub(crate) mod a11y;
 mod frame_pipeline;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod mac;
 mod prompts;
@@ -76,6 +78,8 @@ mod win;
 
 pub use a11y::A11ySubtreeBuilder;
 pub use frame_pipeline::{FramePipeline, StandardImmediatePipeline};
+#[cfg(target_os = "linux")]
+pub use linux::*;
 #[cfg(target_os = "macos")]
 pub use mac::*;
 #[cfg(target_os = "windows")]

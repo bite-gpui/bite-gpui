@@ -9,3 +9,8 @@ pub use linux::current_platform;
 /// lives in a crate of its own.
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub use gpui_wgpu::ImportedTextureExt;
+
+/// The Linux surface transport, re-exported so an application reaches it through the platform crate
+/// it already depends on rather than through the engine.
+#[cfg(target_os = "linux")]
+pub use gpui_engine::{DmaBufFormat, DmaBufHandle, DmaBufPlane};
