@@ -15,6 +15,7 @@ use crate::{
     InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
     KeystrokeEvent, LayoutId, LineLayoutIndex, MeasureContext, MeasureHandles, Modifiers,
     ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
+    PaintSurface,
     Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
     PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
     RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
@@ -3027,6 +3028,14 @@ impl Window<'_> {
     #[cfg(any(test, feature = "test-support"))]
     pub fn painted_underlines(&self) -> Vec<Underline> {
         self.frame_state.rendered_frame.scene.underlines.clone()
+    }
+
+    /// Returns the surfaces in the most recently rendered frame's scene: the pixels an element
+    /// painted through [`surface`](crate::surface), before any renderer resolves the handle inside
+    /// them. Like [`painted_quads`](Self::painted_quads), this is the scene as painted.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn painted_surfaces(&self) -> Vec<PaintSurface> {
+        self.frame_state.rendered_frame.scene.surfaces.clone()
     }
 
     /// The graphics device this window's renderer draws on, if it has one to lend.

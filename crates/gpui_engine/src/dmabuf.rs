@@ -139,3 +139,95 @@ impl DmaBufHandle {
         self.planes.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real descriptor without a GPU: `/dev/null` is an open file, and any open file is a valid
+    /// plane descriptor as far as the descriptor type is concerned.
+    fn descriptor() -> OwnedFd {
+        std::fs::File::open("/dev/null").expect("/dev/null").into()
+    }
+
+    #[test]
+    fn linear_is_the_zero_modifier() {
+        assert_eq!(DmaBufHandle::LINEAR, 0);
+    }
+
+    #[test]
+    fn new_collects_the_planes_it_is_given() {
+        let handle = DmaBufHandle::new(
+            4,
+            2,
+            DmaBufFormat::Nv12,
+            DmaBufHandle::LINEAR,
+            [
+                DmaBufPlane::new(descriptor(), 0, 4),
+                DmaBufPlane::new(descriptor(), 8, 4),
+            ],
+            None,
+        );
+        assert_eq!(handle.plane_count(), 2);
+        assert_eq!((handle.width, handle.height), (4, 2));
+        assert_eq!(handle.format, DmaBufFormat::Nv12);
+        assert!(handle.acquire_fence.is_none());
+    }
+
+    #[test]
+    fn new_wraps_the_acquire_fence() {
+        let handle = DmaBufHandle::new(
+            1,
+            1,
+            DmaBufFormat::Rgba8,
+            DmaBufHandle::LINEAR,
+            [DmaBufPlane::new(descriptor(), 0, 4)],
+            Some(descriptor()),
+        );
+        assert!(handle.acquire_fence.is_some());
+    }
+
+    #[test]
+    fn a_clone_shares_the_descriptor_rather_than_duplicating_it() {
+        let plane = DmaBufPlane::new(descriptor(), 0, 4);
+        let cloned = plane.clone();
+        assert!(Arc::ptr_eq(&plane.fd, &cloned.fd));
+    }
+
+    #[test]
+    fn equality_is_the_descriptor_and_the_layout() {
+        let fd = Arc::new(descriptor());
+        let plane = DmaBufPlane {
+            fd: fd.clone(),
+            offset: 0,
+            stride: 4,
+        };
+        let same = DmaBufPlane {
+            fd: fd.clone(),
+            offset: 0,
+            stride: 4,
+        };
+        // The same buffer at a different offset is a different plane.
+        let elsewhere = DmaBufPlane {
+            fd: fd.clone(),
+            offset: 4,
+            stride: 4,
+        };
+        assert_eq!(plane, same);
+        assert_ne!(plane, elsewhere);
+    }
+
+    #[test]
+    fn a_handle_becomes_a_surface_source() {
+        let handle = DmaBufHandle::new(
+            1,
+            1,
+            DmaBufFormat::Rgba8,
+            DmaBufHandle::LINEAR,
+            [DmaBufPlane::new(descriptor(), 0, 4)],
+            None,
+        );
+        let source: crate::SurfaceSource = handle.clone().into();
+        assert_eq!(source, crate::SurfaceSource::DmaBuf(handle));
+    }
+}

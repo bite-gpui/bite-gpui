@@ -162,3 +162,56 @@ fn directx_view_size(
         ))
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use crate::{Context, Render, TestAppContext, Window};
+    use gpui_engine::{DmaBufFormat, DmaBufHandle, DmaBufPlane, SurfaceSource};
+    use std::os::fd::OwnedFd;
+
+    struct SurfaceView {
+        handle: DmaBufHandle,
+    }
+
+    impl Render for SurfaceView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            surface(self.handle.clone())
+        }
+    }
+
+    /// A descriptor without a GPU: any open file is a valid one as far as the element cares.
+    fn descriptor() -> OwnedFd {
+        std::fs::File::open("/dev/null")
+            .expect("/dev/null")
+            .into()
+    }
+
+    /// The element's whole job is to put the handle into the scene as a surface: it names no
+    /// renderer, so this needs no GPU.
+    #[gpui::test]
+    fn a_surface_handle_reaches_the_scene(cx: &mut TestAppContext) {
+        let handle = DmaBufHandle::new(
+            4,
+            4,
+            DmaBufFormat::Rgba8,
+            DmaBufHandle::LINEAR,
+            [DmaBufPlane::new(descriptor(), 0, 16)],
+            None,
+        );
+
+        let expected = handle.clone();
+        // `add_window_view` draws the frame the way the platform does; drawing by hand from inside
+        // a `window.update` would re-borrow the view that closure already holds.
+        let (_view, cx) = cx.add_window_view(|_, _| SurfaceView { handle });
+        cx.run_until_parked();
+
+        let surfaces = cx.update(|window, _cx| window.painted_surfaces());
+        assert_eq!(
+            surfaces.len(),
+            1,
+            "the surface should be in the scene exactly once"
+        );
+        assert_eq!(surfaces[0].source, SurfaceSource::DmaBuf(expected));
+    }
+}
