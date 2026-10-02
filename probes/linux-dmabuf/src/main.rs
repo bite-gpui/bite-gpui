@@ -90,6 +90,33 @@ fn main() -> Result<()> {
         }
         None => println!("no physical device to run the round trip on"),
     }
+
+    // Cross-device: a dma-buf allocated on the integrated GPU, imported and read by the discrete
+    // one. This is the hybrid case dma-buf exists for, and the last thing P3 left unmeasured.
+    let device_type = |device: ash::vk::PhysicalDevice| unsafe {
+        instance.get_physical_device_properties(device).device_type
+    };
+    let producer = devices
+        .iter()
+        .copied()
+        .find(|&device| device_type(device) == ash::vk::PhysicalDeviceType::INTEGRATED_GPU);
+    let consumer = devices
+        .iter()
+        .copied()
+        .find(|&device| device_type(device) == ash::vk::PhysicalDeviceType::DISCRETE_GPU);
+    match (producer, consumer) {
+        (Some(integrated), Some(discrete)) => {
+            if let Err(error) = run_cross_device_round_trip(&instance, integrated, discrete) {
+                println!("cross-device round trip failed: {error:#}");
+            }
+            // And the other way round: which direction a cross-vendor import works in is itself a
+            // result, and the two directions are not symmetric.
+            if let Err(error) = run_cross_device_round_trip(&instance, discrete, integrated) {
+                println!("reverse cross-device round trip failed: {error:#}");
+            }
+        }
+        _ => println!("no integrated/discrete pair for a cross-device round trip"),
+    }
     Ok(())
 }
 
@@ -1979,6 +2006,476 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         },
     );
 
+    Ok(())
+}
+
+/// A device, its graphics queue, and one command buffer — the handles a probe side needs.
+struct ProbeDevice {
+    device: ash::Device,
+    queue: ash::vk::Queue,
+    command_pool: ash::vk::CommandPool,
+    command_buffer: ash::vk::CommandBuffer,
+}
+
+impl ProbeDevice {
+    fn new(instance: &ash::Instance, physical: ash::vk::PhysicalDevice) -> Result<Self> {
+        use ash::vk;
+        let families = unsafe { instance.get_physical_device_queue_family_properties(physical) };
+        let family = families
+            .iter()
+            .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .context("no graphics queue family")? as u32;
+        let extensions = [
+            vk::KHR_EXTERNAL_MEMORY_FD_NAME.as_ptr(),
+            vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
+            vk::KHR_EXTERNAL_SEMAPHORE_FD_NAME.as_ptr(),
+            vk::KHR_IMAGE_FORMAT_LIST_NAME.as_ptr(),
+            vk::KHR_BIND_MEMORY2_NAME.as_ptr(),
+        ];
+        let priorities = [1.0f32];
+        let queue_create_info = vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(family)
+            .queue_priorities(&priorities);
+        let device_create_info = vk::DeviceCreateInfo::default()
+            .queue_create_infos(std::slice::from_ref(&queue_create_info))
+            .enabled_extension_names(&extensions);
+        let device = unsafe { instance.create_device(physical, &device_create_info, None) }
+            .context("create device")?;
+        let queue = unsafe { device.get_device_queue(family, 0) };
+        let command_pool = unsafe {
+            device.create_command_pool(
+                &vk::CommandPoolCreateInfo::default().queue_family_index(family),
+                None,
+            )
+        }
+        .context("command pool")?;
+        let command_buffer = unsafe {
+            device.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(command_pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )
+        }
+        .context("command buffer")?[0];
+        Ok(Self {
+            device,
+            queue,
+            command_pool,
+            command_buffer,
+        })
+    }
+
+    fn destroy(self) {
+        unsafe { self.device.destroy_command_pool(self.command_pool, None) };
+        unsafe { self.device.destroy_device(None) };
+    }
+}
+
+/// The first memory type a host-variable guest can use: compatible with the image, and mappable.
+fn host_visible_type(
+    properties: &ash::vk::PhysicalDeviceMemoryProperties,
+    memory_type_bits: u32,
+) -> Option<u32> {
+    use ash::vk;
+    properties
+        .memory_types
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            memory_type_bits & (1 << index) != 0
+                && memory_type.property_flags.contains(
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+        })
+        .map(|(index, _)| index as u32)
+}
+
+/// Cross-device: a dma-buf allocated on one GPU, imported and read on another, ordered by a
+/// `sync_file` that crosses the device boundary. Linear tiling only — a vendor modifier means nothing
+/// to a different vendor — and the two sides are separate `VkDevice`s on separate physical devices,
+/// so this is the hybrid (PRIME) case the transport exists for.
+fn run_cross_device_round_trip(
+    instance: &ash::Instance,
+    producer_physical: ash::vk::PhysicalDevice,
+    consumer_physical: ash::vk::PhysicalDevice,
+) -> Result<()> {
+    use ash::khr::external_memory_fd::Device as ExternalMemoryFd;
+    use ash::khr::external_semaphore_fd::Device as ExternalSemaphoreFd;
+    use ash::vk;
+
+    const CROSS_W: u32 = 16;
+    const CROSS_H: u32 = 16;
+    let producer_name = c_char_slice_to_string(
+        &unsafe { instance.get_physical_device_properties(producer_physical) }.device_name,
+    );
+    let consumer_name = c_char_slice_to_string(
+        &unsafe { instance.get_physical_device_properties(consumer_physical) }.device_name,
+    );
+    println!("=== cross-device dma-buf: {producer_name} -> {consumer_name} ===");
+
+    // What each side says it can do: a linear image it can export/import as a dma-buf, and a semaphore
+    // it can export/import as a `sync_file`.
+    for (label, physical) in [
+        ("producer", producer_physical),
+        ("consumer", consumer_physical),
+    ] {
+        let mut external_info = vk::PhysicalDeviceExternalImageFormatInfo::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+        let image_info = vk::PhysicalDeviceImageFormatInfo2::default()
+            .format(vk::Format::R8G8B8A8_UNORM)
+            .ty(vk::ImageType::TYPE_2D)
+            .tiling(vk::ImageTiling::LINEAR)
+            .usage(
+                vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST,
+            )
+            .push_next(&mut external_info);
+        let mut external_props = vk::ExternalImageFormatProperties::default();
+        let mut image_props = vk::ImageFormatProperties2::default().push_next(&mut external_props);
+        let image_features = match unsafe {
+            instance.get_physical_device_image_format_properties2(
+                physical,
+                &image_info,
+                &mut image_props,
+            )
+        } {
+            Ok(()) => format!(
+                "{:?}",
+                external_props
+                    .external_memory_properties
+                    .external_memory_features
+            ),
+            Err(code) => format!("query failed: {code:?}"),
+        };
+
+        let semaphore_info = vk::PhysicalDeviceExternalSemaphoreInfo::default()
+            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+        let mut semaphore_props = vk::ExternalSemaphoreProperties::default();
+        unsafe {
+            instance.get_physical_device_external_semaphore_properties(
+                physical,
+                &semaphore_info,
+                &mut semaphore_props,
+            )
+        };
+        println!(
+            "  {label}: linear dma-buf {image_features}, SYNC_FD semaphore {:?}",
+            semaphore_props.external_semaphore_features,
+        );
+    }
+
+    let producer = ProbeDevice::new(instance, producer_physical)?;
+    let consumer = ProbeDevice::new(instance, consumer_physical)?;
+    let producer_memory_fd = ExternalMemoryFd::new(instance, &producer.device);
+    let producer_semaphore_fd = ExternalSemaphoreFd::new(instance, &producer.device);
+    let consumer_semaphore_fd = ExternalSemaphoreFd::new(instance, &consumer.device);
+
+    let known = [32u8, 192, 64, 255];
+    let range = vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .level_count(1)
+        .layer_count(1);
+
+    // --- producer: allocate on its device, clear, signal a sync_file, export both --------------
+    let producer_image = create_linear_image(
+        &producer.device,
+        vk::Format::R8G8B8A8_UNORM,
+        CROSS_W,
+        CROSS_H,
+        vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::TRANSFER_SRC
+            | vk::ImageUsageFlags::SAMPLED,
+    )?;
+    let requirements = unsafe {
+        producer
+            .device
+            .get_image_memory_requirements(producer_image)
+    };
+    let producer_properties =
+        unsafe { instance.get_physical_device_memory_properties(producer_physical) };
+    let producer_type = host_visible_type(&producer_properties, requirements.memory_type_bits)
+        .context("no host-visible memory on the producer")?;
+    let mut export_info = vk::ExportMemoryAllocateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    // Dedicated: some drivers require it for a shareable image, and it is what made the import onto
+    // the discrete GPU succeed at all.
+    let mut producer_dedicated = vk::MemoryDedicatedAllocateInfo::default().image(producer_image);
+    let allocation_size = requirements.size.max(4096);
+    let producer_memory = unsafe {
+        producer.device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(allocation_size)
+                .memory_type_index(producer_type)
+                .push_next(&mut export_info)
+                .push_next(&mut producer_dedicated),
+            None,
+        )
+    }
+    .context("allocate producer memory")?;
+    unsafe {
+        producer
+            .device
+            .bind_image_memory(producer_image, producer_memory, 0)
+    }
+    .context("bind producer image")?;
+
+    // The semaphore the producer signals when the clear is done, exported as a `sync_file`.
+    let producer_semaphore = unsafe {
+        producer.device.create_semaphore(
+            &vk::SemaphoreCreateInfo::default().push_next(
+                &mut vk::ExportSemaphoreCreateInfo::default()
+                    .handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD),
+            ),
+            None,
+        )
+    }
+    .context("producer semaphore")?;
+
+    let clear_value = vk::ClearColorValue {
+        float32: [
+            known[0] as f32 / 255.0,
+            known[1] as f32 / 255.0,
+            known[2] as f32 / 255.0,
+            known[3] as f32 / 255.0,
+        ],
+    };
+    unsafe {
+        producer
+            .device
+            .begin_command_buffer(
+                producer.command_buffer,
+                &vk::CommandBufferBeginInfo::default(),
+            )
+            .context("begin producer clear")?;
+        let to_dst = vk::ImageMemoryBarrier::default()
+            .image(producer_image)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .subresource_range(range);
+        producer.device.cmd_pipeline_barrier(
+            producer.command_buffer,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_dst],
+        );
+        producer.device.cmd_clear_color_image(
+            producer.command_buffer,
+            producer_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &clear_value,
+            &[range],
+        );
+        let to_src = vk::ImageMemoryBarrier::default()
+            .image(producer_image)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .subresource_range(range);
+        producer.device.cmd_pipeline_barrier(
+            producer.command_buffer,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_src],
+        );
+        producer
+            .device
+            .end_command_buffer(producer.command_buffer)
+            .context("end producer clear")?;
+    }
+    let command_buffers = [producer.command_buffer];
+    let signal_semaphores = [producer_semaphore];
+    let submit_info = vk::SubmitInfo::default()
+        .command_buffers(&command_buffers)
+        .signal_semaphores(&signal_semaphores);
+    unsafe {
+        producer
+            .device
+            .queue_submit(producer.queue, &[submit_info], vk::Fence::null())
+    }
+    .context("submit producer clear")?;
+    // Deliberately no `queue_wait_idle`: the fence fd below *is* the pending order, and waiting here
+    // would hide exactly the cross-device synchronisation this measures.
+
+    let fd = export_fd(&producer_memory_fd, producer_memory)?;
+    let fence_fd = {
+        let info = vk::SemaphoreGetFdInfoKHR::default()
+            .semaphore(producer_semaphore)
+            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+        unsafe { producer_semaphore_fd.get_semaphore_fd(&info) }
+            .context("export the producer's sync_file")?
+    };
+    println!(
+        "producer: cleared on {producer_name}, exported image fd {fd} and sync fd {fence_fd}, \
+         {allocation_size} bytes linear"
+    );
+
+    // --- consumer: import the image and the fence on *its* device, wait, copy out ---------------
+    let consumer_image = create_linear_image(
+        &consumer.device,
+        vk::Format::R8G8B8A8_UNORM,
+        CROSS_W,
+        CROSS_H,
+        vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::SAMPLED,
+    )?;
+    let consumer_requirements = unsafe {
+        consumer
+            .device
+            .get_image_memory_requirements(consumer_image)
+    };
+    let consumer_properties =
+        unsafe { instance.get_physical_device_memory_properties(consumer_physical) };
+
+    // Try every memory type the consumer image can live in: which one a driver accepts a dma-buf
+    // into is not always the obvious one. Dedicated to the image, as the import requires.
+    let mut consumer_memory = None;
+    for index in 0..consumer_properties.memory_type_count {
+        if consumer_requirements.memory_type_bits & (1 << index) == 0 {
+            continue;
+        }
+        let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+            .fd(fd);
+        let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(consumer_image);
+        match unsafe {
+            consumer.device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(allocation_size.max(consumer_requirements.size))
+                    .memory_type_index(index)
+                    .push_next(&mut import_info)
+                    .push_next(&mut dedicated),
+                None,
+            )
+        } {
+            Ok(memory) => {
+                println!("  consumer: imported the image into memory type {index}");
+                consumer_memory = Some(memory);
+                break;
+            }
+            Err(code) => println!("  consumer: memory type {index} refused the import ({code:?})"),
+        }
+    }
+    let consumer_memory =
+        consumer_memory.context("no consumer memory type accepted the cross-device dma-buf")?;
+    unsafe {
+        consumer
+            .device
+            .bind_image_memory(consumer_image, consumer_memory, 0)
+    }
+    .context("bind consumer image")?;
+
+    let consumer_semaphore = unsafe {
+        consumer
+            .device
+            .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+    }
+    .context("consumer semaphore")?;
+    let import_info = vk::ImportSemaphoreFdInfoKHR::default()
+        .semaphore(consumer_semaphore)
+        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
+        .fd(fence_fd);
+    unsafe { consumer_semaphore_fd.import_semaphore_fd(&import_info) }
+        .context("import the producer's sync_file on the consumer")?;
+
+    let size = (CROSS_W * CROSS_H * 4) as u64;
+    let readback = create_host_buffer(&consumer.device, &consumer_properties, size)?;
+    unsafe {
+        consumer
+            .device
+            .begin_command_buffer(
+                consumer.command_buffer,
+                &vk::CommandBufferBeginInfo::default(),
+            )
+            .context("begin consumer copy")?;
+        let to_src = vk::ImageMemoryBarrier::default()
+            .image(consumer_image)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .subresource_range(range);
+        consumer.device.cmd_pipeline_barrier(
+            consumer.command_buffer,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_src],
+        );
+        let region = vk::BufferImageCopy::default()
+            .image_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .layer_count(1),
+            )
+            .image_extent(vk::Extent3D {
+                width: CROSS_W,
+                height: CROSS_H,
+                depth: 1,
+            });
+        consumer.device.cmd_copy_image_to_buffer(
+            consumer.command_buffer,
+            consumer_image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            readback.buffer,
+            &[region],
+        );
+        consumer
+            .device
+            .end_command_buffer(consumer.command_buffer)
+            .context("end consumer copy")?;
+    }
+    let command_buffers = [consumer.command_buffer];
+    let wait_semaphores = [consumer_semaphore];
+    let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+    let submit_info = vk::SubmitInfo::default()
+        .command_buffers(&command_buffers)
+        .wait_semaphores(&wait_semaphores)
+        .wait_dst_stage_mask(&wait_stages);
+    unsafe {
+        consumer
+            .device
+            .queue_submit(consumer.queue, &[submit_info], vk::Fence::null())
+    }
+    .context("submit consumer copy")?;
+    unsafe { consumer.device.queue_wait_idle(consumer.queue) }.context("wait consumer copy")?;
+
+    let bytes = read_host_buffer(&consumer.device, &readback, size)?;
+    let expected: Vec<u8> = known.iter().copied().cycle().take(size as usize).collect();
+    let matching = bytes.iter().zip(&expected).filter(|(a, b)| a == b).count();
+    println!(
+        "cross-device: {consumer_name} read the {producer_name} dma-buf after the sync_file — \
+         {matching}/{size} bytes {}",
+        if matching == size as usize {
+            "match"
+        } else {
+            "MISMATCH"
+        },
+    );
+
+    unsafe {
+        consumer.device.destroy_semaphore(consumer_semaphore, None);
+        consumer.device.destroy_image(consumer_image, None);
+        consumer.device.destroy_buffer(readback.buffer, None);
+        consumer.device.free_memory(readback.memory, None);
+        consumer.device.free_memory(consumer_memory, None);
+        producer.device.destroy_semaphore(producer_semaphore, None);
+        producer.device.destroy_image(producer_image, None);
+        producer.device.free_memory(producer_memory, None);
+    }
+    consumer.destroy();
+    producer.destroy();
     Ok(())
 }
 
