@@ -3,7 +3,7 @@ use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
 use gpui_engine::{
-    AtlasTextureId, CustomRenderPrimitive, Path, PlatformAtlas, PrimitiveBatch, Scene,
+    AtlasTextureId, CustomRenderPrimitive, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene,
     SceneRenderer, get_gamma_correction_ratios,
 };
 use gpui_platform::{Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size};
@@ -85,6 +85,10 @@ impl From<Bounds<ScaledPixels>> for PodBounds {
 struct SurfaceParams {
     bounds: PodBounds,
     content_mask: PodBounds,
+    /// `0` = `NV12` (sample and convert), `1` = a single RGBA/BGRA plane (sample straight through).
+    /// Mirrors the shader's `SurfaceParams`; the padding keeps the size a multiple of 16.
+    surface_format: u32,
+    _pad: [u32; 3],
 }
 
 #[repr(C)]
@@ -133,7 +137,6 @@ struct WgpuPipelines {
     mono_sprites: wgpu::RenderPipeline,
     subpixel_sprites: Option<wgpu::RenderPipeline>,
     poly_sprites: wgpu::RenderPipeline,
-    #[allow(dead_code)]
     surfaces: wgpu::RenderPipeline,
     imported_textures: wgpu::RenderPipeline,
 }
@@ -1693,9 +1696,12 @@ impl WgpuRendererCore {
                             &mut pass,
                         )?;
                     }
-                    // Surfaces are macOS-only for video playback and are not
-                    // implemented by the WGPU renderer.
-                    PrimitiveBatch::Surfaces(_surfaces) => {}
+                    // Surfaces arrive as a texture (or a plane pair) the renderer samples: a
+                    // dma-buf on Linux, and nothing under this renderer on the other platforms
+                    // yet.
+                    PrimitiveBatch::Surfaces(range) => {
+                        self.draw_surfaces(&scene.surfaces[range.clone()], &mut pass)?;
+                    }
                 }
             }
         }
@@ -1924,6 +1930,102 @@ impl WgpuRendererCore {
                     },
                 ],
             })
+    }
+
+    /// Composite the scene's surfaces.
+    ///
+    /// A surface's source becomes one or two textures: a single RGBA/BGRA plane samples straight
+    /// through, and an `NV12` pair samples luma and chroma and converts in the fragment shader. The
+    /// geometry is the shader's (`vs_surface`), driven by a per-surface uniform, so a surface needs
+    /// no instance record and no vertex buffer. A buffer the renderer cannot import drops its
+    /// surface rather than the frame.
+    fn draw_surfaces(
+        &self,
+        surfaces: &[PaintSurface],
+        pass: &mut wgpu::RenderPass<'_>,
+    ) -> Result<()> {
+        if surfaces.is_empty() {
+            return Ok(());
+        }
+        let resources = self.resources();
+        pass.set_pipeline(&resources.pipelines.surfaces);
+        pass.set_bind_group(0, &resources.globals_bind_group, &[]);
+
+        #[cfg(target_os = "linux")]
+        for surface in surfaces {
+            let gpui_engine::SurfaceSource::DmaBuf(handle) = &surface.source;
+            // The imported textures must outlive the draw, so they stay in this scope.
+            let planes = match crate::import_dmabuf(&resources.device, handle) {
+                Ok(planes) => planes,
+                Err(error) => {
+                    warn!("dropping a dma-buf surface: {error:#}");
+                    continue;
+                }
+            };
+
+            let luma = planes[0]
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            // A single plane samples as RGBA (format 1) and binds its own view for both texture
+            // slots; a second plane is chroma (format 0).
+            let (chroma, surface_format) = if planes.len() == 1 {
+                (luma.clone(), 1u32)
+            } else {
+                (
+                    planes[1]
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default()),
+                    0u32,
+                )
+            };
+
+            let params = SurfaceParams {
+                bounds: surface.bounds.into(),
+                content_mask: surface.content_mask.bounds.into(),
+                surface_format,
+                _pad: [0; 3],
+            };
+            let params_buffer = resources.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("surface_params"),
+                size: std::mem::size_of::<SurfaceParams>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            resources
+                .queue
+                .write_buffer(&params_buffer, 0, bytemuck::bytes_of(&params));
+
+            let bind_group = resources
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("surface_bind_group"),
+                    layout: &resources.bind_group_layouts.surfaces,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: params_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&luma),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(&chroma),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Sampler(
+                                &resources.imported_texture_sampler,
+                            ),
+                        },
+                    ],
+                });
+            pass.set_bind_group(1, &bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
+
+        Ok(())
     }
 
     unsafe fn instance_bytes<T>(instances: &[T]) -> &[u8] {
