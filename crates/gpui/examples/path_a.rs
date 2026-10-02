@@ -47,11 +47,10 @@ mod demo {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
-    #[cfg(target_os = "windows")]
     use gpui::gpu_canvas;
     use gpui::{
-        App, Bounds, Context, Corners, IntoElement, Render, Window, WindowBounds, WindowOptions,
-        canvas, div, prelude::*, px, rgb, size,
+        App, Bounds, Context, IntoElement, Render, Window, WindowBounds, WindowOptions, div,
+        prelude::*, px, rgb, size,
     };
 
     /// The producer's texture, which the sampler stretches over the window.
@@ -80,7 +79,7 @@ mod demo {
     }
 
     struct PathA {
-        /// `Rc<RefCell<…>>` rather than a field of its own, because the paint closure a `canvas`
+        /// `Rc<RefCell<…>>` rather than a field of its own, because the paint closure the canvas
         /// takes is `'static` and the canvas consumes it every frame.
         producer: Rc<RefCell<Option<Producer>>>,
         started: Instant,
@@ -121,10 +120,11 @@ mod demo {
     impl PathA {
         /// The GPU content, filling the window.
         ///
-        /// On Windows this is the unified surface path: the producer fills a Direct3D texture each
-        /// frame and hands its shader resource view through `GpuCanvas` to `surface()`. On Linux
-        /// and macOS the producer's same-device texture has no `SurfaceSource` variant — the gap
-        /// 0005 leaves for the canvas — so the handle is pushed directly, as before the unification.
+        /// Every platform composites through `GpuCanvas`. On Windows the producer fills a Direct3D
+        /// texture each frame and hands its shader resource view through `on_render_surface` to
+        /// `surface()`. On Linux and macOS the producer's same-device texture has no `SurfaceSource`
+        /// variant — the gap 0005 leaves for the canvas — so it goes through `on_render_texture`,
+        /// which pushes the handle through `paint_imported_texture`.
         #[cfg(target_os = "windows")]
         fn gpu_content(&self) -> impl IntoElement {
             let producer = self.producer.clone();
@@ -156,29 +156,23 @@ mod demo {
             let producer = self.producer.clone();
             let started = self.started;
 
-            canvas(
-                move |_bounds, _window, _cx| {},
-                move |bounds, _, window, _cx| {
+            gpu_canvas()
+                .size_full()
+                .on_render_texture(move |_bounds, window, _cx| {
                     let mut slot = producer.borrow_mut();
                     let producer = slot.get_or_insert_with(|| Producer::new(window));
 
-                    match producer.frame(started.elapsed()) {
-                        Ok(handle) => window.paint_imported_texture(
-                            handle,
-                            bounds,
-                            // No rounded corners, opaque, and no y flip: the producer and
-                            // the renderer are the same device with the same UV convention.
-                            Corners::default(),
-                            1.0,
-                            false,
-                        ),
-                        Err(error) => log::error!("path_a: {error:#}"),
-                    }
+                    let handle = match producer.frame(started.elapsed()) {
+                        Ok(handle) => Some(handle),
+                        Err(error) => {
+                            log::error!("path_a: {error:#}");
+                            None
+                        }
+                    };
 
                     window.request_animation_frame();
-                },
-            )
-            .size_full()
+                    handle
+                })
         }
     }
 
