@@ -734,19 +734,19 @@ fn run_tiled_round_trip(
         .context("create tiled producer image")?;
     let requirements = unsafe { device.get_image_memory_requirements(producer_image) };
 
-    // DIAGNOSTIC: host-visible so the shared memory can be poked from the CPU.
+    // Device-local memory, as a real producer (decoder, camera, engine) would allocate.
     let memory_type_index = memory_properties
         .memory_types
         .iter()
         .enumerate()
         .find(|(index, memory_type)| {
             requirements.memory_type_bits & (1 << index) != 0
-                && memory_type.property_flags.contains(
-                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                )
+                && memory_type
+                    .property_flags
+                    .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
         })
         .map(|(index, _)| index as u32)
-        .context("no host-visible image memory type")?;
+        .context("no device-local image memory type")?;
 
     let mut export_info = vk::ExportMemoryAllocateInfo::default()
         .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
