@@ -7949,6 +7949,7 @@ dependencies = [
  "anyhow",
  "ash",
  "gpui_engine",
+ "libc",
  "libloading",
  "log",
 ]
