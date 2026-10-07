@@ -525,9 +525,18 @@ impl WgpuContext {
                     })),
                 )
                 .ok()?;
-            adapter
+            let (device, queue) = adapter
                 .create_device_from_hal::<Api>(open, descriptor)
-                .ok()
+                .ok()?;
+            // The extension is the whole point of this path; if the device did not take it, fall back
+            // so the caller builds the ordinary device rather than leave the importer assuming a
+            // capability the device does not have.
+            let enabled = device.as_hal::<Api>().is_some_and(|device| {
+                device
+                    .enabled_device_extensions()
+                    .contains(&ash::vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME)
+            });
+            enabled.then_some((device, queue))
         }
     }
 
@@ -849,6 +858,58 @@ fn parse_pci_id(id: &str) -> anyhow::Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::{DeviceErrorState, parse_pci_id};
+
+    /// The escape hatch that the whole tiled-surface path rests on: a device created through the HAL
+    /// with `VK_EXT_image_drm_format_modifier` added must come back with the extension enabled.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_device_enables_the_drm_format_modifier_extension() {
+        use wgpu::hal::vulkan::Api;
+
+        let instance = super::WgpuContext::instance(None);
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }));
+        let Ok(adapter) = adapter else {
+            eprintln!("skipping: no adapter");
+            return;
+        };
+        let supported = unsafe {
+            adapter.as_hal::<Api>().is_some_and(|hal| {
+                hal.physical_device_capabilities()
+                    .supports_extension(ash::vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME)
+            })
+        };
+        if !supported {
+            eprintln!(
+                "skipping: {:?} does not support the extension",
+                adapter.get_info().name
+            );
+            return;
+        }
+
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("drm modifier extension test"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::downlevel_defaults()
+                .using_resolution(adapter.limits())
+                .using_alignment(adapter.limits()),
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        };
+        let (device, _queue) =
+            super::WgpuContext::device_with_surface_import(&adapter, &descriptor)
+                .expect("the escape hatch creates the device");
+        let enabled = unsafe { device.as_hal::<Api>() }.is_some_and(|device| {
+            device
+                .enabled_device_extensions()
+                .contains(&ash::vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME)
+        });
+        assert!(enabled, "the created device must have the extension enabled");
+    }
 
     #[test]
     fn device_errors_are_observed_independently() {
