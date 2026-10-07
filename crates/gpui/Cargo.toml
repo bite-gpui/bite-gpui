@@ -130,6 +130,10 @@ ash = "0.38"
 gpui_wgpu.workspace = true
 wgpu.workspace = true
 
+# The VA-API producer the example's decoded tab uses; it depends on `libva` at run time.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_va.workspace = true
+
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 core-foundation.workspace = true
 core-video.workspace = true

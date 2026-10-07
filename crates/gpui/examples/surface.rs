@@ -62,6 +62,10 @@ mod demo {
     /// The produced surface size, in pixels; each element scales it into its tile.
     const TILE: u32 = 128;
 
+    /// The one colour the `VA-API` tab carries: olive green, the demo's fixture, as RGBA. A decoded
+    /// surface is filled uniformly here, so a solid colour is what it can stand in for.
+    const DECODED_COLOUR: [u8; 4] = [128, 128, 0, 255];
+
     /// The demo's payload: SMPTE 75% colour bars, in the byte layout each format carries.
     ///
     /// A card rather than a flat colour, because each bar is a known triple: a wrong channel order,
@@ -386,16 +390,18 @@ mod demo {
             AnyElement, ChromaReconstruction, Corners, DmaBufFormat, DmaBufHandle, DmaBufPlane,
             ImportedTextureHandle, ImportedTextureExt as _, Window, gpu_canvas, prelude::*, surface,
         };
-        use super::{TILE, error_panel, panel, test_card};
+        use super::{DECODED_COLOUR, TILE, error_panel, panel, test_card};
 
         /// The format dimension: one tab per payload the platform can carry, plus the same NV12
-        /// buffer sampled both ways so the chroma reconstruction can be compared.
+        /// buffer sampled both ways so the chroma reconstruction can be compared, and the one a
+        /// hardware decoder would hand over.
         pub const FORMATS: &[&str] = &[
             "Bgra8",
             "Rgba8",
             "Nv12 · bilinear",
             "Nv12 · luma-guided",
             "wgpu texture",
+            "Nv12 · decoded (VA-API)",
         ];
 
         pub struct Producer {
@@ -411,6 +417,11 @@ mod demo {
             /// `Rc` is shared with the callback so the tile survives across frames instead of being
             /// rebuilt every paint.
             imported: Rc<RefCell<Option<ImportedTile>>>,
+            /// The VA-API decoded surface, and the dma-buf it exported. `None` where `libva`, its
+            /// driver, or the GPU is missing; the surface is held so its memory outlives the handle.
+            #[allow(dead_code, reason = "held so the surface outlives the dma-buf it exported")]
+            decoded: Option<gpui_va::Surface>,
+            decoded_handle: Option<DmaBufHandle>,
         }
 
         impl Producer {
@@ -478,6 +489,13 @@ mod demo {
                 )
                 .with_chroma(ChromaReconstruction::LumaGuided);
 
+                // The decoded surface, if the VA-API producer is reachable. Its memory is the
+                // driver's to write, so `gpui_va` fills it on the GPU and hands back the dma-buf.
+                let (decoded, decoded_handle) = match gpui_va::nv12(TILE, TILE, DECODED_COLOUR) {
+                    Some((surface, handle)) => (Some(surface), Some(handle)),
+                    None => (None, None),
+                };
+
                 Ok(Self {
                     _vulkan: vulkan,
                     bgra,
@@ -485,6 +503,8 @@ mod demo {
                     nv12,
                     nv12_sharp,
                     imported: Rc::new(RefCell::new(None)),
+                    decoded,
+                    decoded_handle,
                 })
             }
         }
@@ -595,7 +615,7 @@ mod demo {
                         ),
                     ]
                 }
-                _ => {
+                4 => {
                     let imported = producer.imported.clone();
                     vec![panel(
                         gpu_canvas(move |gpu| {
@@ -629,6 +649,27 @@ mod demo {
                         .size_full(),
                         "gpu_canvas(..) · wgpu texture view",
                     )]
+                }
+                _ => {
+                    // The decoded tab: a real `Y_TILED` NV12 surface a VA-API producer exported, the
+                    // shape a hardware decoder hands over. Its memory is the driver's, so there is
+                    // no `test_card` to draw into it — it carries one colour, filled on the GPU.
+                    let Some(handle) = producer.decoded_handle.clone() else {
+                        return vec![error_panel(
+                            "no VA-API surface: libva, its driver, or the GPU is missing".into(),
+                        )];
+                    };
+                    let canvas = handle.clone();
+                    vec![
+                        panel(
+                            surface(handle).size_full(),
+                            "surface() · Nv12 · Y_TILED (from vaExportSurfaceHandle)",
+                        ),
+                        panel(
+                            gpu_canvas(move |gpu| gpu.paint_surface(canvas)).size_full(),
+                            "gpu_canvas(..) · Nv12 · Y_TILED (from vaExportSurfaceHandle)",
+                        ),
+                    ]
                 }
             }
         }
