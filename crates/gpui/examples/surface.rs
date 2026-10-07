@@ -62,8 +62,8 @@ mod demo {
     /// The produced surface size, in pixels; each element scales it into its tile.
     const TILE: u32 = 128;
 
-    /// The one colour the `VA-API` tab carries: olive green, the demo's fixture, as RGBA. A decoded
-    /// surface is filled uniformly here, so a solid colour is what it can stand in for.
+    /// The colour the `VA-API` tab falls back to: olive green, the demo's fixture, as RGBA. Where a
+    /// real decode is available the tab shows the fixture's bars instead.
     const DECODED_COLOUR: [u8; 4] = [128, 128, 0, 255];
 
     /// The demo's payload: SMPTE 75% colour bars, in the byte layout each format carries.
@@ -394,7 +394,7 @@ mod demo {
 
         /// The format dimension: one tab per payload the platform can carry, plus the same NV12
         /// buffer sampled both ways so the chroma reconstruction can be compared, and the one a
-        /// hardware decoder would hand over.
+        /// hardware decoder hands over.
         pub const FORMATS: &[&str] = &[
             "Bgra8",
             "Rgba8",
@@ -417,11 +417,20 @@ mod demo {
             /// `Rc` is shared with the callback so the tile survives across frames instead of being
             /// rebuilt every paint.
             imported: Rc<RefCell<Option<ImportedTile>>>,
-            /// The VA-API decoded surface, and the dma-buf it exported. `None` where `libva`, its
-            /// driver, or the GPU is missing; the surface is held so its memory outlives the handle.
-            #[allow(dead_code, reason = "held so the surface outlives the dma-buf it exported")]
-            decoded: Option<gpui_va::Surface>,
+            /// The VA-API surface the decoded tab shows, and the dma-buf it exported. `None` where
+            /// `libva`, its driver, or the GPU is missing; the surface is held so its memory
+            /// outlives the handle.
+            decoded: Option<DecodedSurface>,
             decoded_handle: Option<DmaBufHandle>,
+        }
+
+        /// The decoded tab's surface: a real hardware decode of the fixture's bitstream, or — where
+        /// libavcodec of the declared ABI is not installed — the GPU-filled stand-in. The payload is
+        /// never read: either type is held only so its memory outlives the exported dma-buf.
+        #[allow(dead_code, reason = "held so the surface outlives the dma-buf it exported")]
+        enum DecodedSurface {
+            Decoded(gpui_va::Decoded),
+            StandIn(gpui_va::Surface),
         }
 
         impl Producer {
@@ -489,11 +498,15 @@ mod demo {
                 )
                 .with_chroma(ChromaReconstruction::LumaGuided);
 
-                // The decoded surface, if the VA-API producer is reachable. Its memory is the
-                // driver's to write, so `gpui_va` fills it on the GPU and hands back the dma-buf.
-                let (decoded, decoded_handle) = match gpui_va::nv12(TILE, TILE, DECODED_COLOUR) {
-                    Some((surface, handle)) => (Some(surface), Some(handle)),
-                    None => (None, None),
+                // The decoded tab: `gpui_va` decodes the fixture's H.264 keyframe on the GPU with
+                // libavcodec, into the same `Y_TILED` surface a video player would, and exports it.
+                // Where libavcodec is missing it falls back to a GPU-filled stand-in.
+                let (decoded, decoded_handle) = match gpui_va::decode(gpui_va::FIXTURE) {
+                    Some((surface, handle)) => (Some(DecodedSurface::Decoded(surface)), Some(handle)),
+                    None => match gpui_va::nv12(TILE, TILE, DECODED_COLOUR) {
+                        Some((surface, handle)) => (Some(DecodedSurface::StandIn(surface)), Some(handle)),
+                        None => (None, None),
+                    },
                 };
 
                 Ok(Self {
@@ -651,23 +664,27 @@ mod demo {
                     )]
                 }
                 _ => {
-                    // The decoded tab: a real `Y_TILED` NV12 surface a VA-API producer exported, the
-                    // shape a hardware decoder hands over. Its memory is the driver's, so there is
-                    // no `test_card` to draw into it — it carries one colour, filled on the GPU.
+                    // The decoded tab: a `Y_TILED` NV12 surface a VA-API decoder wrote, the shape a
+                    // hardware decoder hands over. Its memory is the driver's, so there is no
+                    // `test_card` to draw into it — a real decode fills it, or the stand-in does.
                     let Some(handle) = producer.decoded_handle.clone() else {
                         return vec![error_panel(
                             "no VA-API surface: libva, its driver, or the GPU is missing".into(),
                         )];
                     };
+                    let source = match producer.decoded.as_ref() {
+                        Some(DecodedSurface::Decoded(_)) => "H.264 keyframe decoded by VA-API",
+                        _ => "GPU-filled stand-in (no libavcodec)",
+                    };
                     let canvas = handle.clone();
                     vec![
                         panel(
                             surface(handle).size_full(),
-                            "surface() · Nv12 · Y_TILED (from vaExportSurfaceHandle)",
+                            format!("surface() · Nv12 · Y_TILED — {source}"),
                         ),
                         panel(
                             gpu_canvas(move |gpu| gpu.paint_surface(canvas)).size_full(),
-                            "gpu_canvas(..) · Nv12 · Y_TILED (from vaExportSurfaceHandle)",
+                            format!("gpu_canvas(..) · Nv12 · Y_TILED — {source}"),
                         ),
                     ]
                 }
