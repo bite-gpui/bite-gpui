@@ -59,9 +59,8 @@ pub struct Surface {
 /// div().size_full().child(surface(source))
 /// ```
 ///
-/// For working producers, run the examples: `cargo run -p gpui --example surface` hands over both
-/// Windows variants one element at a time, and `cargo run -p gpui --example imported_texture`
-/// drives a producer through the canvas callback.
+/// For a working producer, run `cargo run -p gpui --example surface`: it shows this element and the
+/// `gpu_canvas()` callback side by side, one payload at a time, on the host renderer.
 pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
     Surface {
         source: source.into(),
