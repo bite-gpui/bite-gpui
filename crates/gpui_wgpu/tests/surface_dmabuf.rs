@@ -1,8 +1,9 @@
-//! A dma-buf composited through the authoring `surface()` element, end to end.
+//! An external surface composited through the authoring API, end to end.
 //!
-//! The demo (`examples/surface_dmabuf.rs`) shows this by hand; this asserts it. The producer is a
-//! bare Vulkan device (not wgpu), the consumer is the platform's headless renderer — the same one a
-//! window drives — and the pixels are read back with `capture_screenshot`.
+//! Two authoring layers reach one: the `surface()` element (single-plane `Bgra8`/`Rgba8`, two-plane
+//! `Nv12`) and `gpu_canvas()`'s `on_render_texture` (a same-device `wgpu::TextureView`). The producer
+//! is a bare Vulkan device (not wgpu), the consumer is the platform's headless renderer — the same
+//! one a window drives — and the pixels are read back with `capture_screenshot`.
 //!
 //! Opt in, because it needs a GPU and the crate's own unit-test target does not build:
 //!
@@ -10,25 +11,48 @@
 //! ZED_DEVICE_ID=1916 cargo test -p gpui_wgpu --features test-support --test surface_dmabuf
 //! ```
 //!
-//! It skips (rather than fails) where there is no Vulkan device, and it pins the adapter the same way
-//! the demo does when you pass `ZED_DEVICE_ID`.
+//! It skips (rather than fails) where there is no Vulkan device, and it pins the adapter when you
+//! pass `ZED_DEVICE_ID`.
+//!
+//! # Running this on a machine with two GPUs
+//!
+//! The headless renderer chooses an adapter itself, and on a laptop it may choose the discrete one.
+//! A userspace fault *while GPU work is in flight* can wedge that GPU: an earlier revision dropped
+//! the Vulkan loader before the device it had made, and its crash produced `NVRM: Xid 13` followed by
+//! repeated `Xid 158` (`NV_UFLUSH_FB_FLUSH` timeout) on an NVIDIA 930M, hanging the machine until
+//! reboot. This test keeps the loader alive and both the renderer and the producer on the integrated
+//! GPU, but you can pin the adapter explicitly too:
+//!
+//! ```text
+//! ZED_DEVICE_ID=1916 cargo test -p gpui_wgpu --features test-support --test surface_dmabuf
+//! ```
+//!
+//! `ZED_DEVICE_ID` is a **four-digit hexadecimal** PCI device id; `1916` is the Intel HD 520 on the
+//! machine this was written on (a decimal id like `6422` parses as the hex `0x6422`, matches nothing,
+//! and silently falls back to the default adapter — the discrete one here).
 
 #![cfg(all(target_os = "linux", feature = "test-support"))]
 
+use std::cell::Cell;
 use std::io::Write as _;
 use std::os::fd::{FromRawFd, OwnedFd};
+use std::rc::Rc;
 
 use ash::vk;
 use gpui::{
     AnyWindowHandle, AppContext as _, Context, DmaBufFormat, DmaBufHandle, DmaBufPlane,
-    HeadlessAppContext, IntoElement, Render, Window, div, prelude::*, px, size, surface,
+    HeadlessAppContext, ImportedTextureHandle, IntoElement, Render, Window, div, gpu_canvas,
+    prelude::*, px, size, surface,
 };
-use gpui_wgpu::CosmicTextSystem;
+use gpui_wgpu::{CosmicTextSystem, GpuContext, ImportedTextureExt as _};
 
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 64;
-/// Opaque, so the surface's premultiplied-alpha blend leaves the colour unchanged.
-const RGBA_COLOUR: [u8; 4] = [32, 192, 64, 255];
+/// The one fixture colour, olive green, shared by every row that asserts a colour. Opaque, so the
+/// surface's premultiplied-alpha blend leaves it unchanged.
+const COLOUR: [u8; 4] = [128, 128, 0, 255];
+/// `COLOUR` in the byte order a `Bgra8` buffer stores: blue, green, red, alpha.
+const BGRA_COLOUR: [u8; 4] = [COLOUR[2], COLOUR[1], COLOUR[0], COLOUR[3]];
 
 /// Keeps the exported dma-buf alive: the loader must outlive the device it made, and the device the
 /// memory it exported.
@@ -167,6 +191,113 @@ fn composite(handle: DmaBufHandle) -> anyhow::Result<[u8; 4]> {
     Ok(image.get_pixel(WIDTH / 2, HEIGHT / 2).0)
 }
 
+/// A view painting a same-device texture through `gpu_canvas().on_render_texture`, and whether the
+/// paint-time callback found a device to make it on.
+struct CanvasView {
+    colour: [u8; 4],
+    painted: Rc<Cell<bool>>,
+}
+
+impl Render for CanvasView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let colour = self.colour;
+        let painted = self.painted.clone();
+        gpu_canvas()
+            .size_full()
+            .on_render_texture(move |_bounds, window, _cx| {
+                let handle = imported_texture(window, colour)?;
+                painted.set(true);
+                Some(handle)
+            })
+    }
+}
+
+/// Make `colour` a texture on the window's own device and wrap it as an [`ImportedTextureHandle`].
+/// `None` when the window's renderer lends no device.
+fn imported_texture(window: &mut Window, colour: [u8; 4]) -> Option<ImportedTextureHandle> {
+    // A producer reaches the renderer's device through the window's public seam. The payload is
+    // the shared context slot (`GpuContext`), and a window whose renderer lends none hands back
+    // `None` — which is what the headless harness here does.
+    let slot = window.device_any()?.downcast::<GpuContext>().ok()?;
+    let context = slot.borrow();
+    let context = context.as_ref()?;
+
+    let texture = context.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("surface_dmabuf_gpu_canvas"),
+        size: wgpu::Extent3d {
+            width: WIDTH,
+            height: HEIGHT,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        // sRGB, the colour space `to_imported_handle` requires; `colour` is already sRGB-encoded.
+        format: wgpu::TextureFormat::Bgra8UnormSrgb,
+        // `TEXTURE_BINDING` is what the handle builder checks, `COPY_DST` is how the colour gets in.
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    let mut content = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
+    for _ in 0..(WIDTH * HEIGHT) {
+        content.extend_from_slice(&colour);
+    }
+    context.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &content,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(WIDTH * 4),
+            rows_per_image: Some(HEIGHT),
+        },
+        wgpu::Extent3d {
+            width: WIDTH,
+            height: HEIGHT,
+            depth_or_array_layers: 1,
+        },
+    );
+
+    texture
+        .create_view(&wgpu::TextureViewDescriptor::default())
+        .to_imported_handle()
+        .ok()
+}
+
+/// Mount a `gpu_canvas` whose callback fills `colour` on the window's device, draw a frame, and
+/// return the centre pixel. `None` when the window's renderer lends no device.
+fn composite_canvas(colour: [u8; 4]) -> anyhow::Result<Option<[u8; 4]>> {
+    let text_system = std::sync::Arc::new(CosmicTextSystem::new("fallback"));
+    let mut cx = HeadlessAppContext::with_platform(text_system, std::sync::Arc::new(()), || {
+        Ok(gpui::current_headless_renderer())
+    });
+
+    let painted = Rc::new(Cell::new(false));
+    let window = cx.open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |_window, cx| {
+        cx.new(|_| CanvasView {
+            colour,
+            painted: painted.clone(),
+        })
+    })?;
+    let window: AnyWindowHandle = window.into();
+
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        let _ = window.draw(cx);
+    })?;
+
+    if !painted.get() {
+        return Ok(None);
+    }
+    let image = cx.capture_screenshot(window)?;
+    Ok(Some(image.get_pixel(WIDTH / 2, HEIGHT / 2).0))
+}
+
 /// The renderer the platform builds for a headless context; `None` where there is no adapter, which
 /// is a skip rather than a failure.
 fn gpu_available() -> bool {
@@ -181,7 +312,7 @@ fn a_single_plane_surface_reads_back_byte_for_byte() {
     }
     let mut content = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
     for _ in 0..(WIDTH * HEIGHT) {
-        content.extend_from_slice(&RGBA_COLOUR);
+        content.extend_from_slice(&COLOUR);
     }
     let Some((_producer, fd)) = produce_dmabuf(&content) else {
         eprintln!("skipping: could not allocate a dma-buf");
@@ -197,7 +328,36 @@ fn a_single_plane_surface_reads_back_byte_for_byte() {
     );
 
     let pixel = composite(handle).expect("composite the surface");
-    assert_eq!(pixel, RGBA_COLOUR);
+    assert_eq!(pixel, COLOUR);
+}
+
+#[test]
+fn a_single_bgra_plane_reads_back_as_the_source_colour() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+    // A `Bgra8` buffer stores blue, green, red, alpha, so the same fixture colour goes in
+    // channel-swapped; the sampler maps the bytes back to RGBA, so it must come out as `COLOUR`.
+    let mut content = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
+    for _ in 0..(WIDTH * HEIGHT) {
+        content.extend_from_slice(&BGRA_COLOUR);
+    }
+    let Some((_producer, fd)) = produce_dmabuf(&content) else {
+        eprintln!("skipping: could not allocate a dma-buf");
+        return;
+    };
+    let handle = DmaBufHandle::new(
+        WIDTH,
+        HEIGHT,
+        DmaBufFormat::Bgra8,
+        DmaBufHandle::LINEAR,
+        [DmaBufPlane::new(fd, 0, WIDTH * 4)],
+        None,
+    );
+
+    let pixel = composite(handle).expect("composite the surface");
+    assert_eq!(pixel, COLOUR);
 }
 
 #[test]
@@ -208,7 +368,7 @@ fn a_surface_with_a_signalled_acquire_fence_is_waited_on() {
     }
     let mut content = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
     for _ in 0..(WIDTH * HEIGHT) {
-        content.extend_from_slice(&RGBA_COLOUR);
+        content.extend_from_slice(&COLOUR);
     }
     let Some((_producer, fd)) = produce_dmabuf(&content) else {
         eprintln!("skipping: could not allocate a dma-buf");
@@ -228,7 +388,7 @@ fn a_surface_with_a_signalled_acquire_fence_is_waited_on() {
     );
 
     let pixel = composite(handle).expect("composite the surface");
-    assert_eq!(pixel, RGBA_COLOUR);
+    assert_eq!(pixel, COLOUR);
 }
 
 #[test]
@@ -239,8 +399,14 @@ fn an_nv12_surface_converts_through_the_shader() {
     }
     let luma_size = (WIDTH * HEIGHT) as usize;
     let chroma_size = (WIDTH / 2 * HEIGHT / 2 * 2) as usize;
-    // Neutral chroma, so the shader's conversion must yield mid grey.
-    let content = vec![128u8; luma_size + chroma_size];
+    // The shared colour in the two-plane form: full-resolution luma, then half-resolution
+    // interleaved chroma, carrying the bytes the BT.601 conversion maps back to olive.
+    let (y, cb, cr) = nv12_from_rgb(COLOUR);
+    let mut content = vec![y; luma_size + chroma_size];
+    for pair in content[luma_size..].chunks_exact_mut(2) {
+        pair[0] = cb;
+        pair[1] = cr;
+    }
     let Some((_producer, fd)) = produce_dmabuf(&content) else {
         eprintln!("skipping: could not allocate a dma-buf");
         return;
@@ -259,8 +425,9 @@ fn an_nv12_surface_converts_through_the_shader() {
     );
 
     let pixel = composite(handle).expect("composite the surface");
-    // The same BT.601 matrix the shader applies, on the CPU, for Y=U=V=128/255.
-    let expected = ycbcr_to_rgb(128.0 / 255.0, 128.0 / 255.0, 128.0 / 255.0);
+    // The same BT.601 matrix the shader applies, on the CPU, to the bytes the planes carry.
+    let expected =
+        ycbcr_to_rgb(f32::from(y) / 255.0, f32::from(cb) / 255.0, f32::from(cr) / 255.0);
     for channel in 0..3 {
         let want = (expected[channel] * 255.0).round() as i32;
         let got = i32::from(pixel[channel]);
@@ -270,6 +437,27 @@ fn an_nv12_surface_converts_through_the_shader() {
         );
     }
     assert_eq!(pixel[3], 255, "the surface should be opaque");
+}
+
+#[test]
+fn a_gpu_canvas_composites_a_same_device_texture() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+    // The other authoring layer: `gpu_canvas().on_render_texture` wants a texture on the renderer's
+    // own device, which a producer reaches through the window's public seam. The headless harness
+    // used here holds its renderer erased as a `SceneRenderer` and does not forward
+    // `PlatformWindow::device_any`, so no device is lent and the callback paints nothing: skip
+    // rather than fail, and say which piece is not reachable from this test.
+    let Some(pixel) = composite_canvas(BGRA_COLOUR).expect("composite the canvas") else {
+        eprintln!(
+            "skipping: the headless window's renderer lends no device — the authoring TestWindow \
+             does not forward PlatformWindow::device_any — so no same-device texture can be made"
+        );
+        return;
+    };
+    assert_eq!(pixel, COLOUR);
 }
 
 /// The `fs_surface` matrix, on the CPU: `ycbcr_to_RGB * vec4(y, cb, cr, 1)`.
@@ -290,4 +478,21 @@ fn ycbcr_to_rgb(y: f32, cb: f32, cr: f32) -> [f32; 4] {
     }
     rgb[3] = 1.0;
     rgb
+}
+
+/// The Y, Cb and Cr bytes the renderer's BT.601 conversion maps back to `rgb` — the inverse of
+/// [`ycbcr_to_rgb`], so the two-plane buffer can carry the shared fixture colour.
+fn nv12_from_rgb(rgb: [u8; 4]) -> (u8, u8, u8) {
+    let r = f32::from(rgb[0]) / 255.0;
+    let g = f32::from(rgb[1]) / 255.0;
+    let b = f32::from(rgb[2]) / 255.0;
+    let (r, g, b) = (r + 0.7010, g - 0.5291, b + 0.8860);
+    let y = 0.299 * r + 0.587 * g + 0.114 * b;
+    let cb = -0.168736 * r - 0.331264 * g + 0.5 * b;
+    let cr = 0.5 * r - 0.418688 * g - 0.081312 * b;
+    (
+        (y.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (cb.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (cr.clamp(0.0, 1.0) * 255.0).round() as u8,
+    )
 }
