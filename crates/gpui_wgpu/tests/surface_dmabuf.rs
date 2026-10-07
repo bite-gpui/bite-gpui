@@ -35,7 +35,7 @@
 
 use std::cell::Cell;
 use std::io::Write as _;
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::rc::Rc;
 
 use ash::vk;
@@ -330,6 +330,58 @@ fn a_single_plane_surface_reads_back_byte_for_byte() {
 
     let pixel = composite(handle).expect("composite the surface");
     assert_eq!(pixel, COLOUR);
+}
+
+/// The renderer's half of the dma-buf handshake: it signals a surface's release descriptor once the
+/// submission that sampled it has completed, so a producer knows it may recycle the surface.
+#[test]
+fn the_renderer_signals_a_surfaces_release_descriptor() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+    let mut content = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
+    for _ in 0..(WIDTH * HEIGHT) {
+        content.extend_from_slice(&COLOUR);
+    }
+    let Some((_producer, fd)) = produce_dmabuf(&content) else {
+        eprintln!("skipping: could not allocate a dma-buf");
+        return;
+    };
+
+    // The descriptor a producer waits on; the renderer writes to it once it is done with the buffer.
+    let release = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+    assert!(release >= 0, "create an eventfd");
+    // SAFETY: `eventfd` returned a fresh descriptor this process owns.
+    let release = unsafe { OwnedFd::from_raw_fd(release) };
+
+    let handle = DmaBufHandle::new(
+        WIDTH,
+        HEIGHT,
+        SurfaceFormatKind::rgba8(),
+        DmaBufHandle::LINEAR,
+        [DmaBufPlane::new(fd, 0, WIDTH * 4)],
+        None,
+    )
+    // The handle takes ownership of the descriptor, so hand it a duplicate and keep the original to
+    // wait on.
+    .with_release(
+        release
+            .try_clone()
+            .expect("duplicate the release descriptor"),
+    );
+
+    let _ = composite(handle).expect("composite the surface");
+
+    // The signalling happens from the completion callback of the frame's submission, so give it a
+    // moment rather than expecting it the instant `draw` returns.
+    let mut descriptor = libc::pollfd {
+        fd: release.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ready = unsafe { libc::poll(&mut descriptor, 1, 5000) };
+    assert_eq!(ready, 1, "the renderer should signal the release descriptor");
 }
 
 #[test]

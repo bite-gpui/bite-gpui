@@ -19,6 +19,7 @@ use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::ops::Range;
+use std::os::fd::OwnedFd;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -1620,6 +1621,7 @@ impl WgpuRendererCore {
         clear_color: wgpu::Color,
     ) -> Result<wgpu::SubmissionIndex> {
         let mut instance_offset = 0;
+        let mut releases: Vec<Arc<OwnedFd>> = Vec::new();
         let instance_bindings = self
             .write_instances(scene, &mut instance_offset)
             .with_context(|| {
@@ -1759,7 +1761,7 @@ impl WgpuRendererCore {
                     // dma-buf on Linux, and nothing under this renderer on the other platforms
                     // yet.
                     PrimitiveBatch::Surfaces(range) => {
-                        self.draw_surfaces(&scene.surfaces[range.clone()], &mut pass)?;
+                        self.draw_surfaces(&scene.surfaces[range.clone()], &mut pass, &mut releases)?;
                     }
                 }
             }
@@ -1769,6 +1771,17 @@ impl WgpuRendererCore {
             .resources()
             .queue
             .submit(std::iter::once(encoder.finish()));
+        // Tell each producer its surface is free once the GPU has finished the submission that
+        // sampled it — the release signal's half of the dma-buf handshake.
+        if !releases.is_empty() {
+            self.resources()
+                .queue
+                .on_submitted_work_done(move || {
+                    for release in &releases {
+                        crate::dmabuf::signal_release(release);
+                    }
+                });
+        }
         Ok(submission)
     }
 
@@ -2002,16 +2015,25 @@ impl WgpuRendererCore {
         &mut self,
         surfaces: &[PaintSurface],
         pass: &mut wgpu::RenderPass<'_>,
+        releases: &mut Vec<Arc<OwnedFd>>,
     ) -> Result<()> {
         if surfaces.is_empty() {
             return Ok(());
         }
+        #[cfg(not(target_os = "linux"))]
+        let _ = releases;
         pass.set_pipeline(&self.resources().pipelines.surfaces);
         pass.set_bind_group(0, &self.resources().globals_bind_group, &[]);
 
         #[cfg(target_os = "linux")]
         for surface in surfaces {
             let gpui_engine::SurfaceSource::DmaBuf(handle) = &surface.source;
+            // Ask to be told when the GPU is done with this buffer, so its producer can recycle the
+            // surface. Registered even when the import below drops the surface, so a producer is
+            // never left waiting for a buffer this renderer declined to sample.
+            if let Some(release) = &handle.release {
+                releases.push(release.clone());
+            }
             // Wait for the producer's fence before sampling; a producer that never signals loses
             // this frame rather than stalling the UI.
             if let Some(fence) = &handle.acquire_fence

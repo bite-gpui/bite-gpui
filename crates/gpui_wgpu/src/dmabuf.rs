@@ -300,6 +300,31 @@ pub(crate) fn wait_for_acquire_fence(fence: &OwnedFd, timeout: Duration) -> bool
     }
 }
 
+/// Signal a producer's release descriptor: the buffer has been sampled and its surface may be
+/// recycled. The descriptor is an `eventfd` the producer made (see [`gpui_va`]'s playback); writing
+/// eight bytes increments it, which makes the producer's `poll` return.
+///
+/// Called from the `on_submitted_work_done` callback of the submission that sampled the buffer, so
+/// the GPU has finished with it — the mirror of [`wait_for_acquire_fence`], which the producer's
+/// decoder orders the other way.
+pub(crate) fn signal_release(release: &OwnedFd) {
+    let counter: u64 = 1;
+    // SAFETY: `release` is a valid open descriptor, and the pointer and length describe one `u64`.
+    let written = unsafe {
+        libc::write(
+            release.as_raw_fd(),
+            std::ptr::addr_of!(counter).cast(),
+            std::mem::size_of::<u64>(),
+        )
+    };
+    if written < 0 {
+        log::warn!(
+            "a dma-buf release descriptor did not signal: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
 /// Import one plane's descriptor as a `VkImage`, and adopt it into a `wgpu` texture.
 ///
 /// `modifier` is the buffer's DRM format modifier: [`DmaBufHandle::LINEAR`](gpui_engine::DmaBufHandle::LINEAR)
