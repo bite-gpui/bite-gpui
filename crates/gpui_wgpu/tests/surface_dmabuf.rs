@@ -504,6 +504,17 @@ fn composite_pixels(handle: DmaBufHandle) -> (u32, u32, Vec<[u8; 4]>) {
     (width, height, pixels)
 }
 
+/// Composite `handle` and return the pixel at each of the seven bar centres, in capture space.
+fn composite_bar_centers(handle: DmaBufHandle) -> Vec<[u8; 4]> {
+    let (width, height, pixels) = composite_pixels(handle);
+    (0..SMPTE_BARS.len() as u32)
+        .map(|bar| {
+            let x = (2 * bar + 1) * width / (2 * SMPTE_BARS.len() as u32);
+            pixels[(height / 2 * width + x) as usize]
+        })
+        .collect()
+}
+
 /// The fixture's bars, in SMPTE 75% order: grey, yellow, cyan, green, magenta, red, blue. The
 /// fixture encodes each with the inverse of the shader's matrix, so the shader must map them back.
 const SMPTE_BARS: [[u8; 4]; 7] = [
@@ -557,6 +568,61 @@ fn a_decoded_h264_surface_composites_through_the_shader() {
         }
         assert_eq!(got[3], 255, "bar {bar} should be opaque");
     }
+}
+
+/// The same bars in **limited** range — the shape real footage is in. The decoder reads the stream's
+/// colour space and declares it on the handle, so the shader inverts *that*: with the limited range
+/// and the BT.601 matrix, the seven bars come back as drawn.
+#[test]
+fn a_limited_range_surface_converts_through_the_shader() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+    let Some(frame) = gpui_va::decode(gpui_va::FIXTURE_LIMITED) else {
+        eprintln!("skipping: no libavcodec of the declared ABI, or no VA-API device");
+        return;
+    };
+    let got = composite_bar_centers(frame.handle().clone());
+    for (bar, (rgb, got)) in SMPTE_BARS.iter().zip(&got).enumerate() {
+        for channel in 0..3 {
+            let (want, got) = (i32::from(rgb[channel]), i32::from(got[channel]));
+            // The studio range has fewer levels for each colour, so the round trip is a little coarser
+            // than the full-range one.
+            assert!(
+                (got - want).abs() <= 4,
+                "bar {bar} channel {channel} is {got}, but the limited bars put {want}",
+            );
+        }
+        assert_eq!(got[3], 255, "bar {bar} should be opaque");
+    }
+}
+
+/// The negative control for the test above: the *same* limited bytes, but declared full range. The
+/// shader then lifts the blacks and compresses the contrast, and the bars are no longer the bars — so
+/// the declaration is what turns the conversion on, not a detail the shader happens to ignore.
+#[test]
+fn a_limited_surface_declared_as_full_range_is_not_the_bars() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+    let Some(frame) = gpui_va::decode(gpui_va::FIXTURE_LIMITED) else {
+        eprintln!("skipping: no libavcodec of the declared ABI, or no VA-API device");
+        return;
+    };
+    let handle = frame
+        .handle()
+        .clone()
+        .with_color_space(gpui_engine::YuvColorSpace::default());
+    let got = composite_bar_centers(handle);
+    let off = SMPTE_BARS.iter().zip(&got).any(|(rgb, got)| {
+        (0..3usize).any(|c| i32::from(got[c]).abs_diff(i32::from(rgb[c])) > 6)
+    });
+    assert!(
+        off,
+        "reading limited bytes as full range must change the colour, but got {got:?}",
+    );
 }
 
 /// A stream, played: every frame of the clip decodes to its own surface, and successive frames reach
