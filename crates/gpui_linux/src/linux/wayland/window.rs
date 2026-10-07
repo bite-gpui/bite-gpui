@@ -33,8 +33,7 @@ use crate::linux::wayland::{display::WaylandDisplay, serial::SerialKind};
 use crate::linux::{Globals, Output, WaylandClientStatePtr, get_window};
 use gpui_engine::SceneRenderer;
 use gpui_platform::{
-    Bounds, Capslock, Decorations, DevicePixels, ExternalDragPayload, GpuSpecs, GpuWindow,
-    Modifiers, Pixels,
+    Bounds, Capslock, Decorations, DevicePixels, ExternalDragPayload, GpuSpecs, Modifiers, Pixels,
     PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformRenderer, PlatformWindow, Point,
     PromptButton, PromptLevel, RendererTarget, RequestFrameOptions, ResizeEdge, Size, Tiling,
     WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls,
@@ -1957,10 +1956,6 @@ impl PlatformWindow for WaylandWindow {
         self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
     }
 
-    fn gpu_window(&self) -> Option<&dyn GpuWindow> {
-        Some(self)
-    }
-
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {
         let mut state = self.borrow_mut();
         f(&mut *state.renderer);
@@ -2211,15 +2206,6 @@ impl PlatformWindow for WaylandWindow {
 
     fn a11y_update_window_bounds(&self) {
         // Wayland doesn't expose window position, so this is a no-op
-    }
-}
-
-impl GpuWindow for WaylandWindow {
-    /// This window's renderer's device — the client's shared `WgpuContextSlot`, which every wgpu
-    /// window in the process draws through, so a texture a producer makes on it is one this window
-    /// can sample.
-    fn device_any(&self) -> Option<std::rc::Rc<dyn std::any::Any>> {
-        self.borrow().renderer.device_any()
     }
 }
 

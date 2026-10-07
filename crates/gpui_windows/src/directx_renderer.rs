@@ -1,6 +1,4 @@
 use std::{
-    any::Any,
-    rc::Rc,
     slice,
     sync::{Arc, OnceLock},
 };
@@ -10,7 +8,7 @@ use collections::HashMap;
 use gpui_util::ResultExt;
 use windows::{
     Win32::{
-        Foundation::HWND,
+        Foundation::{HANDLE, HWND},
         Graphics::{
             Direct3D::*,
             Direct3D11::*,
@@ -25,9 +23,10 @@ use windows::{
 use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
 use crate::*;
 use gpui_engine::{
-    AtlasTextureId, CustomRenderPrimitive, DirectXSource, MonochromeSprite, PaintSurface, Path,
-    PlatformAtlas, PolychromeSprite, PrimitiveBatch, Quad, Scene, SceneRenderer, SubpixelSprite,
-    SurfaceSource, Underline, get_gamma_correction_ratios,
+    AtlasTextureId, CustomRenderPrimitive, DirectXSource, GpuRenderer, MonochromeSprite,
+    PaintSurface, Path, PlatformAtlas, PolychromeSprite, PrimitiveBatch, Quad, Scene,
+    SceneRenderer, SharedDirectXSurface, SubpixelSprite, SurfaceSource, Underline,
+    get_gamma_correction_ratios,
 };
 use gpui_platform::*;
 
@@ -58,7 +57,23 @@ struct SurfaceView {
     last_used: u64,
 }
 
-pub(crate) struct DirectXRenderer {
+/// One entry of [`DirectXRenderer`]'s shared-surface cache: a producer's texture, opened on the
+/// renderer's device, and the view of it.
+struct SharedSurfaceView {
+    view: ID3D11ShaderResourceView,
+    /// Held so the view's resource cannot be released underneath it.
+    _texture: ID3D11Texture2D,
+    last_used: u64,
+}
+
+/// One entry of [`DirectXRenderer`]'s shared-fence cache: a producer's fence, opened on the
+/// renderer's device.
+struct SharedFenceEntry {
+    fence: ID3D11Fence,
+    last_used: u64,
+}
+
+pub struct DirectXRenderer {
     hwnd: HWND,
     atlas: Arc<DirectXAtlas>,
     devices: Option<DirectXRendererDevices>,
@@ -82,6 +97,11 @@ pub(crate) struct DirectXRenderer {
     /// interface pointer. See [`DirectXRenderer::surface_view`] for why this exists and for the
     /// rule that invalidates and prunes it.
     surface_views: HashMap<usize, SurfaceView>,
+    /// Producer-shared textures the renderer opened on its own device, keyed by their NT handle. See
+    /// [`DirectXRenderer::surface_view`] for the rule that invalidates and prunes it.
+    shared_surfaces: HashMap<usize, SharedSurfaceView>,
+    /// Producer-shared fences the renderer opened on its own device, keyed by their NT handle.
+    shared_fences: HashMap<usize, SharedFenceEntry>,
     /// The frame the surface-view cache stamps entries with; incremented once per `render`.
     frame_index: u64,
 }
@@ -236,6 +256,8 @@ impl DirectXRenderer {
             height: 1,
             skip_draws: false,
             surface_views: HashMap::default(),
+            shared_surfaces: HashMap::default(),
+            shared_fences: HashMap::default(),
             frame_index: 0,
         })
     }
@@ -249,14 +271,6 @@ impl DirectXRenderer {
 
     pub(crate) fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
-    }
-
-    /// The device the renderer draws on, which is the device a producer has to make its
-    /// texture on: the same-device rule is what makes the token, rather than a handle, enough.
-    ///
-    /// `None` while a device-lost recovery is pending, as the renderer's other device uses are.
-    pub(crate) fn device(&self) -> Option<&ID3D11Device> {
-        self.devices.as_ref().map(|devices| &devices.device)
     }
 
     fn pre_draw(&self, clear_color: &[f32; 4]) -> Result<()> {
@@ -324,6 +338,8 @@ impl DirectXRenderer {
         // The cached views were made on the device being replaced, so the new one cannot sample
         // them; drop them before the old device is released below.
         self.surface_views.clear();
+        self.shared_surfaces.clear();
+        self.shared_fences.clear();
 
         unsafe {
             #[cfg(debug_assertions)]
@@ -996,10 +1012,8 @@ impl DirectXRenderer {
                     return Some(entry.view.clone());
                 }
 
-                let Some(devices) = self.devices.as_ref() else {
-                    return None;
-                };
-                let view = match create_imported_texture_view(&devices.device, texture) {
+                let device = self.devices.as_ref()?.device.clone();
+                let view = match create_imported_texture_view(&device, texture) {
                     Ok(view) => view,
                     Err(error) => {
                         log::warn!(
@@ -1017,16 +1031,95 @@ impl DirectXRenderer {
                 );
                 Some(view)
             }
+            DirectXSource::Shared(shared) => self.shared_surface_view(shared),
         }
     }
 
-    /// Drops the surface views of textures no surface has named for `SURFACE_VIEW_CACHE_PATIENCE`
-    /// frames. Called once per frame, after the batches; see [`Self::surface_view`] for the rule.
+    /// The view of a producer's shared texture, opening and viewing it on the renderer's device the
+    /// first time it is seen, and ordering the producer's writes before the draw.
+    ///
+    /// The handle is device-independent, so the renderer makes the device-side objects — the texture
+    /// `OpenSharedResource1` opens and the view of it — once, and caches them exactly as it caches a
+    /// `Texture`-variant view: cleared on a device replacement, pruned once no surface has named the
+    /// handle for [`SURFACE_VIEW_CACHE_PATIENCE`] frames. The fence is opened and cached the same
+    /// way, and waited on the context that will draw, so the sample is ordered behind the producer's
+    /// signal without a CPU poll.
+    fn shared_surface_view(
+        &mut self,
+        shared: &SharedDirectXSurface,
+    ) -> Option<ID3D11ShaderResourceView> {
+        let key = shared.texture.0 as usize;
+
+        let view = match self.shared_surfaces.get(&key) {
+            Some(entry) => entry.view.clone(),
+            None => {
+                let device = self.devices.as_ref()?.device.clone();
+                let (texture, view) = match open_shared_surface(&device, shared) {
+                    Ok(opened) => opened,
+                    Err(error) => {
+                        log::warn!("a shared surface could not be opened; skipping it: {error:#}");
+                        return None;
+                    }
+                };
+                self.shared_surfaces.insert(
+                    key,
+                    SharedSurfaceView {
+                        view: view.clone(),
+                        _texture: texture,
+                        last_used: self.frame_index,
+                    },
+                );
+                view
+            }
+        };
+        if let Some(entry) = self.shared_surfaces.get_mut(&key) {
+            entry.last_used = self.frame_index;
+        }
+
+        if let Some(sync) = &shared.fence {
+            let device = self.devices.as_ref()?.device.clone();
+            let context = self.devices.as_ref()?.device_context.clone();
+            match self.shared_fence(&device, sync.handle) {
+                Ok(fence) => {
+                    if let Err(error) = wait_for_fence(&context, &fence, sync.value) {
+                        log::warn!("a shared surface's fence could not be waited on: {error:#}");
+                    }
+                }
+                Err(error) => log::warn!("a shared surface's fence could not be opened: {error:#}"),
+            }
+        }
+
+        Some(view)
+    }
+
+    /// The renderer's opened form of a producer's shared fence, opening and caching it the first
+    /// time it is seen.
+    fn shared_fence(&mut self, device: &ID3D11Device, handle: HANDLE) -> Result<ID3D11Fence> {
+        let key = handle.0 as usize;
+        if let Some(entry) = self.shared_fences.get_mut(&key) {
+            entry.last_used = self.frame_index;
+            return Ok(entry.fence.clone());
+        }
+        let fence = open_shared_fence(device, handle)?;
+        self.shared_fences.insert(
+            key,
+            SharedFenceEntry {
+                fence: fence.clone(),
+                last_used: self.frame_index,
+            },
+        );
+        Ok(fence)
+    }
+
+    /// Drops the surface views and shared-handle entries no surface has named for
+    /// `SURFACE_VIEW_CACHE_PATIENCE` frames. Called once per frame, after the batches; see
+    /// [`Self::surface_view`] for the rule.
     fn prune_surface_views(&mut self) {
         let frame = self.frame_index;
-        self.surface_views.retain(|_, entry| {
-            frame.saturating_sub(entry.last_used) <= SURFACE_VIEW_CACHE_PATIENCE
-        });
+        let fresh = |last_used: u64| frame.saturating_sub(last_used) <= SURFACE_VIEW_CACHE_PATIENCE;
+        self.surface_views.retain(|_, entry| fresh(entry.last_used));
+        self.shared_surfaces.retain(|_, entry| fresh(entry.last_used));
+        self.shared_fences.retain(|_, entry| fresh(entry.last_used));
     }
 
     fn draw_custom(&mut self, start: usize, customs: &[CustomRenderPrimitive]) -> Result<()> {
@@ -1874,6 +1967,59 @@ fn create_fragment_shader(device: &ID3D11Device, bytes: &[u8]) -> Result<ID3D11P
 ///
 /// A texture from another device fails here rather than composing silently: `D3D11` resolves a
 /// resource through the device that made it.
+/// Open a producer's shared texture on the renderer's device and make its view.
+///
+/// The Direct3D counterpart of importing a dma-buf: the handle is device-independent, so the
+/// renderer makes the device-side objects — the texture `OpenSharedResource1` opens and the view of
+/// it — on the device it draws with. `create_imported_texture_view` applies the same format and
+/// usage rules the same-device `Texture` variant uses.
+fn open_shared_surface(
+    device: &ID3D11Device,
+    shared: &SharedDirectXSurface,
+) -> Result<(ID3D11Texture2D, ID3D11ShaderResourceView)> {
+    let device1: ID3D11Device1 = device
+        .cast()
+        .context("the device is not a Direct3D 11.1 device")?;
+    // SAFETY: `shared.texture` names a live shared resource, and the returned texture and view are
+    // owned by the caller.
+    unsafe {
+        let texture: ID3D11Texture2D = device1
+            .OpenSharedResource1(shared.texture)
+            .context("opening the producer's shared texture")?;
+        let view = create_imported_texture_view(device, &texture)?;
+        Ok((texture, view))
+    }
+}
+
+/// Open a producer's shared fence on the renderer's device.
+fn open_shared_fence(device: &ID3D11Device, handle: HANDLE) -> Result<ID3D11Fence> {
+    let device5: ID3D11Device5 = device
+        .cast()
+        .context("the device is not a Direct3D 11.5 device")?;
+    // SAFETY: `handle` names a live shared fence, and the opened fence is returned to the caller.
+    unsafe {
+        let mut fence = None;
+        device5
+            .OpenSharedFence(handle, &mut fence)
+            .context("opening the producer's shared fence")?;
+        fence.context("OpenSharedFence returned no fence")
+    }
+}
+
+/// Insert a GPU-side wait for `fence` to reach `value`, on the context that will draw the surface.
+fn wait_for_fence(context: &ID3D11DeviceContext, fence: &ID3D11Fence, value: u64) -> Result<()> {
+    // SAFETY: `context` and `fence` are live, and the wait is GPU-side rather than a CPU poll.
+    unsafe {
+        let context4: ID3D11DeviceContext4 = context
+            .cast()
+            .context("the context is not a Direct3D 11.4 context")?;
+        context4
+            .Wait(fence, value)
+            .context("waiting for the producer's shared fence")?;
+    }
+    Ok(())
+}
+
 /// Whether a surface's view names a 2D texture the fragment can sample.
 ///
 /// The renderer did not make this view — a producer did — so the checks it would make while
@@ -2424,6 +2570,16 @@ mod dxgi {
     }
 }
 
+impl GpuRenderer for DirectXRenderer {
+    type Device = ID3D11Device;
+
+    /// The device, cloned out: the renderer is its only holder, so a producer reaches it through
+    /// the renderer, but the handle is owned so it can outlive the call that lent it.
+    fn device(&self) -> Option<ID3D11Device> {
+        self.devices.as_ref().map(|devices| devices.device.clone())
+    }
+}
+
 impl SceneRenderer for DirectXRenderer {
     fn draw(&mut self, scene: &Scene) -> bool {
         let background_appearance = self.background_appearance;
@@ -2484,17 +2640,6 @@ impl PlatformRenderer for DirectXRenderer {
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         DirectXRenderer::gpu_specs(self).log_err()
-    }
-
-    /// The device a producer has to make its texture on: this renderer's own, which the platform
-    /// built and it was constructed from, so a texture created on it is visible to the draws below
-    /// with no handle to open and nothing to synchronise.
-    ///
-    /// This is the route the Direct3D 11 producer path needs — a Media Foundation or DXVA decoder
-    /// decodes into a texture on this device — and a texture made from it needs
-    /// [`DirectXTextureExt`](crate::DirectXTextureExt) to become a token.
-    fn device_any(&self) -> Option<Rc<dyn Any>> {
-        DirectXRenderer::device(self).map(|device| Rc::new(device.clone()) as Rc<dyn Any>)
     }
 
     /// Windows device loss is not a lost surface: the platform replaces the DirectX devices
@@ -2710,11 +2855,9 @@ mod tests {
         // Distinct per channel, and far from either end, so a transfer function applied once in
         // the wrong direction cannot round back to the same byte.
         let fixture = [200u8, 100, 50, 255];
-        // The producer's half: the device comes through the seam, which is the only route an
+        // The producer's half: the device comes through `GpuRenderer::device`, the route an
         // application has, and the texture is made on it rather than on the renderer's own field.
-        let device = renderer
-            .device_any()
-            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+        let device = GpuRenderer::device(&renderer)
             .context("the renderer lends its device through the seam")?;
         let texture = imported_texture(
             &device,
@@ -2749,9 +2892,7 @@ mod tests {
         // Distinct per channel, and far from either end, so a transfer function applied once in
         // the wrong direction cannot round back to the same byte.
         let fixture = [200u8, 100, 50, 255];
-        let device = renderer
-            .device_any()
-            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+        let device = GpuRenderer::device(&renderer)
             .context("the renderer lends its device through the seam")?;
         let texture = imported_texture(
             &device,
@@ -2789,9 +2930,7 @@ mod tests {
         // Distinct per channel, and far from either end, so a transfer function applied once in
         // the wrong direction cannot round back to the same byte.
         let fixture = [200u8, 100, 50, 255];
-        let device = renderer
-            .device_any()
-            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+        let device = GpuRenderer::device(&renderer)
             .context("the renderer lends its device through the seam")?;
         let texture = imported_texture(
             &device,
@@ -2833,9 +2972,7 @@ mod tests {
             return Ok(());
         };
 
-        let device = renderer
-            .device_any()
-            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+        let device = GpuRenderer::device(&renderer)
             .context("the renderer lends its device through the seam")?;
         // RGBA rather than BGRA: same-device and otherwise sampleable, so only the channel order
         // can be what refuses it. The bytes are distinctive so a composite would be unmistakable.
@@ -2874,9 +3011,7 @@ mod tests {
         // Distinct per channel, and far from either end, so a transfer function applied once in
         // the wrong direction cannot round back to the same byte.
         let fixture = [200u8, 100, 50, 255];
-        let device = renderer
-            .device_any()
-            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+        let device = GpuRenderer::device(&renderer)
             .context("the renderer lends its device through the seam")?;
         let texture = imported_texture(
             &device,

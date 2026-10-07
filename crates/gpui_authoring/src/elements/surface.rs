@@ -43,10 +43,11 @@ pub struct Surface {
 /// handing over a view is the escape for a producer that is the authority on its own format and mip
 /// interpretation.
 ///
-/// A source must come from the device the window's renderer draws on.
-/// [`Window::device_any`](crate::Window::device_any) is how a producer obtains that device so it
-/// can make a same-device resource on it; a producer that lives on another device instead shares
-/// its resource with this one, the route `gpui_interop` takes.
+/// A source is produced by someone else, before this element paints. A same-device resource is made
+/// inside a [`gpu_canvas`](crate::gpu_canvas) callback, where the window renderer's device is
+/// reachable through [`GpuCanvasContext::device`](crate::GpuCanvasContext::device); a source this
+/// element takes was made off the window's device and shared with it — a dma-buf, a CoreVideo
+/// buffer, a shared Direct3D view — the route `gpui_interop` takes.
 ///
 /// ```rust
 /// use gpui::{div, surface};
@@ -207,6 +208,13 @@ fn directx_source_size(source: &DirectXSource) -> Option<crate::Size<crate::Devi
                 let resource = view.GetResource().ok()?;
                 let texture: ID3D11Texture2D = resource.cast().ok()?;
                 texture.GetDesc(&mut desc);
+            }
+            // A shared texture carries its size, because the renderer has not opened it yet.
+            DirectXSource::Shared(shared) => {
+                return Some(crate::size(
+                    crate::DevicePixels::from(shared.width as i32),
+                    crate::DevicePixels::from(shared.height as i32),
+                ));
             }
         }
         Some(crate::size(

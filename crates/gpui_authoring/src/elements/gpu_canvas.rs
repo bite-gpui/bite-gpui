@@ -6,11 +6,10 @@
 //! other layer.
 
 use crate::{
-    App, Bounds, Corners, Div, Element, ElementId, GlobalElementId, ImportedTextureHandle,
-    InteractiveElement, Interactivity, IntoElement, LayoutId, PaintSurface, ParentElement, Pixels,
-    StyleRefinement, Styled, SurfaceSource, Window, div,
+    App, Bounds, Corners, Div, Element, ElementId, GlobalElementId, GpuRenderer,
+    ImportedTextureHandle, InteractiveElement, Interactivity, IntoElement, LayoutId, PaintSurface,
+    ParentElement, Pixels, StyleRefinement, Styled, SurfaceSource, Window, div,
 };
-use std::{any::Any, rc::Rc};
 
 /// Build a GPU canvas, an ordinary box whose content a paint-time callback supplies.
 ///
@@ -75,9 +74,34 @@ impl GpuCanvasContext<'_, '_> {
         self.bounds
     }
 
-    /// The renderer's device, for a producer that must make its texture on it.
-    pub fn device_any(&self) -> Option<Rc<dyn Any>> {
-        self.window.device_any()
+    /// The window renderer's device, downcast to `R`.
+    ///
+    /// This is the same-device producer's door: it hands back an owned handle (`ID3D11Device`, a
+    /// `metal::Device`, a wgpu device and queue) that the caller may keep, because a borrow of the
+    /// renderer's device cannot outlive the call. Naming `R` is the assertion that the window draws
+    /// through that backend — a `#[cfg]`-selected producer already knows — so a mismatch panics; use
+    /// [`try_device`](Self::try_device) to handle it instead.
+    pub fn device<R: GpuRenderer>(&mut self) -> R::Device {
+        self.try_device::<R>().unwrap_or_else(|| {
+            panic!(
+                "the window's renderer is not a {}: use try_device to handle this",
+                std::any::type_name::<R>(),
+            )
+        })
+    }
+
+    /// The window renderer's device, downcast to `R`, or `None` when the renderer is not `R` or has
+    /// no device to lend right now.
+    ///
+    /// The fallible form of [`device`](Self::device), for a producer that degrades — paints a
+    /// dma-buf instead of a same-device texture, or skips the frame — rather than asserting the
+    /// backend it is running under.
+    pub fn try_device<R: GpuRenderer>(&mut self) -> Option<R::Device> {
+        let mut lent = None;
+        self.window.core.platform_window.with_renderer(&mut |renderer| {
+            lent = renderer.as_renderer::<R>().and_then(GpuRenderer::device);
+        });
+        lent
     }
 
     /// The application, mirroring the `cx` a `canvas()` callback receives.

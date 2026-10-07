@@ -13,7 +13,7 @@ use metal::MTLPixelFormat;
 /// Builds an [`ImportedTextureHandle`] from a Metal texture.
 ///
 /// This is the producer's half of the imported-texture path on macOS, and it is public because an application has to
-/// be able to call it: the device comes from the window's erased accessor (`Window::device_any`),
+/// be able to call it: the device comes from the canvas's typed door (`GpuCanvasContext::device`),
 /// and the token from here.
 ///
 /// What the device does not settle is *which* device: a texture has to be made on the window's own
@@ -59,13 +59,10 @@ impl MetalTextureExt for metal::TextureRef {
 mod tests {
     use super::*;
     use crate::metal_renderer::{InstanceBufferPool, MetalRenderer};
-    use gpui_engine::{CustomRenderPrimitive, Scene, SceneRenderer};
-    use gpui_platform::{
-        Bounds, ContentMask, Corners, DevicePixels, PlatformRenderer, Point, Size,
-    };
+    use gpui_engine::{CustomRenderPrimitive, GpuRenderer, Scene, SceneRenderer};
+    use gpui_platform::{Bounds, ContentMask, Corners, DevicePixels, Point, Size};
     use metal::{MTLOrigin, MTLRegion, MTLSize, MTLStorageMode, MTLTextureUsage};
     use parking_lot::Mutex;
-    use std::rc::Rc;
     use std::sync::Arc;
 
     /// A headless renderer, or `None` where this machine has no Metal device at all. Every bare
@@ -79,12 +76,9 @@ mod tests {
     }
 
     /// The renderer's own device, reached the way an application reaches it: through the seam,
-    /// which is the whole of what `device_any` exists for.
-    fn renderer_device(renderer: &MetalRenderer) -> Rc<metal::Device> {
-        renderer
-            .device_any()
-            .and_then(|device| device.downcast::<metal::Device>().ok())
-            .expect("the Metal renderer lends its device through the seam")
+    /// which is the whole of what `GpuRenderer::device` exists for.
+    fn renderer_device(renderer: &MetalRenderer) -> metal::Device {
+        GpuRenderer::device(renderer).expect("the Metal renderer lends its device through the seam")
     }
 
     /// A 1x1 texture on `device` holding `bgra` in its only pixel, which is what a producer that

@@ -6,6 +6,11 @@ use gpui_engine::{
     AtlasTextureId, CustomRenderPrimitive, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene,
     SceneRenderer, get_gamma_correction_ratios,
 };
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+))]
+use gpui_engine::GpuRenderer;
 use gpui_platform::{Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size};
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
@@ -1157,7 +1162,7 @@ impl WgpuRenderer {
     /// A producer on this path renders its texture on *this* device -- that is the whole of the
     /// same-device rule -- so a renderer that can be built without a window is where an
     /// application that owns one reaches a device from. A window's is reached through
-    /// `Window::device_any`, which is the same device by another route.
+    /// `GpuRenderer::device`, which is the same device by another route.
     pub fn device(&self) -> &wgpu::Device {
         self.core().expect("renderer has no core").resources.device.as_ref()
     }
@@ -2817,6 +2822,19 @@ impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
         let image = self.read_image()?;
         let (width, height) = image.dimensions();
         gpui_engine::PixelBuffer::new(width, height, image.into_raw())
+    }
+}
+
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+))]
+impl GpuRenderer for WgpuHeadlessRenderer {
+    type Device = (Arc<wgpu::Device>, Arc<wgpu::Queue>);
+
+    /// The context this headless renderer built: offscreen, but a real device and queue.
+    fn device(&self) -> Option<Self::Device> {
+        Some((self.context.device.clone(), self.context.queue.clone()))
     }
 }
 

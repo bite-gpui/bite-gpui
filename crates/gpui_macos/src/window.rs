@@ -26,7 +26,7 @@ use dispatch2::DispatchQueue;
 use gpui_engine::SceneRenderer;
 use gpui_platform::{
     BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalDragPayload, ExternalPaths,
-    FileDropEvent, ForegroundExecutor, GpuWindow, KeyDownEvent, Keystroke, MacSceneRenderer,
+    FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, MacSceneRenderer,
     Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     NavigationDirection, Pixels, PlatformDisplay, PlatformInput, PlatformInputHandler,
     PlatformRenderer, PlatformWindow, Point, PromptButton, PromptLevel, RendererTarget,
@@ -2132,10 +2132,6 @@ impl PlatformWindow for MacWindow {
         self.0.as_ref().lock().toggle_tab_bar_callback = Some(callback);
     }
 
-    fn gpu_window(&self) -> Option<&dyn GpuWindow> {
-        Some(self)
-    }
-
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {
         let mut this = self.0.lock();
         f(&mut *this.renderer);
@@ -2407,15 +2403,6 @@ impl PlatformWindow for MacWindow {
 
     fn a11y_update_window_bounds(&self) {
         // macOS handles window bounds tracking automatically via NSAccessibility.
-    }
-}
-
-impl GpuWindow for MacWindow {
-    /// This window's renderer's device. On this platform the renderer creates it, so a window can
-    /// only lend what there is — which is why the accessor goes through the renderer rather than
-    /// through a platform slot, as the other two backends' do.
-    fn device_any(&self) -> Option<std::rc::Rc<dyn std::any::Any>> {
-        self.0.lock().renderer.device_any()
     }
 }
 

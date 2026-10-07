@@ -23,6 +23,25 @@ impl dyn SceneRenderer + '_ {
     }
 }
 
+/// A renderer that owns a device a producer can make resources on.
+///
+/// The engine's [`SceneRenderer`] is GPU-agnostic and names no device, but a producer that must make
+/// a texture on the *window's* GPU has to reach the concrete device the renderer drew with — the
+/// same-device rule seen from the renderer's side. A renderer that owns one implements this; a
+/// renderer that has none to lend — a discard or capture-only one — simply does not, and is then
+/// absent from this door rather than answering it with a placeholder.
+///
+/// [`Device`](Self::Device) is the backend's own handle — an `ID3D11Device`, a `metal::Device`, a
+/// wgpu context — so this trait adds no dependency on any GPU driver: only an implementor names one.
+pub trait GpuRenderer: SceneRenderer {
+    /// The device this renderer draws on, and so the one a producer must make its texture on.
+    type Device;
+
+    /// The device, or `None` while there is none to lend: a renderer mid-recovery has taken its
+    /// device apart and has not yet rebuilt it.
+    fn device(&self) -> Option<Self::Device>;
+}
+
 /// A frame read back from a renderer, as raw pixels.
 ///
 /// This is the engine's own type rather than an `image::RgbaImage` because the contract is what

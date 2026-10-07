@@ -33,7 +33,6 @@
 
 #![cfg(all(target_os = "linux", feature = "test-support"))]
 
-use std::any::Any;
 use std::cell::Cell;
 use std::io::Write as _;
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -45,7 +44,7 @@ use gpui::{
     HeadlessAppContext, ImportedTextureHandle, IntoElement, Render, Window, div, gpu_canvas,
     prelude::*, px, size, surface,
 };
-use gpui_wgpu::{CosmicTextSystem, ImportedTextureExt as _, WgpuContextSlot};
+use gpui_wgpu::{CosmicTextSystem, ImportedTextureExt as _, WgpuRenderer};
 
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 64;
@@ -204,7 +203,7 @@ impl Render for CanvasView {
         let colour = self.colour;
         let painted = self.painted.clone();
         gpu_canvas(move |gpu| {
-            let Some(handle) = imported_texture(gpu.device_any(), colour) else {
+            let Some(handle) = imported_texture(gpu.try_device::<WgpuRenderer>(), colour) else {
                 return;
             };
             painted.set(true);
@@ -217,17 +216,14 @@ impl Render for CanvasView {
 /// Make `colour` a texture on the renderer's own device and wrap it as an [`ImportedTextureHandle`].
 /// `None` when the window's renderer lends no device.
 fn imported_texture(
-    device_any: Option<Rc<dyn Any>>,
+    device: Option<(std::sync::Arc<wgpu::Device>, std::sync::Arc<wgpu::Queue>)>,
     colour: [u8; 4],
 ) -> Option<ImportedTextureHandle> {
-    // A producer reaches the renderer's device through the canvas's public seam. The payload is
-    // the shared context slot (`WgpuContextSlot`), and a window whose renderer lends none hands back
-    // `None` — which is what the headless harness here does.
-    let slot = device_any?.downcast::<WgpuContextSlot>().ok()?;
-    let context = slot.borrow();
-    let context = context.as_ref()?;
+    // A producer reaches the renderer's device through the canvas's typed door. A window whose
+    // renderer lends none hands back `None` — which is what the headless harness here does.
+    let (device, queue) = device?;
 
-    let texture = context.device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("surface_dmabuf_gpu_canvas"),
         size: wgpu::Extent3d {
             width: WIDTH,
@@ -248,7 +244,7 @@ fn imported_texture(
     for _ in 0..(WIDTH * HEIGHT) {
         content.extend_from_slice(&colour);
     }
-    context.queue.write_texture(
+    queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture: &texture,
             mip_level: 0,
@@ -451,14 +447,14 @@ fn a_gpu_canvas_composites_a_same_device_texture() {
         return;
     }
     // The other authoring layer: `gpu_canvas(..)`'s paint callback wants a texture on the renderer's
-    // own device, which a producer reaches through the window's public seam. The headless harness
-    // used here holds its renderer erased as a `SceneRenderer` and does not forward
-    // `PlatformWindow::device_any`, so no device is lent and the callback paints nothing: skip
-    // rather than fail, and say which piece is not reachable from this test.
+    // own device, which a producer reaches through the canvas's typed door. The headless harness
+    // used here holds its renderer erased as a `SceneRenderer` and does not implement `GpuRenderer`,
+    // so no device is lent and the callback paints nothing: skip rather than fail, and say which
+    // piece is not reachable from this test.
     let Some(pixel) = composite_canvas(BGRA_COLOUR).expect("composite the canvas") else {
         eprintln!(
             "skipping: the headless window's renderer lends no device — the authoring TestWindow \
-             does not forward PlatformWindow::device_any — so no same-device texture can be made"
+             does not implement GpuRenderer — so no same-device texture can be made"
         );
         return;
     };

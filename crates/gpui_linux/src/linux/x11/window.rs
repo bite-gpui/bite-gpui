@@ -4,7 +4,7 @@ use x11rb::connection::RequestConnection;
 use crate::linux::X11ClientStatePtr;
 use gpui_engine::SceneRenderer;
 use gpui_platform::{
-    Bounds, Decorations, DevicePixels, ForegroundExecutor, GpuSpecs, GpuWindow, Modifiers, Pixels,
+    Bounds, Decorations, DevicePixels, ForegroundExecutor, GpuSpecs, Modifiers, Pixels,
     PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformRenderer, PlatformWindow, Point,
     PromptButton, PromptLevel, RendererTarget, RequestFrameOptions, ResizeEdge, ScaledPixels, Size,
     Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
@@ -1767,10 +1767,6 @@ impl PlatformWindow for X11Window {
         self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
     }
 
-    fn gpu_window(&self) -> Option<&dyn GpuWindow> {
-        Some(self)
-    }
-
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {
         let mut inner = self.0.state.borrow_mut();
         f(&mut *inner.renderer);
@@ -2061,15 +2057,6 @@ impl PlatformWindow for X11Window {
         if let Some(adapter) = state.accesskit_adapter.as_mut() {
             adapter.set_root_window_bounds(outer, inner);
         }
-    }
-}
-
-impl GpuWindow for X11Window {
-    /// This window's renderer's device — the client's shared `WgpuContextSlot`, which every wgpu
-    /// window in the process draws through, so a texture a producer makes on it is one this window
-    /// can sample.
-    fn device_any(&self) -> Option<std::rc::Rc<dyn std::any::Any>> {
-        self.0.state.borrow().renderer.device_any()
     }
 }
 

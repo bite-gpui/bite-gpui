@@ -31,36 +31,15 @@ pub fn headless() -> Application {
 #[cfg(target_family = "wasm")]
 pub use gpui_web::WebBackendPreference;
 
-/// The producer's half of the imported-texture path on Windows: [`Window::device_any`](crate::Window::device_any)
-/// lends the renderer's device, and a texture made on it becomes a token through this extension.
+/// The producer's half of the imported-texture path on Windows: a producer reaches the Direct3D
+/// renderer's device through a `gpu_canvas` callback
+/// ([`GpuCanvasContext::device`](crate::GpuCanvasContext::device)), and a texture made on it becomes
+/// a token through this extension.
 #[cfg(target_os = "windows")]
-pub use gpui_windows::{DirectXImportedTexture, DirectXTextureExt};
-
-/// The typed spelling of [`Window::device_any`](crate::Window::device_any) on Windows: the
-/// Direct3D 11 device a producer must make its texture on, borrowed from the window's renderer.
-///
-/// It belongs here, in the facade, rather than beside the Direct3D renderer: `gpui_windows` cannot
-/// name `gpui::Window`, so the downcast from the erased device happens where both are in scope.
-/// `None` means this window's renderer lends no Direct3D device — an offscreen window, or one whose
-/// factory installed `WgpuRenderer`, which is the only other renderer a Windows window can have.
-#[cfg(target_os = "windows")]
-pub trait DirectXWindowExt {
-    /// The window renderer's `ID3D11Device`, if it has one to lend.
-    fn d3d11_device(&self) -> Option<windows::Win32::Graphics::Direct3D11::ID3D11Device>;
-}
-
-#[cfg(target_os = "windows")]
-impl DirectXWindowExt for crate::Window<'_> {
-    fn d3d11_device(&self) -> Option<windows::Win32::Graphics::Direct3D11::ID3D11Device> {
-        self.device_any()?
-            .downcast::<windows::Win32::Graphics::Direct3D11::ID3D11Device>()
-            .ok()
-            .map(|device| (*device).clone())
-    }
-}
+pub use gpui_windows::{DirectXImportedTexture, DirectXRenderer, DirectXTextureExt};
 
 /// The producer's half of the imported-texture path on macOS, the same shape as the Windows pair above: the device
-/// comes from Window::device_any, and a texture made on it becomes a token through this extension.
+/// comes from the canvas's `device::<R>()`, and a texture made on it becomes a token through this extension.
 /// Unlike the Windows one it names no payload type of its own -- the engine's MetalTexture is the
 /// handle the renderer resolves.
 #[cfg(target_os = "macos")]

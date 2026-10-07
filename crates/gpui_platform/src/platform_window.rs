@@ -13,6 +13,7 @@ use futures::channel::oneshot;
 use gpui_engine::SceneRenderer;
 use gpui_types::{Bounds, Capslock, Modifiers, Pixels, Point, Size};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 use std::any::Any;
 use std::rc::Rc;
 
@@ -61,19 +62,6 @@ pub struct A11yCallbacks {
     pub action: Box<dyn Fn(accesskit::ActionRequest) + Send + 'static>,
     /// Called when the adapter is deactivated (screen reader disconnects).
     pub deactivation: Box<dyn Fn() + Send + 'static>,
-}
-
-/// A decorator over a backend window that adds the GPU operations GPUI's surface elements need.
-///
-/// `PlatformWindow` names no graphics type; a backend that can composite foreign pixels implements
-/// this for its window and lends it through [`PlatformWindow::gpu_window`]. A new GPU operation
-/// lands here with a default and the backends that support it opt in, rather than widening
-/// `PlatformWindow` for every backend.
-pub trait GpuWindow {
-    /// The renderer's device, erased, for a producer that must make its texture on it.
-    fn device_any(&self) -> Option<Rc<dyn Any>> {
-        None
-    }
 }
 
 #[expect(missing_docs)]
@@ -161,10 +149,6 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// Use this for renderer queries such as reading the sprite atlas or
     /// capturing an image; backends must not advance their frame loop here.
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer));
-    /// Borrow this window's GPU decorator, if the backend implements one.
-    fn gpu_window(&self) -> Option<&dyn GpuWindow> {
-        None
-    }
     /// Submits a frame through this window's scene renderer.
     ///
     /// `f` encodes and submits the frame and returns whether it was presented.

@@ -224,7 +224,6 @@ mod demo {
     /// backs the imported texture.
     #[cfg(target_os = "linux")]
     mod wgpu_backend {
-        use std::any::Any;
         use std::cell::RefCell;
         use std::os::fd::{FromRawFd, OwnedFd};
         use std::rc::Rc;
@@ -323,8 +322,7 @@ mod demo {
         }
 
         impl ImportedTile {
-            fn new(device_any: Option<Rc<dyn Any>>) -> Result<Self> {
-                let (device, queue) = device(device_any)?;
+            fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Result<Self> {
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("surface_showcase"),
                     size: wgpu::Extent3d {
@@ -402,7 +400,12 @@ mod demo {
                     gpu_canvas(move |gpu| {
                         let mut tile = imported.borrow_mut();
                         if tile.is_none() {
-                            match ImportedTile::new(gpu.device_any()) {
+                            let Some((device, queue)) = gpu.try_device::<gpui_wgpu::WgpuRenderer>()
+                            else {
+                                log::error!("surface: the window's renderer lends no wgpu device");
+                                return;
+                            };
+                            match ImportedTile::new(device, queue) {
                                 Ok(built) => *tile = Some(built),
                                 Err(error) => {
                                     log::error!(
@@ -423,18 +426,6 @@ mod demo {
                     "gpu_canvas(..) · wgpu texture view",
                 ),
             ]
-        }
-
-        /// The wgpu device and queue the window's renderer draws through.
-        fn device(
-            device_any: Option<Rc<dyn Any>>,
-        ) -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
-            let slot = device_any
-                .and_then(|any| any.downcast::<gpui_wgpu::WgpuContextSlot>().ok())
-                .context("the window's renderer lends a wgpu context")?;
-            let context = slot.borrow();
-            let context = context.as_ref().context("the shared context slot is empty")?;
-            Ok((context.device.clone(), context.queue.clone()))
         }
 
         /// A minimal Vulkan "producer": the loader, instance and device that keep the exported
@@ -573,84 +564,294 @@ mod demo {
     /// hardware decoder or a Direct3D engine takes.
     #[cfg(target_os = "windows")]
     mod directx_backend {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
         use anyhow::{Context as _, Result};
         use gpui::{
-            AnyElement, DirectXSource, SurfaceSource, Window, gpu_canvas, prelude::*, surface,
+            AnyElement, DirectXRenderer, DirectXSource, GpuCanvasContext, SharedDirectXFence,
+            SharedDirectXSurface, SurfaceSource, Window, gpu_canvas, prelude::*, surface,
         };
-        use windows::Win32::Graphics::Direct3D::D3D_SRV_DIMENSION_TEXTURE2D;
+        use windows::core::{Interface as _, PCWSTR};
+        use windows::Win32::Foundation::{HANDLE, HMODULE};
+        use windows::Win32::Graphics::Direct3D::{
+            D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0, D3D_SRV_DIMENSION_TEXTURE2D,
+        };
         use windows::Win32::Graphics::Direct3D11::{
-            D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_SHADER_RESOURCE_VIEW_DESC,
-            D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_SRV, D3D11_TEXTURE2D_DESC,
-            D3D11_USAGE_DEFAULT, ID3D11Device, ID3D11ShaderResourceView, ID3D11Texture2D,
+            D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            D3D11_FENCE_FLAG_SHARED, D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION,
+            D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_SRV,
+            D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11Device,
+            ID3D11Device5, ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Fence,
+            ID3D11ShaderResourceView, ID3D11Texture2D,
+        };
+        use windows::Win32::Graphics::Dxgi::{
+            DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIResource1,
         };
         use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
         use super::{OLIVE, TILE, error_panel, panel};
 
-        pub struct Producer {
-            /// `surface(DirectXSource::Texture)`: the renderer makes the view.
+        /// `GENERIC_ALL`, the access a shared fence handle is created with.
+        const GENERIC_ALL: u32 = 0x1000_0000;
+
+        /// The three device-made payloads. They are built on the first paint, when the renderer's
+        /// device exists, and shared with every canvas callback.
+        struct Payloads {
             texture_variant: ID3D11Texture2D,
-            /// `surface(DirectXSource::View)`: the producer made the view.
             view_variant: ID3D11ShaderResourceView,
-            /// `gpu_canvas(..)`: the view handed over at paint time.
             canvas_variant: ID3D11ShaderResourceView,
         }
 
-        impl Producer {
-            fn new(window: &mut Window) -> Result<Self> {
-                // The renderer owns the device a surface texture has to be made on, and lends it.
-                let device = window
-                    .device_any()
-                    .and_then(|any| any.downcast::<ID3D11Device>().ok())
-                    .context("the window's renderer lends an ID3D11Device")?;
+        pub struct Producer {
+            payloads: Rc<RefCell<Option<Payloads>>>,
+            /// The device-independent payload: a shared texture (and fence) made on the producer's
+            /// *own* device at construction — no window involved.
+            shared: Option<SharedProducer>,
+        }
 
-                let texture_variant = olive_texture(&device)?;
-                let view_texture = olive_texture(&device)?;
-                let view_variant = shader_resource_view(&device, &view_texture)?;
-                let canvas_texture = olive_texture(&device)?;
-                let canvas_variant = shader_resource_view(&device, &canvas_texture)?;
+        impl Producer {
+            fn new() -> Self {
+                Self {
+                    payloads: Rc::new(RefCell::new(None)),
+                    shared: match SharedProducer::new() {
+                        Ok(shared) => Some(shared),
+                        Err(error) => {
+                            log::error!(
+                                "surface: cannot produce a shared Direct3D texture: {error:#}"
+                            );
+                            None
+                        }
+                    },
+                }
+            }
+        }
+
+        /// A shared Direct3D texture made on the producer's *own* device.
+        ///
+        /// This is the payload `surface()` exists for on Windows: the NT handle is
+        /// device-independent, so the element carries it before the window's renderer has a device,
+        /// and the renderer opens and views it at draw. The handle is same-adapter, so the producer
+        /// device is created on the default adapter — the one the window renderer uses by default.
+        struct SharedProducer {
+            /// Held so the device that made the texture and the fence outlives them.
+            _device: ID3D11Device,
+            _texture: ID3D11Texture2D,
+            _fence: ID3D11Fence,
+            /// The texture's NT handle, for `DirectXSource::Shared`.
+            handle: HANDLE,
+            /// The fence's NT handle, and the value the renderer waits for before it samples.
+            fence: HANDLE,
+            value: u64,
+        }
+
+        impl SharedProducer {
+            fn new() -> Result<Self> {
+                let mut device = None;
+                let mut context = None;
+                unsafe {
+                    D3D11CreateDevice(
+                        None,
+                        D3D_DRIVER_TYPE_HARDWARE,
+                        HMODULE::default(),
+                        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                        Some(&[D3D_FEATURE_LEVEL_11_0]),
+                        D3D11_SDK_VERSION,
+                        Some(&mut device),
+                        None,
+                        Some(&mut context),
+                    )
+                }
+                .context("creating the shared producer's Direct3D 11 device")?;
+                let device: ID3D11Device = device.context("D3D11CreateDevice returned no device")?;
+                let context: ID3D11DeviceContext =
+                    context.context("D3D11CreateDevice returned no context")?;
+
+                let texture: ID3D11Texture2D = unsafe {
+                    let mut texture = None;
+                    device
+                        .CreateTexture2D(
+                            &D3D11_TEXTURE2D_DESC {
+                                Width: TILE,
+                                Height: TILE,
+                                MipLevels: 1,
+                                ArraySize: 1,
+                                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                                SampleDesc: DXGI_SAMPLE_DESC {
+                                    Count: 1,
+                                    Quality: 0,
+                                },
+                                Usage: D3D11_USAGE_DEFAULT,
+                                BindFlags: (D3D11_BIND_SHADER_RESOURCE
+                                    | D3D11_BIND_RENDER_TARGET)
+                                    .0 as u32,
+                                CPUAccessFlags: 0,
+                                MiscFlags: D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 as u32,
+                            },
+                            None,
+                            Some(&mut texture),
+                        )
+                        .context("creating the shared texture")?;
+                    texture.context("CreateTexture2D returned no texture")?
+                };
+
+                let fence: ID3D11Fence = unsafe {
+                    let device5: ID3D11Device5 =
+                        device.cast().context("not a Direct3D 11.5 device")?;
+                    let mut fence = None;
+                    device5
+                        .CreateFence(0, D3D11_FENCE_FLAG_SHARED, &mut fence)
+                        .context("creating the shared fence")?;
+                    fence.context("CreateFence returned no fence")?
+                };
+
+                // Clear to olive on the producer's own context and signal the fence, so the
+                // renderer's first sample is ordered behind the clear.
+                unsafe {
+                    let mut render_target = None;
+                    device
+                        .CreateRenderTargetView(&texture, None, Some(&mut render_target))
+                        .context("creating the shared texture's render target view")?;
+                    let render_target = render_target.context("no render target view")?;
+                    context.ClearRenderTargetView(&render_target, &olive_clear_color());
+                    let context4: ID3D11DeviceContext4 =
+                        context.cast().context("not a Direct3D 11.4 context")?;
+                    context4
+                        .Signal(&fence, 1)
+                        .context("signalling the shared fence")?;
+                    context.Flush();
+                }
+
+                let resource: IDXGIResource1 = texture
+                    .cast()
+                    .context("the texture is not a DXGI resource")?;
+                let handle = unsafe {
+                    resource
+                        .CreateSharedHandle(
+                            None,
+                            (DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE).0,
+                            PCWSTR::null(),
+                        )
+                        .context("sharing the texture")?
+                };
+                let fence_handle = unsafe {
+                    fence
+                        .CreateSharedHandle(None, GENERIC_ALL, PCWSTR::null())
+                        .context("sharing the fence")?
+                };
 
                 Ok(Self {
-                    texture_variant,
-                    view_variant,
-                    canvas_variant,
+                    _device: device,
+                    _texture: texture,
+                    _fence: fence,
+                    handle,
+                    fence: fence_handle,
+                    value: 1,
                 })
             }
         }
 
-        pub fn tiles(slot: &mut Option<Producer>, window: &mut Window) -> Vec<AnyElement> {
-            if slot.is_none() {
-                match Producer::new(window) {
-                    Ok(producer) => *slot = Some(producer),
+        /// Build the payloads on the window renderer's own device.
+        ///
+        /// The device is reachable only at paint, so this runs inside a `gpu_canvas` callback: a
+        /// `surface()` element takes its source before painting, which a same-device source cannot
+        /// satisfy.
+        fn build(gpu: &mut GpuCanvasContext) -> Result<Payloads> {
+            let device = gpu
+                .try_device::<DirectXRenderer>()
+                .context("the window's renderer is not Direct3D")?;
+
+            let texture_variant = olive_texture(&device)?;
+            let view_texture = olive_texture(&device)?;
+            let view_variant = shader_resource_view(&device, &view_texture)?;
+            let canvas_texture = olive_texture(&device)?;
+            let canvas_variant = shader_resource_view(&device, &canvas_texture)?;
+
+            Ok(Payloads {
+                texture_variant,
+                view_variant,
+                canvas_variant,
+            })
+        }
+
+        /// Build the shared payloads (once) and paint one of them through `source`.
+        fn paint(
+            payloads: &Rc<RefCell<Option<Payloads>>>,
+            gpu: &mut GpuCanvasContext,
+            source: impl FnOnce(&Payloads) -> SurfaceSource,
+        ) {
+            let mut built = payloads.borrow_mut();
+            if built.is_none() {
+                match build(gpu) {
+                    Ok(payloads) => *built = Some(payloads),
                     Err(error) => {
                         log::error!("surface: cannot produce a Direct3D texture: {error:#}");
-                        return vec![error_panel(format!(
-                            "no Direct3D producer: {error:#}"
-                        ))];
+                        return;
                     }
                 }
             }
-            let producer = slot.as_ref().expect("the producer was just built");
-            let canvas_view = producer.canvas_variant.clone();
+            let built = built.as_ref().expect("the payloads were just built");
+            gpu.paint_surface(source(built));
+        }
+
+        pub fn tiles(slot: &mut Option<Producer>, _window: &mut Window) -> Vec<AnyElement> {
+            let producer = slot.get_or_insert_with(Producer::new);
+            let payloads = producer.payloads.clone();
+            let shared = producer.shared.as_ref().map(|shared| SharedDirectXSurface {
+                texture: shared.handle,
+                fence: Some(SharedDirectXFence {
+                    handle: shared.fence,
+                    value: shared.value,
+                }),
+                width: TILE,
+                height: TILE,
+            });
+
+            let shared_tile = match shared {
+                Some(source) => panel(
+                    surface(SurfaceSource::DirectX(DirectXSource::Shared(source))).size_full(),
+                    "surface() · DirectXSource::Shared",
+                ),
+                None => error_panel("no shared Direct3D producer".to_string()),
+            };
 
             vec![
+                shared_tile,
                 panel(
-                    surface(SurfaceSource::DirectX(DirectXSource::Texture(
-                        producer.texture_variant.clone(),
-                    )))
+                    gpu_canvas({
+                        let payloads = payloads.clone();
+                        move |gpu| {
+                            paint(&payloads, gpu, |payloads| {
+                                SurfaceSource::DirectX(DirectXSource::Texture(
+                                    payloads.texture_variant.clone(),
+                                ))
+                            });
+                        }
+                    })
                     .size_full(),
-                    "surface() · DirectXSource::Texture",
+                    "gpu_canvas(..) · DirectXSource::Texture",
                 ),
                 panel(
-                    surface(SurfaceSource::DirectX(DirectXSource::View(
-                        producer.view_variant.clone(),
-                    )))
+                    gpu_canvas({
+                        let payloads = payloads.clone();
+                        move |gpu| {
+                            paint(&payloads, gpu, |payloads| {
+                                SurfaceSource::DirectX(DirectXSource::View(
+                                    payloads.view_variant.clone(),
+                                ))
+                            });
+                        }
+                    })
                     .size_full(),
-                    "surface() · DirectXSource::View",
+                    "gpu_canvas(..) · DirectXSource::View",
                 ),
                 panel(
                     gpu_canvas(move |gpu| {
-                        gpu.paint_surface(SurfaceSource::DirectX(DirectXSource::View(canvas_view)));
+                        paint(&payloads, gpu, |payloads| {
+                            SurfaceSource::DirectX(DirectXSource::View(
+                                payloads.canvas_variant.clone(),
+                            ))
+                        });
                     })
                     .size_full(),
                     "gpu_canvas(..) · Direct3D 11 view",
