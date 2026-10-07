@@ -1893,11 +1893,35 @@ fn surface_view_is_sampleable(view: &ID3D11ShaderResourceView) -> bool {
     }
 }
 
+/// The producer's texture, viewed with the target's own channel order.
+///
+/// `CreateShaderResourceView` may only re-interpret a resource within its own format family, so a
+/// texture whose channel order is the other way round — `R8G8B8A8` where the target is `B8G8R8A8`
+/// — is refused here rather than left to Direct3D. Direct3D's own refusal is not guaranteed, and
+/// where it does not come the view is made, the fragment writes the sample straight through, and
+/// the frame composites the wrong image with red and blue exchanged instead of failing. Refusing
+/// it here is what turns the `Texture` arm's wrong-format texture into the same skip-with-a-reason
+/// `surface_view` already gives a texture it cannot view.
 #[inline]
 fn create_imported_texture_view(
     device: &ID3D11Device,
     texture: &ID3D11Texture2D,
 ) -> Result<ID3D11ShaderResourceView> {
+    let texture_desc = unsafe {
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        texture.GetDesc(&mut desc);
+        desc
+    };
+    anyhow::ensure!(
+        matches!(
+            texture_desc.Format,
+            DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB
+        ),
+        "a texture the renderer views must be B8G8R8A8, the channel order the Direct3D target is \
+         in, but this one is {:?}",
+        texture_desc.Format
+    );
+
     let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
         Format: DXGI_FORMAT_B8G8R8A8_UNORM,
         ViewDimension: D3D_SRV_DIMENSION_TEXTURE2D,
@@ -2789,6 +2813,47 @@ mod tests {
                     "pixel {index} did not round trip on frame {frame}"
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// The `Texture` arm's boundary. The view the renderer makes for a producer's texture is
+    /// fixed at the target's own `B8G8R8A8_UNORM` channel order, so a texture in the other order
+    /// is refused by `create_imported_texture_view` — skip-with-a-reason, the soft fault the `View`
+    /// arm's `surface_view_is_sampleable` makes — rather than viewed and composited with red and
+    /// blue exchanged. A composited surface would paint this texture's bytes over the whole
+    /// target; a skipped one leaves the frame's clear (white, the opaque background) untouched.
+    #[test]
+    fn a_surface_texture_in_the_wrong_format_is_skipped() -> Result<()> {
+        let viewport = Size {
+            width: DevicePixels(8),
+            height: DevicePixels(8),
+        };
+        let Some(mut renderer) = test_renderer(viewport) else {
+            return Ok(());
+        };
+
+        let device = renderer
+            .device_any()
+            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+            .context("the renderer lends its device through the seam")?;
+        // RGBA rather than BGRA: same-device and otherwise sampleable, so only the channel order
+        // can be what refuses it. The bytes are distinctive so a composite would be unmistakable.
+        let texture = imported_texture(&device, 1, DXGI_FORMAT_R8G8B8A8_UNORM, [10, 20, 30, 255])?;
+        let scene = surface_scene(
+            SurfaceSource::DirectX(DirectXSource::Texture(texture)),
+            viewport,
+        );
+
+        // Refused, but softly: the frame still renders and reads back rather than faulting.
+        let pixels = renderer.render_scene_to_image(&scene, viewport)?;
+        assert_eq!((pixels.width(), pixels.height()), (8, 8));
+        for (index, pixel) in pixels.data().chunks_exact(4).enumerate() {
+            assert_eq!(
+                pixel,
+                [255, 255, 255, 255],
+                "pixel {index} was composited; the wrong-format texture was not skipped"
+            );
         }
         Ok(())
     }
