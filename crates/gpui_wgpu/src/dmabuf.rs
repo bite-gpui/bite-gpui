@@ -22,12 +22,12 @@
 //! The importer validates the handle and refuses one it cannot honour, rather than compositing a
 //! wrong image. A producer must therefore:
 //!
-//! - **Export a linear buffer.** Sampling a vendor-tiled modifier needs
-//!   `VK_EXT_image_drm_format_modifier` enabled on the device the image is made on, and that device
-//!   is `wgpu`'s: its Vulkan backend does not enable the extension and exposes no way to add one, so
-//!   a `DRM_FORMAT_MODIFIER_EXT` image cannot be created there. A non-linear modifier is refused with
-//!   a message rather than sampled wrong, so a producer must declare
-//!   [`DRM_FORMAT_MOD_LINEAR`](gpui_engine::DmaBufHandle::LINEAR).
+//! - **Declare the buffer's tiling.** A single-plane-per-layer buffer is sampled as-is: the
+//!   importer creates the plane's image with the handle's [`modifier`](gpui_engine::DmaBufHandle::modifier),
+//!   so a producer may export a vendor-tiled buffer
+//!   ([`DRM_FORMAT_MOD_LINEAR`](gpui_engine::DmaBufHandle::LINEAR) is the portable choice, and a tiled
+//!   modifier is sampled only where the device enabled `VK_EXT_image_drm_format_modifier` — see
+//!   `WgpuContext::device_with_surface_import` — and otherwise refused by `vkCreateImage`).
 //! - **Carry one plane per format.** One plane for `Bgra8`/`Rgba8`, two for `Nv12`; a handle whose
 //!   plane count does not match its format is refused.
 //!
@@ -55,13 +55,6 @@ pub(crate) fn import_dmabuf(
     device: &wgpu::Device,
     handle: &DmaBufHandle,
 ) -> Result<Vec<PlaneTexture>> {
-    anyhow::ensure!(
-        handle.modifier == DmaBufHandle::LINEAR,
-        "gpui_wgpu imports linear dma-bufs only, but this buffer declares modifier {:#x}: a tiled \
-         modifier needs VK_EXT_image_drm_format_modifier, which wgpu does not enable on the renderer's \
-         device; a producer must use DRM_FORMAT_MOD_LINEAR",
-        handle.modifier,
-    );
     let expected = match handle.format {
         DmaBufFormat::Bgra8 | DmaBufFormat::Rgba8 => 1,
         DmaBufFormat::Nv12 => 2,
@@ -93,6 +86,7 @@ pub(crate) fn import_dmabuf(
                 instance,
                 physical,
                 &handle.planes[0],
+                handle.modifier,
                 vk_format,
                 wgpu_format,
                 handle.width,
@@ -108,6 +102,7 @@ pub(crate) fn import_dmabuf(
                 instance,
                 physical,
                 &handle.planes[0],
+                handle.modifier,
                 vk::Format::R8_UNORM,
                 wgpu::TextureFormat::R8Unorm,
                 handle.width,
@@ -119,6 +114,7 @@ pub(crate) fn import_dmabuf(
                 instance,
                 physical,
                 &handle.planes[1],
+                handle.modifier,
                 vk::Format::R8G8_UNORM,
                 wgpu::TextureFormat::Rg8Unorm,
                 handle.width / 2,
@@ -172,7 +168,13 @@ pub(crate) fn wait_for_acquire_fence(fence: &OwnedFd, timeout: Duration) -> bool
     }
 }
 
-/// Import one plane's descriptor as a linear `VkImage`, and adopt it into a `wgpu` texture.
+/// Import one plane's descriptor as a `VkImage`, and adopt it into a `wgpu` texture.
+///
+/// `modifier` is the buffer's DRM format modifier: [`DmaBufHandle::LINEAR`](gpui_engine::DmaBufHandle::LINEAR)
+/// makes a linear image, and any other value makes a tiled one whose single-`plane` layout is given
+/// explicitly, which is the shape `vaExportSurfaceHandle` and GBM exports describe. A tiled image
+/// needs `VK_EXT_image_drm_format_modifier` on the device, which `WgpuContext` enables; a device
+/// without it refuses the image, and the surface is dropped rather than sampled wrong.
 #[expect(clippy::too_many_arguments)]
 fn import_plane(
     device: &wgpu::Device,
@@ -180,12 +182,22 @@ fn import_plane(
     instance: &ash::Instance,
     physical: vk::PhysicalDevice,
     plane: &DmaBufPlane,
+    modifier: u64,
     vk_format: vk::Format,
     wgpu_format: wgpu::TextureFormat,
     width: u32,
     height: u32,
 ) -> Result<PlaneTexture> {
     let raw = hal.raw_device();
+    let tiled = modifier != DmaBufHandle::LINEAR;
+    // The image binds at the plane's offset within the object, so the plane's own layout starts at
+    // zero; its row pitch is the buffer's. The driver validates both against the modifier.
+    let plane_layout = vk::SubresourceLayout::default()
+        .offset(0)
+        .row_pitch(u64::from(plane.stride));
+    let mut modifier_layout = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+        .drm_format_modifier(modifier)
+        .plane_layouts(std::slice::from_ref(&plane_layout));
     let image_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
         .format(vk_format)
@@ -197,10 +209,19 @@ fn import_plane(
         .mip_levels(1)
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
-        .tiling(vk::ImageTiling::LINEAR)
+        .tiling(if tiled {
+            vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT
+        } else {
+            vk::ImageTiling::LINEAR
+        })
         .usage(vk::ImageUsageFlags::SAMPLED)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image_info = if tiled {
+        image_info.push_next(&mut modifier_layout)
+    } else {
+        image_info
+    };
     let image =
         unsafe { raw.create_image(&image_info, None) }.context("create the imported image")?;
     let requirements = unsafe { raw.get_image_memory_requirements(image) };
