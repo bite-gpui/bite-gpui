@@ -34,16 +34,7 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
-/// The pixel layout of a dma-buf: the formats the Linux surface backend consumes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DmaBufFormat {
-    /// A single `BGRA8` plane — the common desktop format.
-    Bgra8,
-    /// A single `RGBA8` plane.
-    Rgba8,
-    /// A two-plane `NV12`: full-resolution luma, then half-resolution interleaved chroma.
-    Nv12,
-}
+use crate::SurfaceFormatKind;
 
 /// One plane of a dma-buf: a descriptor, its offset into the buffer, and its row stride.
 ///
@@ -126,7 +117,8 @@ pub enum YuvRange {
     Limited,
 }
 
-/// The YCbCr an [`Nv12`](DmaBufFormat::Nv12) buffer's bytes are in: the matrix and the range.
+/// The YCbCr a YCbCr ([`is_yuv`](SurfaceFormatKind::is_yuv)) buffer's bytes are in: the matrix and the
+/// range.
 ///
 /// A hint, like [`ChromaReconstruction`] and to the same end — it says how to read the colour the
 /// format carries. A renderer that does not understand one falls back to the default, which is
@@ -165,19 +157,19 @@ pub struct DmaBufHandle {
     /// The surface height, in pixels.
     pub height: u32,
     /// The pixel layout.
-    pub format: DmaBufFormat,
+    pub format: SurfaceFormatKind,
     /// The DRM format modifier (tiling/compression layout); [`Self::LINEAR`] for a linear buffer.
     pub modifier: u64,
-    /// One plane per [`DmaBufFormat`]: one for `Bgra8`/`Rgba8`, two for `Nv12`.
+    /// One plane per [`SurfaceFormatKind::plane_count`].
     pub planes: SmallVec<[DmaBufPlane; 2]>,
     /// An optional `sync_file` fence the renderer waits on before sampling the buffer; a fence that
     /// does not signal in time drops the surface for that frame rather than blocking the frame.
     pub acquire_fence: Option<Arc<OwnedFd>>,
-    /// How the renderer should reconstruct chroma; the producer's hint for a [`DmaBufFormat::Nv12`]
-    /// buffer, and ignored for a single-plane one.
+    /// How the renderer should reconstruct chroma; the producer's hint for a YCbCr buffer, and
+    /// ignored for an RGB one.
     pub chroma: ChromaReconstruction,
-    /// The colour space this buffer's [`DmaBufFormat::Nv12`] bytes are in; ignored for a single-plane
-    /// one, whose bytes are already RGB.
+    /// The colour space this buffer's YCbCr bytes are in; ignored for an RGB one, whose bytes are
+    /// already RGB.
     pub color_space: YuvColorSpace,
 }
 
@@ -203,12 +195,13 @@ impl DmaBufHandle {
 
     /// Build a handle from its planes.
     ///
-    /// `planes` is collected (one for `Bgra8`/`Rgba8`, two for `Nv12`), so a caller need not name
-    /// `SmallVec` to construct a handle; `acquire_fence` is the producer's optional `sync_file`.
+    /// `planes` is collected, so a caller need not name `SmallVec` to construct a handle (see
+    /// [`SurfaceFormatKind::plane_count`] for how many a format needs); `acquire_fence` is the producer's
+    /// optional `sync_file`.
     pub fn new(
         width: u32,
         height: u32,
-        format: DmaBufFormat,
+        format: SurfaceFormatKind,
         modifier: u64,
         planes: impl IntoIterator<Item = DmaBufPlane>,
         acquire_fence: Option<OwnedFd>,
@@ -232,14 +225,15 @@ impl DmaBufHandle {
         self
     }
 
-    /// Declare the colour space this buffer's `Nv12` bytes are in. A hint: a renderer that does not
+    /// Declare the colour space this buffer's YCbCr bytes are in. A hint: a renderer that does not
     /// understand the matrix or range falls back to its default (BT.601 full range).
     pub fn with_color_space(mut self, color_space: YuvColorSpace) -> Self {
         self.color_space = color_space;
         self
     }
 
-    /// The number of planes the handle carries: one for `Bgra8`/`Rgba8`, two for `Nv12`.
+    /// The number of planes the handle carries, which [`SurfaceFormatKind::plane_count`] should agree
+    /// with.
     pub fn plane_count(&self) -> usize {
         self.planes.len()
     }
@@ -265,7 +259,7 @@ mod tests {
         let handle = DmaBufHandle::new(
             4,
             2,
-            DmaBufFormat::Nv12,
+            SurfaceFormatKind::nv12(),
             DmaBufHandle::LINEAR,
             [
                 DmaBufPlane::new(descriptor(), 0, 4),
@@ -275,7 +269,7 @@ mod tests {
         );
         assert_eq!(handle.plane_count(), 2);
         assert_eq!((handle.width, handle.height), (4, 2));
-        assert_eq!(handle.format, DmaBufFormat::Nv12);
+        assert_eq!(handle.format, SurfaceFormatKind::nv12());
         assert!(handle.acquire_fence.is_none());
     }
 
@@ -284,7 +278,7 @@ mod tests {
         let handle = DmaBufHandle::new(
             1,
             1,
-            DmaBufFormat::Rgba8,
+            SurfaceFormatKind::rgba8(),
             DmaBufHandle::LINEAR,
             [DmaBufPlane::new(descriptor(), 0, 4)],
             Some(descriptor()),
@@ -327,7 +321,7 @@ mod tests {
         let handle = DmaBufHandle::new(
             1,
             1,
-            DmaBufFormat::Rgba8,
+            SurfaceFormatKind::rgba8(),
             DmaBufHandle::LINEAR,
             [DmaBufPlane::new(descriptor(), 0, 4)],
             None,
@@ -343,7 +337,7 @@ mod tests {
         let handle = DmaBufHandle::new(
             2,
             2,
-            DmaBufFormat::Nv12,
+            SurfaceFormatKind::nv12(),
             DmaBufHandle::LINEAR,
             [
                 DmaBufPlane::new(descriptor(), 0, 2),
@@ -367,7 +361,7 @@ mod tests {
         let handle = DmaBufHandle::new(
             2,
             2,
-            DmaBufFormat::Nv12,
+            SurfaceFormatKind::nv12(),
             DmaBufHandle::LINEAR,
             [
                 DmaBufPlane::new(descriptor(), 0, 2),

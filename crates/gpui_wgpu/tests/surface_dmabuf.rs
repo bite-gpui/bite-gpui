@@ -40,9 +40,9 @@ use std::rc::Rc;
 
 use ash::vk;
 use gpui::{
-    AnyWindowHandle, AppContext as _, Context, Corners, DmaBufFormat, DmaBufHandle, DmaBufPlane,
-    HeadlessAppContext, ImportedTextureHandle, IntoElement, Render, Window, div, gpu_canvas,
-    prelude::*, px, size, surface,
+    AnyWindowHandle, AppContext as _, Context, Corners, DmaBufHandle, DmaBufPlane,
+    HeadlessAppContext, ImportedTextureHandle, IntoElement, Render, SurfaceFormatKind, Window, div,
+    gpu_canvas, prelude::*, px, size, surface,
 };
 use gpui_wgpu::{CosmicTextSystem, ImportedTextureExt as _, WgpuRenderer};
 
@@ -322,7 +322,7 @@ fn a_single_plane_surface_reads_back_byte_for_byte() {
     let handle = DmaBufHandle::new(
         WIDTH,
         HEIGHT,
-        DmaBufFormat::Rgba8,
+        SurfaceFormatKind::rgba8(),
         DmaBufHandle::LINEAR,
         [DmaBufPlane::new(fd, 0, WIDTH * 4)],
         None,
@@ -351,7 +351,7 @@ fn a_single_bgra_plane_reads_back_as_the_source_colour() {
     let handle = DmaBufHandle::new(
         WIDTH,
         HEIGHT,
-        DmaBufFormat::Bgra8,
+        SurfaceFormatKind::bgra8(),
         DmaBufHandle::LINEAR,
         [DmaBufPlane::new(fd, 0, WIDTH * 4)],
         None,
@@ -382,7 +382,7 @@ fn a_surface_with_a_signalled_acquire_fence_is_waited_on() {
     let handle = DmaBufHandle::new(
         WIDTH,
         HEIGHT,
-        DmaBufFormat::Rgba8,
+        SurfaceFormatKind::rgba8(),
         DmaBufHandle::LINEAR,
         [DmaBufPlane::new(fd, 0, WIDTH * 4)],
         Some(OwnedFd::from(read_end)),
@@ -416,7 +416,7 @@ fn an_nv12_surface_converts_through_the_shader() {
     let handle = DmaBufHandle::new(
         WIDTH,
         HEIGHT,
-        DmaBufFormat::Nv12,
+        SurfaceFormatKind::nv12(),
         DmaBufHandle::LINEAR,
         [
             DmaBufPlane::new(fd, 0, WIDTH),

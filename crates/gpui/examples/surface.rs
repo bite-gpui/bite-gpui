@@ -387,8 +387,9 @@ mod demo {
         use anyhow::{Context as _, Result};
         use ash::vk;
         use gpui::{
-            AnyElement, ChromaReconstruction, Corners, DmaBufFormat, DmaBufHandle, DmaBufPlane,
-            ImportedTextureHandle, ImportedTextureExt as _, Window, gpu_canvas, prelude::*, surface,
+            AnyElement, ChromaReconstruction, Corners, DmaBufHandle, DmaBufPlane,
+            ImportedTextureHandle, ImportedTextureExt as _, SurfaceFormatKind, Window, gpu_canvas,
+            prelude::*, surface,
         };
         use super::{DECODED_COLOUR, TILE, error_panel, panel, test_card};
 
@@ -442,7 +443,7 @@ mod demo {
                 let bgra = DmaBufHandle::new(
                     TILE,
                     TILE,
-                    DmaBufFormat::Bgra8,
+                    SurfaceFormatKind::bgra8(),
                     DmaBufHandle::LINEAR,
                     [DmaBufPlane::new(bgra_fd, 0, TILE * 4)],
                     None,
@@ -452,7 +453,7 @@ mod demo {
                 let rgba = DmaBufHandle::new(
                     TILE,
                     TILE,
-                    DmaBufFormat::Rgba8,
+                    SurfaceFormatKind::rgba8(),
                     DmaBufHandle::LINEAR,
                     [DmaBufPlane::new(rgba_fd, 0, TILE * 4)],
                     None,
@@ -469,7 +470,7 @@ mod demo {
                 let nv12 = DmaBufHandle::new(
                     TILE,
                     TILE,
-                    DmaBufFormat::Nv12,
+                    SurfaceFormatKind::nv12(),
                     DmaBufHandle::LINEAR,
                     [
                         DmaBufPlane::new(fd, 0, TILE),
@@ -488,7 +489,7 @@ mod demo {
                 let nv12_sharp = DmaBufHandle::new(
                     TILE,
                     TILE,
-                    DmaBufFormat::Nv12,
+                    SurfaceFormatKind::nv12(),
                     DmaBufHandle::LINEAR,
                     [
                         DmaBufPlane::new(sharp_fd, 0, TILE),
@@ -603,13 +604,13 @@ mod demo {
                     let (handle, surface_caption, canvas_caption) = match format {
                         0 => (
                             producer.bgra.clone(),
-                            "surface() · DmaBufFormat::Bgra8",
-                            "gpu_canvas(..) · DmaBufFormat::Bgra8",
+                            "surface() · SurfaceFormatKind::bgra8()",
+                            "gpu_canvas(..) · SurfaceFormatKind::bgra8()",
                         ),
                         1 => (
                             producer.rgba.clone(),
-                            "surface() · DmaBufFormat::Rgba8",
-                            "gpu_canvas(..) · DmaBufFormat::Rgba8",
+                            "surface() · SurfaceFormatKind::rgba8()",
+                            "gpu_canvas(..) · SurfaceFormatKind::rgba8()",
                         ),
                         2 => (
                             producer.nv12.clone(),

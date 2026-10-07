@@ -22,4 +22,4 @@ pub use gpui_wgpu::WgpuHeadlessRenderer;
 /// The Linux surface transport, re-exported so an application reaches it through the platform crate
 /// it already depends on rather than through the engine.
 #[cfg(target_os = "linux")]
-pub use gpui_engine::{DmaBufFormat, DmaBufHandle, DmaBufPlane};
+pub use gpui_engine::{DmaBufHandle, DmaBufPlane, SurfaceFormat};

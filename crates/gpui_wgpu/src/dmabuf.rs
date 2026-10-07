@@ -28,8 +28,9 @@
 //!   ([`DRM_FORMAT_MOD_LINEAR`](gpui_engine::DmaBufHandle::LINEAR) is the portable choice, and a tiled
 //!   modifier is sampled only where the device enabled `VK_EXT_image_drm_format_modifier` — see
 //!   `WgpuContext::device_with_surface_import` — and otherwise refused by `vkCreateImage`).
-//! - **Carry one plane per format.** One plane for `Bgra8`/`Rgba8`, two for `Nv12`; a handle whose
-//!   plane count does not match its format is refused.
+//! - **Carry one plane per format.** [`SurfaceFormatKind::plane_count`](gpui_engine::SurfaceFormatKind::plane_count)
+//!   says how many a format needs — one for packed RGB, two for semi-planar YCbCr, three for planar;
+//!   a handle whose plane count does not match its format is refused.
 //!
 //! See [`DmaBufHandle`](gpui_engine::DmaBufHandle) for the descriptor itself and the full set of
 //! invariants a dma-buf import requires.
@@ -40,7 +41,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use ash::vk;
-use gpui_engine::{DmaBufFormat, DmaBufHandle, DmaBufPlane};
+use gpui_engine::{DmaBufHandle, DmaBufPlane, RgbOrder, SampleDepth, Subsampling};
 
 /// A plane's texture, adopted into `wgpu`, and the view the renderer samples.
 ///
@@ -61,19 +62,17 @@ pub(crate) struct PlaneTexture {
 
 /// Import a dma-buf as the texture(s) the surface pipeline composites.
 ///
-/// One texture for `Bgra8`/`Rgba8`, two (`R8` then `Rg8`) for `NV12`.
+/// One texture for a packed RGB buffer, two (the plane views of one multi-planar image) for `NV12`.
 pub(crate) fn import_dmabuf(
     device: &wgpu::Device,
     handle: &DmaBufHandle,
 ) -> Result<Vec<PlaneTexture>> {
-    let expected = match handle.format {
-        DmaBufFormat::Bgra8 | DmaBufFormat::Rgba8 => 1,
-        DmaBufFormat::Nv12 => 2,
-    };
+    let format = handle.format;
+    let dimensions = format.dimensions();
+    let expected = dimensions.plane_count();
     anyhow::ensure!(
         handle.planes.len() == expected,
-        "{:?} needs {expected} plane(s), but the handle carries {}",
-        handle.format,
+        "{format} needs {expected} plane(s), but the handle carries {}",
         handle.planes.len(),
     );
 
@@ -82,31 +81,40 @@ pub(crate) fn import_dmabuf(
     let instance = hal.shared_instance().raw_instance();
     let physical = hal.raw_physical_device();
 
-    match handle.format {
-        DmaBufFormat::Bgra8 | DmaBufFormat::Rgba8 => {
-            let (wgpu_format, vk_format) = match handle.format {
-                DmaBufFormat::Bgra8 => {
-                    (wgpu::TextureFormat::Bgra8Unorm, vk::Format::B8G8R8A8_UNORM)
-                }
-                _ => (wgpu::TextureFormat::Rgba8Unorm, vk::Format::R8G8B8A8_UNORM),
-            };
-            Ok(vec![import_plane(
-                device,
-                &*hal,
-                instance,
-                physical,
-                &handle.planes[0],
-                handle.modifier,
-                vk_format,
-                wgpu_format,
-                handle.width,
-                handle.height,
-            )?])
-        }
-        // Plane 0 is luma at full resolution; plane 1 is interleaved chroma at half, in both
-        // dimensions. Both are planes of the one image the buffer describes.
-        DmaBufFormat::Nv12 => import_luma_chroma(device, &*hal, instance, physical, handle),
+    if !dimensions.is_yuv() {
+        // A packed RGB plane, sampled straight through: its `VkFormat` is its component order at its
+        // bit depth.
+        let (wgpu_format, vk_format) = match (dimensions.rgb_order(), dimensions.depth()) {
+            (RgbOrder::Bgr, SampleDepth::Bits8) => {
+                (wgpu::TextureFormat::Bgra8Unorm, vk::Format::B8G8R8A8_UNORM)
+            }
+            (RgbOrder::Rgb, SampleDepth::Bits8) => {
+                (wgpu::TextureFormat::Rgba8Unorm, vk::Format::R8G8B8A8_UNORM)
+            }
+            _ => anyhow::bail!("unsupported RGB surface format: {format}"),
+        };
+        return Ok(vec![import_plane(
+            device,
+            &*hal,
+            instance,
+            physical,
+            &handle.planes[0],
+            handle.modifier,
+            vk_format,
+            wgpu_format,
+            handle.width,
+            handle.height,
+        )?]);
     }
+
+    // A YCbCr buffer: plane 0 is luma at full resolution; plane 1 is interleaved chroma at half, in
+    // both dimensions. Both are planes of the one image the buffer describes. Only the 8-bit 4:2:0
+    // family is imported so far; a format outside it is dropped rather than sampled wrong.
+    anyhow::ensure!(
+        dimensions.subsampling() == Subsampling::C420 && dimensions.depth() == SampleDepth::Bits8,
+        "unsupported YCbCr surface format: {format}",
+    );
+    import_luma_chroma(device, &*hal, instance, physical, handle)
 }
 
 /// Import an `Nv12` buffer's two planes as the **one** multi-planar image they describe, and view
@@ -559,6 +567,7 @@ fn same_buffer(a: &DmaBufHandle, b: &DmaBufHandle) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_engine::SurfaceFormatKind;
     use std::os::fd::OwnedFd;
 
     /// A real descriptor without a GPU: `/dev/null` is an open file, and any open file is a valid
@@ -571,7 +580,7 @@ mod tests {
         DmaBufHandle::new(
             width,
             2,
-            DmaBufFormat::Bgra8,
+            SurfaceFormatKind::bgra8(),
             DmaBufHandle::LINEAR,
             [DmaBufPlane::new(descriptor(), offset, stride)],
             None,
@@ -595,7 +604,7 @@ mod tests {
         let rgba = DmaBufHandle::new(
             4,
             2,
-            DmaBufFormat::Rgba8,
+            SurfaceFormatKind::rgba8(),
             DmaBufHandle::LINEAR,
             [DmaBufPlane::new(descriptor(), 0, 16)],
             None,

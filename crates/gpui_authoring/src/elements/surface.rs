@@ -228,7 +228,7 @@ fn directx_source_size(source: &DirectXSource) -> Option<crate::Size<crate::Devi
 mod tests {
     use super::*;
     use crate::{Context, Render, TestAppContext, Window};
-    use gpui_engine::{DmaBufFormat, DmaBufHandle, DmaBufPlane, SurfaceSource};
+    use gpui_engine::{DmaBufHandle, DmaBufPlane, SurfaceFormatKind, SurfaceSource};
     use std::os::fd::OwnedFd;
 
     struct SurfaceView {
@@ -255,7 +255,7 @@ mod tests {
         let handle = DmaBufHandle::new(
             4,
             4,
-            DmaBufFormat::Rgba8,
+            SurfaceFormatKind::rgba8(),
             DmaBufHandle::LINEAR,
             [DmaBufPlane::new(descriptor(), 0, 16)],
             None,
