@@ -16,14 +16,52 @@ use gpui_engine::DirectXSource;
 use gpui_engine::SurfaceSource;
 use refineable::Refineable;
 
-/// A surface element.
+/// A surface element: an external pixel source composited into the scene.
+///
+/// Built by [`surface`] and configured with [`Surface::object_fit`]. It holds the [`SurfaceSource`]
+/// it was given until the window's renderer resolves that source into something it can sample; it
+/// carries no pixel data itself. See [`surface`] for what a surface is and where a source comes
+/// from.
 pub struct Surface {
     source: SurfaceSource,
     object_fit: ObjectFit,
     style: StyleRefinement,
 }
 
-/// Create a new surface element.
+/// Composites pixels GPUI did not draw into the scene, as an ordinary element.
+///
+/// A surface is how an application shows content produced outside GPUI — a video decoder's frame, a
+/// texture another graphics API rendered, or a resource that lives on another device — without
+/// copying those pixels through the CPU. The producer fills a GPU resource and hands it here as a
+/// source; the window's renderer samples that resource directly while it composites the frame.
+///
+/// The element lays out and stacks like any other child: it occupies space in the layout tree, and
+/// it is painted in the frame's own pass in child order, so ordinary elements drawn beside or over
+/// it compose with it rather than floating above it.
+///
+/// `source` is anything that converts into a [`SurfaceSource`]. On Windows that is a Direct3D
+/// texture or shader-resource view, on macOS a CoreVideo image buffer, and on Linux a dma-buf
+/// handle; [`SurfaceSource`] documents each platform's payloads and, where a platform offers more
+/// than one, which to reach for. The Windows pair is the one that comes up most: handing over a
+/// texture is the ergonomic default, since the renderer makes the view on the device it owns, while
+/// handing over a view is the escape for a producer that is the authority on its own format and mip
+/// interpretation.
+///
+/// A source must come from the device the window's renderer draws on.
+/// [`Window::device_any`](crate::Window::device_any) is how a producer obtains that device so it
+/// can make a same-device resource on it; a producer that lives on another device instead shares
+/// its resource with this one, the route `gpui_interop` takes.
+///
+/// ```rust
+/// use gpui::{div, surface};
+///
+/// // `source` is a `SurfaceSource` for this platform; see the type's docs.
+/// div().size_full().child(surface(source))
+/// ```
+///
+/// For working producers, run the examples: `cargo run -p gpui --example surface` hands over both
+/// Windows arms one element at a time, and `cargo run -p gpui --example path_a` drives a producer
+/// through the canvas callback.
 pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
     Surface {
         source: source.into(),
@@ -33,7 +71,14 @@ pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
 }
 
 impl Surface {
-    /// Set the object fit for the image.
+    /// Sets how the source's pixels are fitted into this element's bounds.
+    ///
+    /// The source carries its own pixel size; the element carries its layout size. The fit decides
+    /// how the former maps onto the latter, using the same [`ObjectFit`] modes images use — for
+    /// example [`ObjectFit::Contain`] (the default) letterboxes the source inside the bounds while
+    /// preserving its aspect ratio, and [`ObjectFit::Fill`] stretches it to fill the bounds
+    /// exactly. When the source's size cannot be determined, the pixels are drawn into the full
+    /// bounds.
     pub fn object_fit(mut self, object_fit: ObjectFit) -> Self {
         self.object_fit = object_fit;
         self

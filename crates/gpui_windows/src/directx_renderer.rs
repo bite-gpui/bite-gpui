@@ -251,7 +251,7 @@ impl DirectXRenderer {
         self.atlas.clone()
     }
 
-    /// The device the renderer draws on, which is the device a Path A producer has to make its
+    /// The device the renderer draws on, which is the device a producer has to make its
     /// texture on: the same-device rule is what makes the token, rather than a handle, enough.
     ///
     /// `None` while a device-lost recovery is pending, as the renderer's other device uses are.

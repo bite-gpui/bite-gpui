@@ -18,7 +18,11 @@
 //! resource view itself, which is what an application that already holds an
 //! `ID3D11ShaderResourceView` — a Media Foundation decoder, a Direct3D engine — would hand over.
 //!
-//! Both arms are Direct3D 11's, so on every other host this example is a no-op.
+//! Neither surface sets `object_fit`, so each source is fitted with the default, `ObjectFit::Contain`,
+//! which letterboxes it inside the element's bounds without distorting it.
+//!
+//! Both arms are Direct3D 11's, so on every other host this example is a no-op. For the canvas-based
+//! route to the same pixels, see `cargo run -p gpui --example path_a`.
 
 #[cfg(not(target_os = "windows"))]
 fn main() {

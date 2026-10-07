@@ -1,4 +1,4 @@
-//! Paint a texture produced outside GPUI: what the render extension calls **Path A**.
+//! Paint a texture produced outside GPUI.
 //!
 //! ```sh
 //! cargo run -p gpui --example path_a
@@ -16,9 +16,8 @@
 //!   texture is made on that device and submitted on that queue, so there is nothing to share and
 //!   nothing to signal: submission order is the ordering.
 //! - **macOS** — wgpu again, but the renderer is Metal's, so there is no wgpu context to be lent.
-//!   wgpu makes its own device, and macOS hands it the `MTLDevice` the `MetalRenderer` already owns
-//!   — measured by the `macos-wgpu-producer` probe — which is why the texture it writes is one the
-//!   renderer can sample.
+//!   wgpu makes its own device, and macOS hands it the `MTLDevice` the `MetalRenderer` already owns,
+//!   so the texture it writes is one the renderer can sample on the same device.
 //! - **Windows** — Direct3D 11, on the `ID3D11Device` the default `DirectXRenderer` lends. This is
 //!   what a Media Foundation decoder or a D3D11 engine would do. A *wgpu* producer on Windows needs
 //!   `WgpuRenderer` installed through a window factory instead, because wgpu has no Direct3D 11
@@ -56,8 +55,8 @@ mod demo {
     /// The producer's texture, which the sampler stretches over the window.
     const TEXTURE: u32 = 256;
 
-    /// What a frame hands the window: a `SurfaceSource` on Windows, an imported-texture handle
-    /// elsewhere — the same-device wgpu/Metal case 0005 leaves on the old primitive.
+    /// What a frame hands the window: a `SurfaceSource` on Windows, an imported-texture handle on
+    /// the platforms whose renderer is wgpu or Metal.
     #[cfg(target_os = "windows")]
     type Frame = gpui::SurfaceSource;
     #[cfg(not(target_os = "windows"))]
@@ -101,7 +100,7 @@ mod demo {
                 .bg(rgb(0x101014))
                 .child(self.gpu_content())
                 .child(
-                    // Ordinary GPUI elements over the top: a Path A texture is a primitive in the
+                    // Ordinary GPUI elements over the top: an imported texture is a primitive in the
                     // frame's own pass, not an overlay.
                     div()
                         .absolute()
@@ -122,9 +121,8 @@ mod demo {
         ///
         /// Every platform composites through `GpuCanvas`. On Windows the producer fills a Direct3D
         /// texture each frame and hands its shader resource view through `on_render_surface` to
-        /// `surface()`. On Linux and macOS the producer's same-device texture has no `SurfaceSource`
-        /// variant — the gap 0005 leaves for the canvas — so it goes through `on_render_texture`,
-        /// which pushes the handle through `paint_imported_texture`.
+        /// `surface()`. On Linux and macOS the producer's same-device texture goes through
+        /// `on_render_texture`, which pushes the handle through `paint_imported_texture`.
         #[cfg(target_os = "windows")]
         fn gpu_content(&self) -> impl IntoElement {
             let producer = self.producer.clone();
@@ -178,8 +176,12 @@ mod demo {
 
     /// The producer, per platform.
     enum Producer {
+        /// This should suppport all platforms
+        /// When it doesn't, drop into platform specific producer
         #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
         Wgpu(wgpu_producer::WgpuProducer),
+        /// DirectX 11 is the only source/target Wgpu doesn't support.
+        /// This allows to sample pixels from both D3D11 (same device texture) and D3D12 (shared view)
         #[cfg(target_os = "windows")]
         DirectX(directx_producer::DirectXProducer),
         /// No device to produce on. Stored rather than returned, so the reason is logged once
@@ -318,7 +320,7 @@ mod demo {
                 );
 
                 // Nothing to signal: the renderer submits on this same queue and composites after
-                // this write, which is decision 0002's first tier — one device, one queue.
+                // this write, which is the same-device, one-queue case.
                 imported(&self.texture)
             }
         }
@@ -410,9 +412,10 @@ mod demo {
         use super::{TEXTURE, content, phase};
         use anyhow::Context as _;
         use gpui::{SurfaceSource, Window};
+        use windows::Win32::Graphics::Direct3D::D3D_SRV_DIMENSION_TEXTURE2D;
         use windows::Win32::Graphics::Direct3D11::{
             D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_SHADER_RESOURCE_VIEW_DESC,
-            D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_SRV_DIMENSION_TEXTURE2D, D3D11_TEX2D_SRV,
+            D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_SRV,
             D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11Device, ID3D11DeviceContext,
             ID3D11ShaderResourceView, ID3D11Texture2D,
         };

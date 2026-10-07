@@ -83,7 +83,7 @@ pub trait PlatformRenderer: NativeSceneHooks {
     /// The graphics device this renderer draws on, for a producer that has to make a texture on
     /// it.
     ///
-    /// This is the whole of decision 0002's device rule seen from the other side: the device
+    /// This is the same-device rule seen from the other side: the device
     /// belongs to whoever built the window's renderer, and a producer — a decoder, an engine, a
     /// viewport — has to render on *that* one. The return is erased because the shared trait must
     /// not name `ID3D11Device` or `MTLDevice`; the payload is the backend's own type (a

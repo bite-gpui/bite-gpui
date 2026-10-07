@@ -12,12 +12,12 @@ use metal::MTLPixelFormat;
 
 /// Builds an [`ImportedTextureHandle`] from a Metal texture.
 ///
-/// This is the producer's half of Path A on macOS, and it is public because an application has to
+/// This is the producer's half of the imported-texture path on macOS, and it is public because an application has to
 /// be able to call it: the device comes from the window's erased accessor (`Window::device_any`),
 /// and the token from here.
 ///
 /// What the device does not settle is *which* device: a texture has to be made on the window's own
-/// renderer's, which is the same-device rule decision 0002 states. Metal has no way to enforce that
+/// renderer's, which is the same-device rule. Metal has no way to enforce that
 /// — a resource does not expose the device that made it, where Direct3D's
 /// `CreateShaderResourceView` refuses a mismatch by name — so the rest of the contract is here: the
 /// handle carries the `id<MTLTexture>` by pointer rather than retaining it, so the producer has to
@@ -176,7 +176,7 @@ mod tests {
         );
         let scene = imported_texture_scene(texture.as_ref().to_imported_handle()?, viewport);
 
-        // The seam's method rather than the inherent one, because the contract Path A is asserted
+        // The seam's method rather than the inherent one, because the contract is asserted
         // through is the trait's, and its pixels are the engine's `PixelBuffer`.
         let pixels = SceneRenderer::render_scene_to_image(&mut renderer, &scene, viewport)?;
         assert_eq!((pixels.width(), pixels.height()), (8, 8));
