@@ -7552,6 +7552,7 @@ dependencies = [
  "gpui_platform",
  "gpui_runtime",
  "gpui_util",
+ "gpui_va",
  "gpui_web",
  "gpui_wgpu",
  "gpui_windows",
@@ -7942,6 +7943,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_va"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ash",
+ "gpui_engine",
+ "libloading",
+ "log",
+]
+
+[[package]]
 name = "gpui_web"
 version = "0.1.0"
 dependencies = [
@@ -7985,6 +7997,7 @@ dependencies = [
  "gpui_engine",
  "gpui_platform",
  "gpui_util",
+ "gpui_va",
  "image",
  "itertools 0.14.0",
  "libc",
