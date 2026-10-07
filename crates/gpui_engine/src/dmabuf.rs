@@ -80,6 +80,22 @@ impl DmaBufPlane {
     }
 }
 
+/// How a renderer reconstructs full-resolution chroma from a 4:2:0 buffer's half-resolution plane.
+///
+/// The producer's hint, not the format's: an `Nv12` buffer is chroma-subsampled either way, and this
+/// says what to do about it. [`Bilinear`](Self::Bilinear) is the honest default — it is what the
+/// format carries, and it keeps a wrong stride or plane size visible rather than plausible.
+/// [`LumaGuided`](Self::LumaGuided) weights the chroma taps by the full-resolution luma, so colour
+/// follows the luma edges instead of being low-passed across them. A renderer may ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChromaReconstruction {
+    /// Sample the chroma plane bilinearly, as the format carries it.
+    #[default]
+    Bilinear,
+    /// Reconstruct chroma with the full-resolution luma as a guide.
+    LumaGuided,
+}
+
 /// A dma-buf a producer hands the renderer to composite as a surface.
 ///
 /// See the module documentation for the producer's contract — uncompressed, linear across vendors,
@@ -99,6 +115,9 @@ pub struct DmaBufHandle {
     /// An optional `sync_file` fence the renderer waits on before sampling the buffer; a fence that
     /// does not signal in time drops the surface for that frame rather than blocking the frame.
     pub acquire_fence: Option<Arc<OwnedFd>>,
+    /// How the renderer should reconstruct chroma; the producer's hint for a [`DmaBufFormat::Nv12`]
+    /// buffer, and ignored for a single-plane one.
+    pub chroma: ChromaReconstruction,
 }
 
 impl PartialEq for DmaBufHandle {
@@ -110,6 +129,7 @@ impl PartialEq for DmaBufHandle {
             && self.planes == other.planes
             && self.acquire_fence.as_ref().map(|fd| fd.as_raw_fd())
                 == other.acquire_fence.as_ref().map(|fd| fd.as_raw_fd())
+            && self.chroma == other.chroma
     }
 }
 
@@ -138,7 +158,15 @@ impl DmaBufHandle {
             modifier,
             planes: planes.into_iter().collect(),
             acquire_fence: acquire_fence.map(Arc::new),
+            chroma: ChromaReconstruction::default(),
         }
+    }
+
+    /// Ask the renderer to reconstruct this buffer's chroma [`LumaGuided`](ChromaReconstruction::LumaGuided)
+    /// rather than [bilinearly](ChromaReconstruction::Bilinear). A hint: a renderer may ignore it.
+    pub fn with_chroma(mut self, chroma: ChromaReconstruction) -> Self {
+        self.chroma = chroma;
+        self
     }
 
     /// The number of planes the handle carries: one for `Bgra8`/`Rgba8`, two for `Nv12`.

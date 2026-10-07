@@ -85,12 +85,31 @@ mod demo {
             BARS[(x * BARS.len() as u32 / width).min(BARS.len() as u32 - 1) as usize]
         }
 
+        /// The card's pixel at `(x, y)` of a `width`-square image, as an sRGB RGB triple.
+        ///
+        /// The top three quarters are the colour bars. The bottom quarter is fine detail in two
+        /// halves: left, one-pixel red/blue columns — colour detail a 4:2:0 chroma plane cannot
+        /// carry, so it smears toward purple; right, one-pixel black/white columns — luma detail,
+        /// which NV12 keeps. The pair shows what subsampling costs and what it does not.
+        pub fn pixel(x: u32, y: u32, width: u32) -> [u8; 3] {
+            if y < width * 3 / 4 {
+                return bar(x, width);
+            }
+            if x < width / 2 {
+                if x % 2 == 0 { [255, 0, 0] } else { [0, 0, 255] }
+            } else if x % 2 == 0 {
+                [0, 0, 0]
+            } else {
+                [255, 255, 255]
+            }
+        }
+
         /// The card as 4-byte `Bgra8` pixels, row-major.
         pub fn bgra8(width: u32) -> Vec<u8> {
             let mut bytes = Vec::with_capacity((width * width * 4) as usize);
-            for _row in 0..width {
+            for y in 0..width {
                 for x in 0..width {
-                    let [r, g, b] = bar(x, width);
+                    let [r, g, b] = pixel(x, y, width);
                     bytes.extend_from_slice(&[b, g, r, 255]);
                 }
             }
@@ -101,9 +120,9 @@ mod demo {
         #[cfg(target_os = "linux")]
         pub fn rgba8(width: u32) -> Vec<u8> {
             let mut bytes = Vec::with_capacity((width * width * 4) as usize);
-            for _row in 0..width {
+            for y in 0..width {
                 for x in 0..width {
-                    let [r, g, b] = bar(x, width);
+                    let [r, g, b] = pixel(x, y, width);
                     bytes.extend_from_slice(&[r, g, b, 255]);
                 }
             }
@@ -114,9 +133,9 @@ mod demo {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         pub fn luma(width: u32) -> Vec<u8> {
             let mut bytes = Vec::with_capacity((width * width) as usize);
-            for _row in 0..width {
+            for y in 0..width {
                 for x in 0..width {
-                    bytes.push(super::nv12_from_rgb(to_rgba(bar(x, width))).0);
+                    bytes.push(super::nv12_from_rgb(to_rgba(pixel(x, y, width))).0);
                 }
             }
             bytes
@@ -126,16 +145,37 @@ mod demo {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         pub fn chroma(width: u32) -> Vec<u8> {
             let mut bytes = Vec::with_capacity(((width / 2) * (width / 2) * 2) as usize);
-            for _row in 0..width / 2 {
+            for row in 0..width / 2 {
                 for x in 0..width / 2 {
-                    // A chroma sample covers a 2x2 block; the bars are vertical, so the block's left
-                    // column names it.
-                    let (_, cb, cr) = super::nv12_from_rgb(to_rgba(bar(x * 2, width)));
+                    // A chroma sample is the average of its 2x2 block, as an encoder's box filter
+                    // makes it. Over the fine red/blue columns that average is the murky purple the
+                    // subsampling bleeds — the point of the patch.
+                    let (_, cb, cr) = super::nv12_from_rgb(block_average(x * 2, row * 2, width));
                     bytes.push(cb);
                     bytes.push(cr);
                 }
             }
             bytes
+        }
+
+        /// The average of the 2x2 block at `(x, y)`, as the RGBA the conversion takes.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        fn block_average(x: u32, y: u32, width: u32) -> [u8; 4] {
+            let mut sums = [0u32; 3];
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let [r, g, b] = pixel((x + dx).min(width - 1), (y + dy).min(width - 1), width);
+                    sums[0] += u32::from(r);
+                    sums[1] += u32::from(g);
+                    sums[2] += u32::from(b);
+                }
+            }
+            [
+                (sums[0] / 4) as u8,
+                (sums[1] / 4) as u8,
+                (sums[2] / 4) as u8,
+                255,
+            ]
         }
 
         /// The card as one NV12 buffer: the luma plane, then the chroma plane.
@@ -343,13 +383,20 @@ mod demo {
         use anyhow::{Context as _, Result};
         use ash::vk;
         use gpui::{
-            AnyElement, Corners, DmaBufFormat, DmaBufHandle, DmaBufPlane, ImportedTextureHandle,
-            ImportedTextureExt as _, Window, gpu_canvas, prelude::*, surface,
+            AnyElement, ChromaReconstruction, Corners, DmaBufFormat, DmaBufHandle, DmaBufPlane,
+            ImportedTextureHandle, ImportedTextureExt as _, Window, gpu_canvas, prelude::*, surface,
         };
         use super::{TILE, error_panel, panel, test_card};
 
-        /// The format dimension: one tab per payload the platform can carry.
-        pub const FORMATS: &[&str] = &["Bgra8", "Rgba8", "Nv12", "wgpu texture"];
+        /// The format dimension: one tab per payload the platform can carry, plus the same NV12
+        /// buffer sampled both ways so the chroma reconstruction can be compared.
+        pub const FORMATS: &[&str] = &[
+            "Bgra8",
+            "Rgba8",
+            "Nv12 · bilinear",
+            "Nv12 · luma-guided",
+            "wgpu texture",
+        ];
 
         pub struct Producer {
             /// The device the dma-bufs are exported from. It must outlive every handle made from it.
@@ -358,6 +405,8 @@ mod demo {
             bgra: DmaBufHandle,
             rgba: DmaBufHandle,
             nv12: DmaBufHandle,
+            /// The same NV12 buffer, asking the renderer for luma-guided chroma.
+            nv12_sharp: DmaBufHandle,
             /// The imported-texture tile. Built at paint time, when the window's device exists; the
             /// `Rc` is shared with the callback so the tile survives across frames instead of being
             /// rebuilt every paint.
@@ -409,11 +458,32 @@ mod demo {
                     None,
                 );
 
+                // A second NV12 buffer over the same card, asking for luma-guided chroma: the same
+                // bytes the renderer would otherwise sample bilinearly, reconstructed against the
+                // sharp luma plane instead.
+                let sharp_fd = vulkan.allocate(&content)?;
+                let sharp_chroma_fd = sharp_fd
+                    .try_clone()
+                    .context("duplicate the dma-buf for the guided chroma plane")?;
+                let nv12_sharp = DmaBufHandle::new(
+                    TILE,
+                    TILE,
+                    DmaBufFormat::Nv12,
+                    DmaBufHandle::LINEAR,
+                    [
+                        DmaBufPlane::new(sharp_fd, 0, TILE),
+                        DmaBufPlane::new(sharp_chroma_fd, luma_size as u64, TILE),
+                    ],
+                    None,
+                )
+                .with_chroma(ChromaReconstruction::LumaGuided);
+
                 Ok(Self {
                     _vulkan: vulkan,
                     bgra,
                     rgba,
                     nv12,
+                    nv12_sharp,
                     imported: Rc::new(RefCell::new(None)),
                 })
             }
@@ -493,7 +563,7 @@ mod demo {
             let producer = slot.as_ref().expect("the producer was just built");
 
             match format {
-                0 | 1 | 2 => {
+                0 | 1 | 2 | 3 => {
                     let (handle, surface_caption, canvas_caption) = match format {
                         0 => (
                             producer.bgra.clone(),
@@ -505,10 +575,15 @@ mod demo {
                             "surface() · DmaBufFormat::Rgba8",
                             "gpu_canvas(..) · DmaBufFormat::Rgba8",
                         ),
-                        _ => (
+                        2 => (
                             producer.nv12.clone(),
-                            "surface() · DmaBufFormat::Nv12",
-                            "gpu_canvas(..) · DmaBufFormat::Nv12",
+                            "surface() · Nv12 · bilinear chroma",
+                            "gpu_canvas(..) · Nv12 · bilinear chroma",
+                        ),
+                        _ => (
+                            producer.nv12_sharp.clone(),
+                            "surface() · Nv12 · luma-guided chroma",
+                            "gpu_canvas(..) · Nv12 · luma-guided chroma",
                         ),
                     };
                     let canvas = handle.clone();

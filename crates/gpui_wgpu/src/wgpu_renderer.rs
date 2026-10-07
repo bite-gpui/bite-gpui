@@ -91,9 +91,11 @@ struct SurfaceParams {
     bounds: PodBounds,
     content_mask: PodBounds,
     /// `0` = `NV12` (sample and convert), `1` = a single RGBA/BGRA plane (sample straight through).
-    /// Mirrors the shader's `SurfaceParams`; the padding keeps the size a multiple of 16.
+    /// `chroma_reconstruction` is `0` for bilinear, `1` for luma-guided. The padding keeps the size
+    /// a multiple of 16.
     surface_format: u32,
-    _pad: [u32; 3],
+    chroma_reconstruction: u32,
+    _pad: [u32; 2],
 }
 
 #[repr(C)]
@@ -1999,11 +2001,17 @@ impl WgpuRendererCore {
                 )
             };
 
+            let chroma_reconstruction = match handle.chroma {
+                gpui_engine::ChromaReconstruction::Bilinear => 0,
+                gpui_engine::ChromaReconstruction::LumaGuided => 1,
+            };
+
             let params = SurfaceParams {
                 bounds: surface.bounds.into(),
                 content_mask: surface.content_mask.bounds.into(),
                 surface_format,
-                _pad: [0; 3],
+                chroma_reconstruction,
+                _pad: [0; 2],
             };
             let params_buffer = resources.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("surface_params"),
