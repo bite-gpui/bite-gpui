@@ -59,11 +59,99 @@ mod demo {
         div, prelude::*, px, rgb, size,
     };
 
-    /// Olive green (`#808000`), opaque: the one colour every tile is, whatever payload carries it.
-    const OLIVE: [u8; 4] = [128, 128, 0, 255];
-
     /// The produced surface size, in pixels; each element scales it into its tile.
     const TILE: u32 = 128;
+
+    /// The demo's payload: SMPTE 75% colour bars, in the byte layout each format carries.
+    ///
+    /// A card rather than a flat colour, because each bar is a known triple: a wrong channel order,
+    /// a transfer function applied the wrong way, or a mis-set row stride shows up as the wrong bar,
+    /// where a solid fill would look plausible. The card is the seven vertical bars of SMPTE RP 219
+    /// at 75% amplitude — grey, yellow, cyan, green, magenta, red, blue.
+    mod test_card {
+        /// The bars, left to right, as sRGB-encoded `u8` RGB.
+        const BARS: [[u8; 3]; 7] = [
+            [191, 191, 191],
+            [191, 191, 0],
+            [0, 191, 191],
+            [0, 191, 0],
+            [191, 0, 191],
+            [191, 0, 0],
+            [0, 0, 191],
+        ];
+
+        /// The bar at column `x` of `width`, as an sRGB RGB triple.
+        fn bar(x: u32, width: u32) -> [u8; 3] {
+            BARS[(x * BARS.len() as u32 / width).min(BARS.len() as u32 - 1) as usize]
+        }
+
+        /// The card as 4-byte `Bgra8` pixels, row-major.
+        pub fn bgra8(width: u32) -> Vec<u8> {
+            let mut bytes = Vec::with_capacity((width * width * 4) as usize);
+            for _row in 0..width {
+                for x in 0..width {
+                    let [r, g, b] = bar(x, width);
+                    bytes.extend_from_slice(&[b, g, r, 255]);
+                }
+            }
+            bytes
+        }
+
+        /// The card as 4-byte `Rgba8` pixels, row-major.
+        #[cfg(target_os = "linux")]
+        pub fn rgba8(width: u32) -> Vec<u8> {
+            let mut bytes = Vec::with_capacity((width * width * 4) as usize);
+            for _row in 0..width {
+                for x in 0..width {
+                    let [r, g, b] = bar(x, width);
+                    bytes.extend_from_slice(&[r, g, b, 255]);
+                }
+            }
+            bytes
+        }
+
+        /// The card's full-resolution luma plane, `width`-square, full-range BT.601.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        pub fn luma(width: u32) -> Vec<u8> {
+            let mut bytes = Vec::with_capacity((width * width) as usize);
+            for _row in 0..width {
+                for x in 0..width {
+                    bytes.push(super::nv12_from_rgb(to_rgba(bar(x, width))).0);
+                }
+            }
+            bytes
+        }
+
+        /// The card's half-resolution interleaved chroma plane, Cb then Cr per sample.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        pub fn chroma(width: u32) -> Vec<u8> {
+            let mut bytes = Vec::with_capacity(((width / 2) * (width / 2) * 2) as usize);
+            for _row in 0..width / 2 {
+                for x in 0..width / 2 {
+                    // A chroma sample covers a 2x2 block; the bars are vertical, so the block's left
+                    // column names it.
+                    let (_, cb, cr) = super::nv12_from_rgb(to_rgba(bar(x * 2, width)));
+                    bytes.push(cb);
+                    bytes.push(cr);
+                }
+            }
+            bytes
+        }
+
+        /// The card as one NV12 buffer: the luma plane, then the chroma plane.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        pub fn nv12(width: u32) -> Vec<u8> {
+            let mut bytes = luma(width);
+            bytes.extend_from_slice(&chroma(width));
+            bytes
+        }
+
+        /// An sRGB triple widened to the RGBA the conversion takes.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        fn to_rgba(rgb: [u8; 3]) -> [u8; 4] {
+            [rgb[0], rgb[1], rgb[2], 255]
+        }
+    }
 
     #[cfg(target_os = "linux")]
     const BACKEND: &str =
@@ -89,8 +177,10 @@ mod demo {
         });
     }
 
-    /// The window's view. The producers live here so their resources outlive every frame.
+    /// The window's view. The producers live here so their resources outlive every frame, and the
+    /// selected tab names the format dimension the grid is showing.
     struct Showcase {
+        tab: usize,
         #[cfg(target_os = "linux")]
         producer: Option<wgpu_backend::Producer>,
         #[cfg(target_os = "windows")]
@@ -101,18 +191,54 @@ mod demo {
 
     impl Showcase {
         fn new() -> Self {
-            Self { producer: None }
+            Self {
+                tab: 0,
+                producer: None,
+            }
         }
     }
 
     impl Render for Showcase {
-        fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             #[cfg(target_os = "linux")]
-            let tiles = wgpu_backend::tiles(&mut self.producer, window);
+            let (formats, tiles) = (
+                wgpu_backend::FORMATS,
+                wgpu_backend::tiles(&mut self.producer, self.tab, window),
+            );
             #[cfg(target_os = "windows")]
-            let tiles = directx_backend::tiles(&mut self.producer, window);
+            let (formats, tiles) = (
+                directx_backend::FORMATS,
+                directx_backend::tiles(&mut self.producer, self.tab, window),
+            );
             #[cfg(target_os = "macos")]
-            let tiles = metal_backend::tiles(&mut self.producer, window);
+            let (formats, tiles) = (
+                metal_backend::FORMATS,
+                metal_backend::tiles(&mut self.producer, self.tab, window),
+            );
+
+            let selected = self.tab;
+            let tabs = div()
+                .flex()
+                .flex_wrap()
+                .justify_center()
+                .gap_2()
+                .children(formats.iter().enumerate().map(|(index, name)| {
+                    let active = index == selected;
+                    div()
+                        .id(("format-tab", index))
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .text_sm()
+                        .bg(if active { rgb(0x3a3a44) } else { rgb(0x1c1c22) })
+                        .text_color(if active { rgb(0xffffff) } else { rgb(0x9a9aa2) })
+                        .child(*name)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.tab = index;
+                            cx.notify();
+                        }))
+                }));
 
             div()
                 .size_full()
@@ -136,6 +262,7 @@ mod demo {
                         )
                         .child(div().text_sm().text_color(rgb(0x9a9aa2)).child(BACKEND)),
                 )
+                .child(tabs)
                 .child(
                     div()
                         .flex()
@@ -204,22 +331,6 @@ mod demo {
         )
     }
 
-    /// `OLIVE` in the byte order a `Bgra8`/`B8G8R8A8` payload holds: blue, green, red, alpha.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    const fn olive_bgra() -> [u8; 4] {
-        [OLIVE[2], OLIVE[1], OLIVE[0], OLIVE[3]]
-    }
-
-    /// `pixels` copies of `pixel`, row-major.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn solid(pixels: u32, pixel: [u8; 4]) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(pixels as usize * 4);
-        for _ in 0..pixels {
-            bytes.extend_from_slice(&pixel);
-        }
-        bytes
-    }
-
     /// Linux's producer: a bare Vulkan device exports the dma-bufs, and the window's own wgpu device
     /// backs the imported texture.
     #[cfg(target_os = "linux")]
@@ -235,8 +346,10 @@ mod demo {
             AnyElement, Corners, DmaBufFormat, DmaBufHandle, DmaBufPlane, ImportedTextureHandle,
             ImportedTextureExt as _, Window, gpu_canvas, prelude::*, surface,
         };
+        use super::{TILE, error_panel, panel, test_card};
 
-        use super::{OLIVE, TILE, error_panel, nv12_from_rgb, olive_bgra, panel, solid};
+        /// The format dimension: one tab per payload the platform can carry.
+        pub const FORMATS: &[&str] = &["Bgra8", "Rgba8", "Nv12", "wgpu texture"];
 
         pub struct Producer {
             /// The device the dma-bufs are exported from. It must outlive every handle made from it.
@@ -255,8 +368,8 @@ mod demo {
             fn new() -> Result<Self> {
                 let mut vulkan = Vulkan::new()?;
 
-                // A single plane per format, each cleared to olive in its own byte order.
-                let bgra_fd = vulkan.allocate(&solid(TILE * TILE, olive_bgra()))?;
+                // A single plane per format, each holding the test card in its own byte order.
+                let bgra_fd = vulkan.allocate(&test_card::bgra8(TILE))?;
                 let bgra = DmaBufHandle::new(
                     TILE,
                     TILE,
@@ -266,7 +379,7 @@ mod demo {
                     None,
                 );
 
-                let rgba_fd = vulkan.allocate(&solid(TILE * TILE, OLIVE))?;
+                let rgba_fd = vulkan.allocate(&test_card::rgba8(TILE))?;
                 let rgba = DmaBufHandle::new(
                     TILE,
                     TILE,
@@ -278,15 +391,8 @@ mod demo {
 
                 // Two planes in one allocation: full-resolution luma, then half-resolution interleaved
                 // chroma. Both planes are written whole, padding included.
-                let (y, cb, cr) = nv12_from_rgb(OLIVE);
                 let luma_size = TILE * TILE;
-                let chroma_pairs = TILE / 2 * TILE / 2;
-                let mut content = Vec::with_capacity((luma_size + chroma_pairs * 2) as usize);
-                content.resize(luma_size as usize, y);
-                for _ in 0..chroma_pairs {
-                    content.push(cb);
-                    content.push(cr);
-                }
+                let content = test_card::nv12(TILE);
                 let fd = vulkan.allocate(&content)?;
                 let chroma_fd = fd
                     .try_clone()
@@ -347,7 +453,7 @@ mod demo {
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
                     },
-                    &solid(TILE * TILE, olive_bgra()),
+                    &test_card::bgra8(TILE),
                     wgpu::TexelCopyBufferLayout {
                         offset: 0,
                         bytes_per_row: Some(TILE * 4),
@@ -370,7 +476,11 @@ mod demo {
             }
         }
 
-        pub fn tiles(slot: &mut Option<Producer>, _window: &mut Window) -> Vec<AnyElement> {
+        pub fn tiles(
+            slot: &mut Option<Producer>,
+            format: usize,
+            _window: &mut Window,
+        ) -> Vec<AnyElement> {
             if slot.is_none() {
                 match Producer::new() {
                     Ok(producer) => *slot = Some(producer),
@@ -381,51 +491,71 @@ mod demo {
                 }
             }
             let producer = slot.as_ref().expect("the producer was just built");
-            let imported = producer.imported.clone();
 
-            vec![
-                panel(
-                    surface(producer.bgra.clone()).size_full(),
-                    "surface() · DmaBufFormat::Bgra8",
-                ),
-                panel(
-                    surface(producer.rgba.clone()).size_full(),
-                    "surface() · DmaBufFormat::Rgba8",
-                ),
-                panel(
-                    surface(producer.nv12.clone()).size_full(),
-                    "surface() · DmaBufFormat::Nv12",
-                ),
-                panel(
-                    gpu_canvas(move |gpu| {
-                        let mut tile = imported.borrow_mut();
-                        if tile.is_none() {
-                            let Some((device, queue)) = gpu.try_device::<gpui_wgpu::WgpuRenderer>()
-                            else {
-                                log::error!("surface: the window's renderer lends no wgpu device");
-                                return;
-                            };
-                            match ImportedTile::new(device, queue) {
-                                Ok(built) => *tile = Some(built),
-                                Err(error) => {
+            match format {
+                0 | 1 | 2 => {
+                    let (handle, surface_caption, canvas_caption) = match format {
+                        0 => (
+                            producer.bgra.clone(),
+                            "surface() · DmaBufFormat::Bgra8",
+                            "gpu_canvas(..) · DmaBufFormat::Bgra8",
+                        ),
+                        1 => (
+                            producer.rgba.clone(),
+                            "surface() · DmaBufFormat::Rgba8",
+                            "gpu_canvas(..) · DmaBufFormat::Rgba8",
+                        ),
+                        _ => (
+                            producer.nv12.clone(),
+                            "surface() · DmaBufFormat::Nv12",
+                            "gpu_canvas(..) · DmaBufFormat::Nv12",
+                        ),
+                    };
+                    let canvas = handle.clone();
+                    vec![
+                        panel(surface(handle).size_full(), surface_caption),
+                        panel(
+                            gpu_canvas(move |gpu| gpu.paint_surface(canvas)).size_full(),
+                            canvas_caption,
+                        ),
+                    ]
+                }
+                _ => {
+                    let imported = producer.imported.clone();
+                    vec![panel(
+                        gpu_canvas(move |gpu| {
+                            let mut tile = imported.borrow_mut();
+                            if tile.is_none() {
+                                let Some((device, queue)) =
+                                    gpu.try_device::<gpui_wgpu::WgpuRenderer>()
+                                else {
                                     log::error!(
-                                        "surface: cannot produce the imported texture: {error:#}"
+                                        "surface: the window's renderer lends no wgpu device"
                                     );
                                     return;
+                                };
+                                match ImportedTile::new(device, queue) {
+                                    Ok(built) => *tile = Some(built),
+                                    Err(error) => {
+                                        log::error!(
+                                            "surface: cannot produce the imported texture: {error:#}"
+                                        );
+                                        return;
+                                    }
                                 }
                             }
-                        }
-                        let handle = tile
-                            .as_ref()
-                            .expect("the tile was just built")
-                            .handle
-                            .clone();
-                        gpu.paint_texture(handle, Corners::default(), 1.0, false);
-                    })
-                    .size_full(),
-                    "gpu_canvas(..) · wgpu texture view",
-                ),
-            ]
+                            let handle = tile
+                                .as_ref()
+                                .expect("the tile was just built")
+                                .handle
+                                .clone();
+                            gpu.paint_texture(handle, Corners::default(), 1.0, false);
+                        })
+                        .size_full(),
+                        "gpu_canvas(..) · wgpu texture view",
+                    )]
+                }
+            }
         }
 
         /// A minimal Vulkan "producer": the loader, instance and device that keep the exported
@@ -578,11 +708,11 @@ mod demo {
             D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0, D3D_SRV_DIMENSION_TEXTURE2D,
         };
         use windows::Win32::Graphics::Direct3D11::{
-            D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            D3D11_FENCE_FLAG_SHARED, D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION,
-            D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_SRV,
-            D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11Device,
-            ID3D11Device5, ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Fence,
+            D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_FENCE_FLAG_SHARED,
+            D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION, D3D11_SHADER_RESOURCE_VIEW_DESC,
+            D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_SRV, D3D11_TEXTURE2D_DESC,
+            D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11Device, ID3D11Device5,
+            ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Fence, ID3D11Resource,
             ID3D11ShaderResourceView, ID3D11Texture2D,
         };
         use windows::Win32::Graphics::Dxgi::{
@@ -590,17 +720,19 @@ mod demo {
         };
         use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
-        use super::{OLIVE, TILE, error_panel, panel};
+        use super::{TILE, error_panel, panel, test_card};
+
+        /// The format dimension: one tab per payload this backend carries.
+        pub const FORMATS: &[&str] = &["Texture", "View", "Shared"];
 
         /// `GENERIC_ALL`, the access a shared fence handle is created with.
         const GENERIC_ALL: u32 = 0x1000_0000;
 
-        /// The three device-made payloads. They are built on the first paint, when the renderer's
+        /// The two device-made payloads. They are built on the first paint, when the renderer's
         /// device exists, and shared with every canvas callback.
         struct Payloads {
             texture_variant: ID3D11Texture2D,
             view_variant: ID3D11ShaderResourceView,
-            canvas_variant: ID3D11ShaderResourceView,
         }
 
         pub struct Producer {
@@ -682,9 +814,7 @@ mod demo {
                                     Quality: 0,
                                 },
                                 Usage: D3D11_USAGE_DEFAULT,
-                                BindFlags: (D3D11_BIND_SHADER_RESOURCE
-                                    | D3D11_BIND_RENDER_TARGET)
-                                    .0 as u32,
+                                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
                                 CPUAccessFlags: 0,
                                 MiscFlags: D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 as u32,
                             },
@@ -705,15 +835,10 @@ mod demo {
                     fence.context("CreateFence returned no fence")?
                 };
 
-                // Clear to olive on the producer's own context and signal the fence, so the
-                // renderer's first sample is ordered behind the clear.
+                // Upload the card on the producer's own context and signal the fence, so the
+                // renderer's first sample is ordered behind the upload.
+                upload_card(&device, &texture)?;
                 unsafe {
-                    let mut render_target = None;
-                    device
-                        .CreateRenderTargetView(&texture, None, Some(&mut render_target))
-                        .context("creating the shared texture's render target view")?;
-                    let render_target = render_target.context("no render target view")?;
-                    context.ClearRenderTargetView(&render_target, &olive_clear_color());
                     let context4: ID3D11DeviceContext4 =
                         context.cast().context("not a Direct3D 11.4 context")?;
                     context4
@@ -761,16 +886,13 @@ mod demo {
                 .try_device::<DirectXRenderer>()
                 .context("the window's renderer is not Direct3D")?;
 
-            let texture_variant = olive_texture(&device)?;
-            let view_texture = olive_texture(&device)?;
+            let texture_variant = card_texture(&device)?;
+            let view_texture = card_texture(&device)?;
             let view_variant = shader_resource_view(&device, &view_texture)?;
-            let canvas_texture = olive_texture(&device)?;
-            let canvas_variant = shader_resource_view(&device, &canvas_texture)?;
 
             Ok(Payloads {
                 texture_variant,
                 view_variant,
-                canvas_variant,
             })
         }
 
@@ -794,7 +916,11 @@ mod demo {
             gpu.paint_surface(source(built));
         }
 
-        pub fn tiles(slot: &mut Option<Producer>, _window: &mut Window) -> Vec<AnyElement> {
+        pub fn tiles(
+            slot: &mut Option<Producer>,
+            format: usize,
+            _window: &mut Window,
+        ) -> Vec<AnyElement> {
             let producer = slot.get_or_insert_with(Producer::new);
             let payloads = producer.payloads.clone();
             let shared = producer.shared.as_ref().map(|shared| SharedDirectXSurface {
@@ -807,17 +933,8 @@ mod demo {
                 height: TILE,
             });
 
-            let shared_tile = match shared {
-                Some(source) => panel(
-                    surface(SurfaceSource::DirectX(DirectXSource::Shared(source))).size_full(),
-                    "surface() · DirectXSource::Shared",
-                ),
-                None => error_panel("no shared Direct3D producer".to_string()),
-            };
-
-            vec![
-                shared_tile,
-                panel(
+            match format {
+                0 => vec![panel(
                     gpu_canvas({
                         let payloads = payloads.clone();
                         move |gpu| {
@@ -830,8 +947,8 @@ mod demo {
                     })
                     .size_full(),
                     "gpu_canvas(..) · DirectXSource::Texture",
-                ),
-                panel(
+                )],
+                1 => vec![panel(
                     gpu_canvas({
                         let payloads = payloads.clone();
                         move |gpu| {
@@ -844,38 +961,38 @@ mod demo {
                     })
                     .size_full(),
                     "gpu_canvas(..) · DirectXSource::View",
-                ),
-                panel(
-                    gpu_canvas(move |gpu| {
-                        paint(&payloads, gpu, |payloads| {
-                            SurfaceSource::DirectX(DirectXSource::View(
-                                payloads.canvas_variant.clone(),
-                            ))
-                        });
-                    })
-                    .size_full(),
-                    "gpu_canvas(..) · Direct3D 11 view",
-                ),
-            ]
+                )],
+                _ => match shared {
+                    Some(source) => {
+                        let canvas_source = source.clone();
+                        vec![
+                            panel(
+                                surface(SurfaceSource::DirectX(DirectXSource::Shared(source)))
+                                    .size_full(),
+                                "surface() · DirectXSource::Shared",
+                            ),
+                            panel(
+                                gpu_canvas(move |gpu| {
+                                    gpu.paint_surface(SurfaceSource::DirectX(
+                                        DirectXSource::Shared(canvas_source),
+                                    ));
+                                })
+                                .size_full(),
+                                "gpu_canvas(..) · DirectXSource::Shared",
+                            ),
+                        ]
+                    }
+                    None => vec![error_panel("no shared Direct3D producer".to_string())],
+                },
+            }
         }
 
-        /// Olive as `ClearRenderTargetView` takes it: RGBA floats, matching the renderer's own
-        /// `B8G8R8A8_UNORM` interpretation.
-        fn olive_clear_color() -> [f32; 4] {
-            [
-                f32::from(OLIVE[0]) / 255.0,
-                f32::from(OLIVE[1]) / 255.0,
-                f32::from(OLIVE[2]) / 255.0,
-                1.0,
-            ]
-        }
-
-        /// An offscreen texture on `device`, cleared to olive.
+        /// An offscreen texture on `device`, holding the test card.
         ///
-        /// `RENDER_TARGET` so it can be cleared; `SHADER_RESOURCE` because both layers sample it. The
-        /// format is the renderer's own target format, `B8G8R8A8_UNORM`: the renderer views the texture
-        /// as non-sRGB and the fragment samples its bytes straight through.
-        fn olive_texture(device: &ID3D11Device) -> Result<ID3D11Texture2D> {
+        /// `SHADER_RESOURCE` because both layers sample it. The format is the renderer's own target
+        /// format, `B8G8R8A8_UNORM`: the renderer views the texture as non-sRGB and the fragment
+        /// samples its bytes straight through.
+        fn card_texture(device: &ID3D11Device) -> Result<ID3D11Texture2D> {
             let desc = D3D11_TEXTURE2D_DESC {
                 Width: TILE,
                 Height: TILE,
@@ -887,35 +1004,37 @@ mod demo {
                     Quality: 0,
                 },
                 Usage: D3D11_USAGE_DEFAULT,
-                BindFlags: (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE).0 as u32,
+                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
                 CPUAccessFlags: 0,
                 MiscFlags: 0,
             };
             let mut texture = None;
             unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
             let texture = texture.context("CreateTexture2D returned no texture")?;
-            clear(device, &texture, olive_clear_color())?;
+            upload_card(device, &texture)?;
             Ok(texture)
         }
 
-        /// Clears `texture` to `color`.
+        /// Writes the test card into `texture` through the device's immediate context.
         ///
-        /// The immediate context is the one the renderer draws through, so the clear is ordered before
-        /// the draw that samples this: nothing to submit and nothing to wait on.
-        fn clear(
-            device: &ID3D11Device,
-            texture: &ID3D11Texture2D,
-            color: [f32; 4],
-        ) -> Result<()> {
+        /// A `DEFAULT` texture cannot be mapped, so the card is uploaded with `UpdateSubresource`,
+        /// which writes a whole subresource: one row pitch, no depth pitch, no destination box.
+        fn upload_card(device: &ID3D11Device, texture: &ID3D11Texture2D) -> Result<()> {
+            let bytes = test_card::bgra8(TILE);
+            let context = unsafe { device.GetImmediateContext() }
+                .context("the device has no immediate context")?;
+            let resource: ID3D11Resource = texture
+                .cast()
+                .context("the texture is not a Direct3D resource")?;
             unsafe {
-                let mut render_target = None;
-                device.CreateRenderTargetView(texture, None, Some(&mut render_target))?;
-                let render_target =
-                    render_target.context("CreateRenderTargetView returned no view")?;
-                let context = device
-                    .GetImmediateContext()
-                    .context("the device has no immediate context")?;
-                context.ClearRenderTargetView(&render_target, &color);
+                context.UpdateSubresource(
+                    &resource,
+                    0,
+                    None,
+                    bytes.as_ptr() as *const core::ffi::c_void,
+                    TILE * 4,
+                    0,
+                );
             }
             Ok(())
         }
@@ -963,7 +1082,10 @@ mod demo {
             prelude::*, surface,
         };
 
-        use super::{OLIVE, TILE, error_panel, nv12_from_rgb, olive_bgra, panel, solid};
+        use super::{TILE, error_panel, panel, test_card};
+
+        /// The format dimension: one tab per payload this backend carries.
+        pub const FORMATS: &[&str] = &["CoreVideo", "Metal texture"];
 
         pub struct Producer {
             /// The CoreVideo buffer, for `surface()` and `gpu_canvas(..)`.
@@ -977,10 +1099,10 @@ mod demo {
 
         impl Producer {
             fn new() -> Result<Self> {
-                // A decoder's frame: an IOSurface-backed, two-plane NV12 buffer at full range, holding
-                // olive made from the renderer's own BT.601 conversion.
+                // A decoder's frame: an IOSurface-backed, two-plane NV12 buffer at full range,
+                // holding the test card made from the renderer's own BT.601 conversion.
                 let buffer = new_nv12_buffer(TILE, TILE)?;
-                fill_olive(&buffer)?;
+                fill_card(&buffer)?;
 
                 // The imported-texture tile: a wgpu texture on the one Metal device macOS hands every
                 // creator, so it is the device the renderer samples on.
@@ -996,7 +1118,7 @@ mod demo {
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     // sRGB, the format the imported-texture path requires: the sampler decodes to
-                    // linear and the fragment re-encodes, so the olive bytes come back unchanged.
+                    // linear and the fragment re-encodes, so the card's bytes come back unchanged.
                     format: wgpu::TextureFormat::Bgra8UnormSrgb,
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                     view_formats: &[],
@@ -1008,7 +1130,7 @@ mod demo {
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
                     },
-                    &solid(TILE * TILE, olive_bgra()),
+                    &test_card::bgra8(TILE),
                     wgpu::TexelCopyBufferLayout {
                         offset: 0,
                         bytes_per_row: Some(TILE * 4),
@@ -1031,7 +1153,11 @@ mod demo {
             }
         }
 
-        pub fn tiles(slot: &mut Option<Producer>, _window: &mut Window) -> Vec<AnyElement> {
+        pub fn tiles(
+            slot: &mut Option<Producer>,
+            format: usize,
+            _window: &mut Window,
+        ) -> Vec<AnyElement> {
             if slot.is_none() {
                 match Producer::new() {
                     Ok(producer) => *slot = Some(producer),
@@ -1042,30 +1168,36 @@ mod demo {
                 }
             }
             let producer = slot.as_ref().expect("the producer was just built");
-            let surface_buffer = producer.buffer.clone();
-            let canvas_buffer = producer.buffer.clone();
-            let imported = producer.imported.clone();
 
-            vec![
-                panel(
-                    surface(SurfaceSource::CoreVideo(surface_buffer)).size_full(),
-                    "surface() · CoreVideo CVPixelBuffer",
-                ),
-                panel(
-                    gpu_canvas(move |gpu| {
-                        gpu.paint_surface(SurfaceSource::CoreVideo(canvas_buffer));
-                    })
-                    .size_full(),
-                    "gpu_canvas(..) · CoreVideo",
-                ),
-                panel(
-                    gpu_canvas(move |gpu| {
-                        gpu.paint_texture(imported, Corners::default(), 1.0, false);
-                    })
-                    .size_full(),
-                    "gpu_canvas(..) · id<MTLTexture>",
-                ),
-            ]
+            match format {
+                0 => {
+                    let surface_buffer = producer.buffer.clone();
+                    let canvas_buffer = producer.buffer.clone();
+                    vec![
+                        panel(
+                            surface(SurfaceSource::CoreVideo(surface_buffer)).size_full(),
+                            "surface() · CoreVideo CVPixelBuffer",
+                        ),
+                        panel(
+                            gpu_canvas(move |gpu| {
+                                gpu.paint_surface(SurfaceSource::CoreVideo(canvas_buffer));
+                            })
+                            .size_full(),
+                            "gpu_canvas(..) · CoreVideo",
+                        ),
+                    ]
+                }
+                _ => {
+                    let imported = producer.imported.clone();
+                    vec![panel(
+                        gpu_canvas(move |gpu| {
+                            gpu.paint_texture(imported, Corners::default(), 1.0, false);
+                        })
+                        .size_full(),
+                        "gpu_canvas(..) · id<MTLTexture>",
+                    )]
+                }
+            }
         }
 
         /// An `IOSurface`-backed, two-plane `NV12` full-range buffer — the layout a hardware decoder
@@ -1093,11 +1225,12 @@ mod demo {
             .map_err(|code| anyhow::anyhow!("CVPixelBuffer::new returned CVReturn {code}"))
         }
 
-        /// Fill both planes with the olive bytes, padding included, so no stale bytes are sampled.
-        fn fill_olive(buffer: &CVPixelBuffer) -> Result<()> {
-            let (y, cb, cr) = nv12_from_rgb(OLIVE);
-            let width = buffer.get_width();
+        /// Fill both planes with the test card, padding included, so no stale bytes are sampled.
+        fn fill_card(buffer: &CVPixelBuffer) -> Result<()> {
+            let width = buffer.get_width() as u32;
             let height = buffer.get_height();
+            let luma = test_card::luma(width);
+            let chroma = test_card::chroma(width);
 
             // 0 is the read-write lock: the CPU fills the planes, the GPU samples them.
             let lock = 0u64;
@@ -1108,24 +1241,31 @@ mod demo {
             );
 
             // Safety: the buffer is locked, so both planes' base addresses are valid for the plane's
-            // height × stride, and the sampler reads the same memory after the unlock.
+            // height and stride, and the source rows are `width` bytes of the card.
             unsafe {
-                let luma = buffer.get_base_address_of_plane(0) as *mut u8;
+                let luma_base = buffer.get_base_address_of_plane(0) as *mut u8;
                 let luma_stride = buffer.get_bytes_per_row_of_plane(0);
-                let chroma = buffer.get_base_address_of_plane(1) as *mut u8;
+                let chroma_base = buffer.get_base_address_of_plane(1) as *mut u8;
                 let chroma_stride = buffer.get_bytes_per_row_of_plane(1);
                 let chroma_height = buffer.get_height_of_plane(1);
 
                 for row in 0..height {
-                    std::ptr::write_bytes(luma.add(row * luma_stride), y, width);
+                    let source = &luma[row * width as usize..(row + 1) * width as usize];
+                    std::ptr::copy_nonoverlapping(
+                        source.as_ptr(),
+                        luma_base.add(row * luma_stride),
+                        width as usize,
+                    );
                 }
-                // Cb and Cr are interleaved, one byte each.
+                // Cb and Cr are interleaved, two bytes a sample, so a row of `width/2` samples is
+                // `width` bytes.
                 for row in 0..chroma_height {
-                    let row_ptr = chroma.add(row * chroma_stride);
-                    for pair in 0..(chroma_stride / 2) {
-                        *row_ptr.add(pair * 2) = cb;
-                        *row_ptr.add(pair * 2 + 1) = cr;
-                    }
+                    let source = &chroma[row * width as usize..(row + 1) * width as usize];
+                    std::ptr::copy_nonoverlapping(
+                        source.as_ptr(),
+                        chroma_base.add(row * chroma_stride),
+                        width as usize,
+                    );
                 }
             }
 
