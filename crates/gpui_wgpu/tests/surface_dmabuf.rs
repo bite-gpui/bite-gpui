@@ -475,6 +475,90 @@ fn a_tiled_nv12_surface_imports_under_its_modifier_and_converts() {
     assert_eq!(pixel[3], 255, "the surface should be opaque");
 }
 
+/// Mount a view painting `handle`, draw a frame, and return the capture's size and its pixels in
+/// row-major order, so a test can sample wherever it likes.
+fn composite_pixels(handle: DmaBufHandle) -> (u32, u32, Vec<[u8; 4]>) {
+    let text_system = std::sync::Arc::new(CosmicTextSystem::new("fallback"));
+    let mut cx = HeadlessAppContext::with_platform(text_system, std::sync::Arc::new(()), || {
+        Ok(gpui::current_headless_renderer())
+    });
+    let window = cx
+        .open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |_window, cx| {
+            cx.new(|_| SurfaceView { handle })
+        })
+        .expect("a window");
+    let window: AnyWindowHandle = window.into();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        let _ = window.draw(cx);
+    })
+    .expect("draw");
+    let image = cx.capture_screenshot(window).expect("capture");
+    let (width, height) = (image.width(), image.height());
+    let mut pixels = Vec::with_capacity((width * height) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            pixels.push(image.get_pixel(x, y).0);
+        }
+    }
+    (width, height, pixels)
+}
+
+/// The fixture's bars, in SMPTE 75% order: grey, yellow, cyan, green, magenta, red, blue. The
+/// fixture encodes each with the inverse of the shader's matrix, so the shader must map them back.
+const SMPTE_BARS: [[u8; 4]; 7] = [
+    [191, 191, 191, 255],
+    [191, 191, 0, 255],
+    [0, 191, 191, 255],
+    [0, 191, 0, 255],
+    [191, 0, 191, 255],
+    [191, 0, 0, 255],
+    [0, 0, 191, 255],
+];
+
+/// The real thing at last: an H.264 keyframe the VA-API driver decodes into a `Y_TILED` surface,
+/// imported under its modifier and converted by the shader. `gpui_va` carries the fixture, so this
+/// exercises the whole path a video player would: a bitstream in, colour bars out.
+///
+/// The bars are the first proof the imported plane layout is right: a wrong pitch or offset still
+/// paints *a* picture, but the bar centres would not land on seven distinct, correct colours.
+#[test]
+fn a_decoded_h264_surface_composites_through_the_shader() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+    let Some((_decoded, handle)) = gpui_va::decode(gpui_va::FIXTURE) else {
+        eprintln!("skipping: no libavcodec of the declared ABI, or no VA-API device");
+        return;
+    };
+    assert_ne!(
+        handle.modifier,
+        DmaBufHandle::LINEAR,
+        "a decoded surface is tiled"
+    );
+
+    let (width, height, pixels) = composite_pixels(handle);
+    // A decoded surface is the fixture's 128×128, and the surface element fits it to the window; on
+    // a HiDPI headless window the capture is larger than the element, so sample the *capture* and
+    // read the seven bar centres out of it.
+    for (bar, rgb) in SMPTE_BARS.iter().enumerate() {
+        let x = (2 * bar as u32 + 1) * width / (2 * SMPTE_BARS.len() as u32);
+        let got = pixels[(height / 2 * width + x) as usize];
+        let (y, cb, cr) = nv12_from_rgb(*rgb);
+        let want = ycbcr_to_rgb(f32::from(y) / 255.0, f32::from(cb) / 255.0, f32::from(cr) / 255.0);
+        for channel in 0..3 {
+            let want = (want[channel] * 255.0).round() as i32;
+            let got = i32::from(got[channel]);
+            assert!(
+                (got - want).abs() <= 2,
+                "bar {bar} channel {channel} at x={x} is {got}, but {rgb:?} decodes to {want}",
+            );
+        }
+        assert_eq!(got[3], 255, "bar {bar} should be opaque");
+    }
+}
+
 #[test]
 fn a_gpu_canvas_composites_a_same_device_texture() {
     if !gpu_available() {
