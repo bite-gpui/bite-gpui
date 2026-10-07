@@ -7717,8 +7717,12 @@ dependencies = [
 name = "gpui_interop"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "embed-resource",
  "gpui",
+ "gpui_windows",
  "wgpu",
+ "windows 0.62.2",
 ]
 
 [[package]]
