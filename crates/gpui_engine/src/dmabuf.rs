@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
-/// The pixel layout of a dma-buf: the formats the Linux surface arm consumes.
+/// The pixel layout of a dma-buf: the formats the Linux surface backend consumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmaBufFormat {
     /// A single `BGRA8` plane — the common desktop format.

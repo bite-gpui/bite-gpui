@@ -74,7 +74,7 @@ pub(crate) fn import_dmabuf(
     );
 
     let hal = unsafe { device.as_hal::<wgpu::hal::vulkan::Api>() }
-        .context("the dma-buf surface arm needs the Vulkan backend")?;
+        .context("importing a dma-buf needs the Vulkan backend")?;
     let instance = hal.shared_instance().raw_instance();
     let physical = hal.raw_physical_device();
 
@@ -309,7 +309,7 @@ fn import_memory(
 
 /// Reuses the textures imported for a dma-buf across frames.
 ///
-/// The Apple arm has the platform's `CVMetalTextureCache` for exactly this: a CoreVideo texture cache
+/// The Apple backend has the platform's `CVMetalTextureCache` for exactly this: a CoreVideo texture cache
 /// held on the renderer that hands back the same `MTLTexture` for the same `CVPixelBuffer`. There is
 /// no such facility for dma-bufs, so this is it — and it is what keeps painting a live surface from
 /// re-creating a `VkImage`, a dedicated allocation and a `wgpu::Texture` every frame.

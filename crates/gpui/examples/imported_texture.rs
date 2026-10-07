@@ -1,7 +1,7 @@
 //! Paint a texture produced outside GPUI.
 //!
 //! ```sh
-//! cargo run -p gpui --example path_a
+//! cargo run -p gpui --example imported_texture
 //! ```
 //!
 //! A window's renderer owns the device a texture has to be made on, so producing one is the window
@@ -24,11 +24,23 @@
 //!   backend: it could never be on this renderer's device.
 //!
 //! What the three have in common, and what the demo leans on, is the colour invariant: the texture
-//! holds sRGB-encoded bytes, and every arm hands the composited bytes back unchanged. What differs
+//! holds sRGB-encoded bytes, and every backend hands the composited bytes back unchanged. What differs
 //! is how they get there — wgpu and Metal declare an sRGB texture and the sampler decodes it, while
 //! Direct3D samples the non-sRGB counterpart of the same resource and writes the sample straight
 //! through — which is why the content below is written as bytes rather than as a clear colour the
 //! two APIs would interpret differently.
+//!
+//! # The other examples
+//!
+//! This example is the same-device route through `GpuCanvas`; the rest of the external-surface
+//! surface area is shown by its siblings:
+//!
+//! - `surface` — the same pixels through the `surface()` element rather than `GpuCanvas`.
+//! - `cross_device_surface` — the Windows cross-device route: a Direct3D 12 producer renders into
+//!   a shared texture and GPUI opens its NT handle on the Direct3D 11 renderer.
+//! - `core_video_surface` — the macOS parity example: a CoreVideo buffer handed over as a
+//!   `SurfaceSource::CoreVideo` and composited as a two-plane surface.
+//! - `surface_dmabuf` (in `gpui_wgpu`) — the Linux raw dma-buf route, both single- and multi-plane.
 
 #[cfg(target_family = "wasm")]
 fn main() {
@@ -70,21 +82,21 @@ mod demo {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|_| PathA::new()),
+                |_, cx| cx.new(|_| ImportedTextureExample::new()),
             )
             .expect("a window to composite into");
             cx.activate(true);
         });
     }
 
-    struct PathA {
+    struct ImportedTextureExample {
         /// `Rc<RefCell<…>>` rather than a field of its own, because the paint closure the canvas
         /// takes is `'static` and the canvas consumes it every frame.
         producer: Rc<RefCell<Option<Producer>>>,
         started: Instant,
     }
 
-    impl PathA {
+    impl ImportedTextureExample {
         fn new() -> Self {
             Self {
                 producer: Rc::new(RefCell::new(None)),
@@ -93,7 +105,7 @@ mod demo {
         }
     }
 
-    impl Render for PathA {
+    impl Render for ImportedTextureExample {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div()
                 .size_full()
@@ -116,7 +128,7 @@ mod demo {
         }
     }
 
-    impl PathA {
+    impl ImportedTextureExample {
         /// The GPU content, filling the window.
         ///
         /// Every platform composites through `GpuCanvas`. On Windows the producer fills a Direct3D
@@ -139,7 +151,7 @@ mod demo {
                     let source = match producer.frame(started.elapsed()) {
                         Ok(source) => Some(source),
                         Err(error) => {
-                            log::error!("path_a: {error:#}");
+                            log::error!("imported_texture: {error:#}");
                             None
                         }
                     };
@@ -163,7 +175,7 @@ mod demo {
                     let handle = match producer.frame(started.elapsed()) {
                         Ok(handle) => Some(handle),
                         Err(error) => {
-                            log::error!("path_a: {error:#}");
+                            log::error!("imported_texture: {error:#}");
                             None
                         }
                     };
@@ -176,12 +188,14 @@ mod demo {
 
     /// The producer, per platform.
     enum Producer {
-        /// This should suppport all platforms
-        /// When it doesn't, drop into platform specific producer
+        /// The wgpu producer, used wherever the window renderer draws through wgpu — or through a
+        /// device wgpu can adopt, as macOS's Metal renderer's is. Where the renderer offers no such
+        /// device, fall to the platform-specific producer below.
         #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
         Wgpu(wgpu_producer::WgpuProducer),
-        /// DirectX 11 is the only source/target Wgpu doesn't support.
-        /// This allows to sample pixels from both D3D11 (same device texture) and D3D12 (shared view)
+        /// Direct3D 11 is the one producer wgpu cannot stand in for: wgpu has no Direct3D 11
+        /// backend. This samples pixels from both a same-device Direct3D 11 texture and a
+        /// cross-device Direct3D 12 shared view; the latter is the `cross_device_surface` example.
         #[cfg(target_os = "windows")]
         DirectX(directx_producer::DirectXProducer),
         /// No device to produce on. Stored rather than returned, so the reason is logged once
@@ -194,7 +208,7 @@ mod demo {
             match Self::try_new(window) {
                 Ok(producer) => producer,
                 Err(error) => {
-                    log::error!("path_a: cannot produce a texture: {error:#}");
+                    log::error!("imported_texture: cannot produce a texture: {error:#}");
                     Self::Unavailable(format!("{error:#}"))
                 }
             }
@@ -274,7 +288,7 @@ mod demo {
             pub fn new(window: &Window) -> anyhow::Result<Self> {
                 let (device, queue) = device(window)?;
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("path_a_producer"),
+                    label: Some("imported_texture_producer"),
                     size: wgpu::Extent3d {
                         width: TEXTURE,
                         height: TEXTURE,
@@ -365,7 +379,7 @@ mod demo {
                 .map_err(|error| anyhow!("no Metal adapter: {error}"))?;
             let (device, queue) =
                 pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                    label: Some("path_a_producer"),
+                    label: Some("imported_texture_producer"),
                     required_features: wgpu::Features::empty(),
                     required_limits: wgpu::Limits::downlevel_defaults(),
                     memory_hints: wgpu::MemoryHints::MemoryUsage,

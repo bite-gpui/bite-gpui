@@ -60,8 +60,8 @@ pub struct Surface {
 /// ```
 ///
 /// For working producers, run the examples: `cargo run -p gpui --example surface` hands over both
-/// Windows arms one element at a time, and `cargo run -p gpui --example path_a` drives a producer
-/// through the canvas callback.
+/// Windows variants one element at a time, and `cargo run -p gpui --example imported_texture`
+/// drives a producer through the canvas callback.
 pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
     Surface {
         source: source.into(),
@@ -188,8 +188,8 @@ impl Styled for Surface {
 
 /// The pixel size of the texture behind a Direct3D surface source.
 ///
-/// The Windows arm fits the surface to its bounds exactly as the macOS arm does, and neither a
-/// texture nor a view carries a size of its own: the texture is the resource, and the view's size is
+/// The Windows backend fits the surface to its bounds exactly as the macOS backend does, and neither
+/// a texture nor a view carries a size of its own: the texture is the resource, and the view's size is
 /// the resource behind it. A source whose resource is not a texture, or whose query fails, has no
 /// size to fit, and the element falls back to its bounds.
 #[cfg(target_os = "windows")]

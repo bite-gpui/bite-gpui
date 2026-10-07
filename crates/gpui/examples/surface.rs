@@ -4,29 +4,39 @@
 //! cargo run -p gpui --example surface
 //! ```
 //!
-//! `path_a` reaches a surface through `GpuCanvas`'s paint-time callback. This paints one the way an
-//! application does: a `surface(...)` element built during render and placed inside an ordinary
-//! `div()`, so it lays out and stacks like any other child.
+//! `imported_texture` reaches a surface through `GpuCanvas`'s paint-time callback. This paints one
+//! the way an application does: a `surface(...)` element built during render and placed inside an
+//! ordinary `div()`, so it lays out and stacks like any other child.
 //!
 //! A texture has to be made on the device the window's renderer draws through, so the producer asks
 //! the window for that device (`Window::device_any`), creates an `ID3D11Texture2D` on it, clears it
 //! to a known colour, and hands the **texture** to `surface(...)`. The producer makes no shader
 //! resource view: the renderer — which owns the device — makes the view, which is the
-//! `DirectXSource::Texture` arm, the ergonomic default.
+//! `DirectXSource::Texture` variant, the ergonomic default.
 //!
-//! A second surface shows the **view** arm (`DirectXSource::View`): the producer makes the shader
+//! A second surface shows the **view** variant (`DirectXSource::View`): the producer makes the shader
 //! resource view itself, which is what an application that already holds an
 //! `ID3D11ShaderResourceView` — a Media Foundation decoder, a Direct3D engine — would hand over.
 //!
 //! Neither surface sets `object_fit`, so each source is fitted with the default, `ObjectFit::Contain`,
 //! which letterboxes it inside the element's bounds without distorting it.
 //!
-//! Both arms are Direct3D 11's, so on every other host this example is a no-op. For the canvas-based
-//! route to the same pixels, see `cargo run -p gpui --example path_a`.
+//! Both variants are Direct3D 11's, so on every other host this example is a no-op. For the
+//! canvas-based route to the same pixels, see `cargo run -p gpui --example imported_texture`; for
+//! the cross-device producer whose texture arrives as a shared NT handle, see
+//! `cargo run -p gpui_interop --example cross_device_surface`.
+//!
+//! # The other examples
+//!
+//! - `imported_texture` — the same pixels through `GpuCanvas`'s paint-time callback.
+//! - `cross_device_surface` (in `gpui_interop`) — a Direct3D 12 producer's shared texture, opened
+//!   on GPUI's Direct3D 11 device; this is what the **view** variant is for.
+//! - `core_video_surface` — the macOS parity example, a CoreVideo buffer through `surface()`.
+//! - `surface_dmabuf` (in `gpui_wgpu`) — the Linux raw dma-buf route, single- and multi-plane.
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
-    // The Direct3D 11 surface arms `surface()` reaches on Windows are what this demonstrates;
+    // The Direct3D 11 surface variants `surface()` reaches on Windows are what this demonstrates;
     // there is nothing to show on a host whose renderer has no Direct3D device.
 }
 
@@ -53,11 +63,11 @@ mod demo {
     /// The producer's texture, which the sampler stretches over the surface's bounds.
     const TEXTURE: u32 = 256;
 
-    /// The colour each arm is cleared to, in BGRA — the order the renderer's `B8G8R8A8_UNORM`
-    /// target is in. Two known, distinct colours, so a window that shows both proves each arm's
+    /// The colour each variant is cleared to, in BGRA — the order the renderer's `B8G8R8A8_UNORM`
+    /// target is in. Two known, distinct colours, so a window that shows both proves each variant's
     /// composite worked.
-    const TEXTURE_ARM_COLOR: [f32; 4] = [0.10, 0.55, 0.95, 1.0];
-    const VIEW_ARM_COLOR: [f32; 4] = [0.65, 0.85, 0.10, 1.0];
+    const TEXTURE_VARIANT_COLOR: [f32; 4] = [0.10, 0.55, 0.95, 1.0];
+    const VIEW_VARIANT_COLOR: [f32; 4] = [0.65, 0.85, 0.10, 1.0];
 
     pub fn run() {
         gpui::application().run(|cx: &mut App| {
@@ -113,15 +123,15 @@ mod demo {
                             .flex()
                             .flex_row()
                             .gap_6()
-                            // The texture arm: `surface()` carries the texture itself, and the
+                            // The texture variant: `surface()` carries the texture itself, and the
                             // renderer makes the view on the device it owns.
                             .child(panel(
-                                surface(producer.texture_arm.clone()).size_full(),
+                                surface(producer.texture_variant.clone()).size_full(),
                                 "surface(texture) — the app hands the texture; the renderer makes the view",
                             ))
-                            // The view arm: `surface()` carries a view the producer made.
+                            // The view variant: `surface()` carries a view the producer made.
                             .child(panel(
-                                surface(producer.view_arm.clone()).size_full(),
+                                surface(producer.view_variant.clone()).size_full(),
                                 "surface(view) — the app made the view",
                             )),
                     );
@@ -139,8 +149,8 @@ mod demo {
         }
     }
 
-    /// A square surface with a caption under it, so each arm's result is labelled the way it was
-    /// produced.
+    /// A square surface with a caption under it, so each variant's result is labelled the way it
+    /// was produced.
     fn panel(content: impl IntoElement, caption: &'static str) -> impl IntoElement {
         div()
             .flex()
@@ -172,10 +182,10 @@ mod demo {
 
     /// The texture made on the window's renderer's device, and the two things `surface()` can carry.
     struct DirectXProducer {
-        /// The texture arm's resource. The producer makes no view of it.
-        texture_arm: ID3D11Texture2D,
-        /// The view arm's resource: a view the producer made.
-        view_arm: ID3D11ShaderResourceView,
+        /// The texture variant's resource. The producer makes no view of it.
+        texture_variant: ID3D11Texture2D,
+        /// The view variant's resource: a view the producer made.
+        view_variant: ID3D11ShaderResourceView,
     }
 
     impl DirectXProducer {
@@ -186,30 +196,30 @@ mod demo {
                 .and_then(|any| any.downcast::<ID3D11Device>().ok())
                 .context("the window's renderer lends an ID3D11Device")?;
 
-            // The texture arm: the producer holds the resource and clears it to a known colour. It
-            // makes no shader resource view — the renderer, which owns the device, makes that.
-            let texture_arm = create_texture(&device)?;
-            clear(&device, &texture_arm, TEXTURE_ARM_COLOR)?;
-            log::info!("surface: the texture arm is cleared to {TEXTURE_ARM_COLOR:?} (BGRA)");
+            // The texture variant: the producer holds the resource and clears it to a known colour.
+            // It makes no shader resource view — the renderer, which owns the device, makes that.
+            let texture_variant = create_texture(&device)?;
+            clear(&device, &texture_variant, TEXTURE_VARIANT_COLOR)?;
+            log::info!("surface: the texture variant is cleared to {TEXTURE_VARIANT_COLOR:?} (BGRA)");
 
-            // The view arm: the producer is the authority on its own format and makes the view
+            // The view variant: the producer is the authority on its own format and makes the view
             // itself. An application that already holds an `ID3D11ShaderResourceView` hands that
             // over instead of making one here.
-            let view_arm_texture = create_texture(&device)?;
-            clear(&device, &view_arm_texture, VIEW_ARM_COLOR)?;
-            let view_arm = shader_resource_view(&device, &view_arm_texture)?;
-            log::info!("surface: the view arm is cleared to {VIEW_ARM_COLOR:?} (BGRA)");
+            let view_variant_texture = create_texture(&device)?;
+            clear(&device, &view_variant_texture, VIEW_VARIANT_COLOR)?;
+            let view_variant = shader_resource_view(&device, &view_variant_texture)?;
+            log::info!("surface: the view variant is cleared to {VIEW_VARIANT_COLOR:?} (BGRA)");
 
             Ok(Self {
-                texture_arm,
-                view_arm,
+                texture_variant,
+                view_variant,
             })
         }
     }
 
     /// An offscreen texture on `device`, in the one format the renderer's view rule accepts.
     ///
-    /// `RENDER_TARGET` so it can be cleared; `SHADER_RESOURCE` because both arms sample it. The
+    /// `RENDER_TARGET` so it can be cleared; `SHADER_RESOURCE` because both variants sample it. The
     /// format is the renderer's own target format, `B8G8R8A8_UNORM`: the renderer views the texture
     /// as non-sRGB and the fragment samples its bytes straight through, so anything else would
     /// composite with its channels reordered rather than failing.
@@ -237,7 +247,7 @@ mod demo {
     /// Clears `texture` to `color`.
     ///
     /// A render target view is not a shader resource view, so clearing does not give the producer an
-    /// SRV — the texture arm still hands over the resource alone. The immediate context is the one
+    /// SRV — the texture variant still hands over the resource alone. The immediate context is the one
     /// the renderer draws through, so the clear is ordered before the draw that samples this:
     /// nothing to submit and nothing to wait on.
     fn clear(
@@ -257,7 +267,7 @@ mod demo {
         Ok(())
     }
 
-    /// A non-sRGB `B8G8R8A8_UNORM` view of `texture`, the view arm's payload.
+    /// A non-sRGB `B8G8R8A8_UNORM` view of `texture`, the view variant's payload.
     fn shader_resource_view(
         device: &ID3D11Device,
         texture: &ID3D11Texture2D,

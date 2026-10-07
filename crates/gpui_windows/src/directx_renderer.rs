@@ -52,7 +52,7 @@ pub(crate) struct FontInfo {
 }
 
 /// One entry of [`DirectXRenderer`]'s surface-view cache: a view the renderer made for a producer's
-/// `Texture`-arm surface, and the frame that last named it.
+/// `Texture`-variant surface, and the frame that last named it.
 struct SurfaceView {
     view: ID3D11ShaderResourceView,
     last_used: u64,
@@ -78,7 +78,7 @@ pub(crate) struct DirectXRenderer {
     /// meaning we lost all the allocated gpu textures and scene resources.
     skip_draws: bool,
 
-    /// Views the renderer made for the `Texture` arm of a surface, keyed by the texture's raw COM
+    /// Views the renderer made for the `Texture` variant of a surface, keyed by the texture's raw COM
     /// interface pointer. See [`DirectXRenderer::surface_view`] for why this exists and for the
     /// rule that invalidates and prunes it.
     surface_views: HashMap<usize, SurfaceView>,
@@ -905,7 +905,7 @@ impl DirectXRenderer {
         }
 
         // Resolve every surface to the view to sample before borrowing the device: the `Texture`
-        // arm consults the view cache (a `&mut self` use) and the draws below only read.
+        // variant consults the view cache (a `&mut self` use) and the draws below only read.
         let views: Vec<Option<ID3D11ShaderResourceView>> = surfaces
             .iter()
             .map(|surface| self.surface_view(&surface.source))
@@ -920,7 +920,7 @@ impl DirectXRenderer {
 
         // One draw per surface: the view is the surface's own and the engine never names it, so
         // there is no batch to group beyond the record slice the encoding already shares — the
-        // shape the imported-texture arm takes, for the same reason.
+        // shape the imported-texture path takes, for the same reason.
         for (offset, view) in views.into_iter().enumerate() {
             let Some(view) = view else {
                 continue;
@@ -953,16 +953,16 @@ impl DirectXRenderer {
         Ok(())
     }
 
-    /// The view to sample for `source`, making one for the `Texture` arm the first time it is seen.
+    /// The view to sample for `source`, making one for the `Texture` variant the first time it is seen.
     ///
-    /// A `View` arm already carries the producer's view, so it is used as it is. A `Texture` arm
+    /// A `View` variant already carries the producer's view, so it is used as it is. A `Texture` variant
     /// carries the texture instead — a producer that ships the resource and lets the renderer make
-    /// the view, the same-device half of the rule the `View` arm states — so the renderer builds
+    /// the view, the same-device half of the rule the `View` variant states — so the renderer builds
     /// the view here, with `create_imported_texture_view`, the rules the imported-texture path
     /// already uses for format and usage.
     ///
-    /// The `Texture` arm's views are cached, because a shader resource view is a descriptor with a
-    /// GPU-side allocation: one per frame would be a cost the `View` arm never pays. The key is the
+    /// The `Texture` variant's views are cached, because a shader resource view is a descriptor with a
+    /// GPU-side allocation: one per frame would be a cost the `View` variant never pays. The key is the
     /// texture's raw COM interface pointer (`Interface::as_raw`), which is stable across the clones
     /// a producer hands over frame to frame. It is a sound key because a cached view holds a
     /// reference to the resource it views, so while an entry is live the texture cannot be released
@@ -982,7 +982,7 @@ impl DirectXRenderer {
     fn surface_view(&mut self, source: &SurfaceSource) -> Option<ID3D11ShaderResourceView> {
         let source = match source {
             SurfaceSource::DirectX(source) => source,
-            // On a platform with no Direct3D surface arm, `SurfaceSource` is uninhabited here; the
+            // On a platform with no Direct3D surface backend, `SurfaceSource` is uninhabited here; the
             // arm it matches is the one every cfg of this renderer has.
             #[allow(unreachable_patterns)]
             _ => return None,
@@ -1900,7 +1900,7 @@ fn surface_view_is_sampleable(view: &ID3D11ShaderResourceView) -> bool {
 /// — is refused here rather than left to Direct3D. Direct3D's own refusal is not guaranteed, and
 /// where it does not come the view is made, the fragment writes the sample straight through, and
 /// the frame composites the wrong image with red and blue exchanged instead of failing. Refusing
-/// it here is what turns the `Texture` arm's wrong-format texture into the same skip-with-a-reason
+/// it here is what turns the `Texture` variant's wrong-format texture into the same skip-with-a-reason
 /// `surface_view` already gives a texture it cannot view.
 #[inline]
 fn create_imported_texture_view(
@@ -2695,7 +2695,7 @@ mod tests {
     /// The colour row. A producer's bytes have to come back unchanged, and on this renderer they
     /// do so exactly rather than approximately: the sampler reads the texture's own non-sRGB view
     /// and the fragment writes that straight into the non-sRGB target, so there is no transfer
-    /// function to cancel. A decode here would be the ≈2.2 error the wgpu arm's re-encode exists
+    /// function to cancel. A decode here would be the ≈2.2 error the wgpu backend's re-encode exists
     /// to cancel — and the only encoder this shader file has is `linear_to_srgb`'s approximation.
     #[test]
     fn an_imported_texture_round_trips_its_bytes() -> Result<()> {
@@ -2770,7 +2770,7 @@ mod tests {
         Ok(())
     }
 
-    /// The `Texture` arm of the surface row: the producer hands the texture rather than a view, and
+    /// The `Texture` variant of the surface row: the producer hands the texture rather than a view, and
     /// the renderer makes the view itself, with the same `create_imported_texture_view` rules and
     /// the non-sRGB format that leaves the fragment nothing to cancel. Two frames exercise both
     /// sides of the view cache — the miss that builds the view and the hit that reuses it — so a
@@ -2817,10 +2817,10 @@ mod tests {
         Ok(())
     }
 
-    /// The `Texture` arm's boundary. The view the renderer makes for a producer's texture is
+    /// The `Texture` variant's boundary. The view the renderer makes for a producer's texture is
     /// fixed at the target's own `B8G8R8A8_UNORM` channel order, so a texture in the other order
     /// is refused by `create_imported_texture_view` — skip-with-a-reason, the soft fault the `View`
-    /// arm's `surface_view_is_sampleable` makes — rather than viewed and composited with red and
+    /// variant's `surface_view_is_sampleable` makes — rather than viewed and composited with red and
     /// blue exchanged. A composited surface would paint this texture's bytes over the whole
     /// target; a skipped one leaves the frame's clear (white, the opaque background) untouched.
     #[test]
@@ -2858,8 +2858,8 @@ mod tests {
         Ok(())
     }
 
-    /// The `View` arm across successive frames: a producer's view is sampled as it is every frame —
-    /// unlike the `Texture` arm it is never cached — and the immediate unbind the draw does leaves
+    /// The `View` variant across successive frames: a producer's view is sampled as it is every frame —
+    /// unlike the `Texture` variant it is never cached — and the immediate unbind the draw does leaves
     /// the next frame free to bind and sample it again.
     #[test]
     fn a_surface_view_round_trips_its_bytes() -> Result<()> {

@@ -130,9 +130,9 @@ impl Scene {
                 self.polychrome_sprites.push(*sprite);
             }
             Primitive::Surface(surface) => {
-                // On a platform with no surface arm yet, `SurfaceSource` — and so `PaintSurface` —
+                // On a platform with no surface backend yet, `SurfaceSource` — and so `PaintSurface` —
                 // is uninhabited and this arm is unreachable. It stays for the platforms that do
-                // carry a source (macOS and Windows today, Linux once the dma-buf arm lands).
+                // carry a source (macOS and Windows today, Linux once the dma-buf backend lands).
                 #[allow(unreachable_code)]
                 {
                     surface.order = order;
@@ -785,12 +785,12 @@ impl From<PolychromeSprite> for Primitive {
     }
 }
 
-/// Where a Windows surface's pixels come from. Both arms end at the same
+/// Where a Windows surface's pixels come from. Both variants end at the same
 /// `ID3D11ShaderResourceView` in the renderer; the difference is who makes it.
 ///
-/// The texture arm is the ergonomic default: an application that already renders on the window
+/// The texture variant is the ergonomic default: an application that already renders on the window
 /// renderer's own device holds the resource and hands it here, and the renderer — which owns the
-/// device — makes the view. The view arm is the escape for a producer that is the authority on its
+/// device — makes the view. The view variant is the escape for a producer that is the authority on its
 /// own format, plane and mip interpretation and would rather make the view itself. Either way the
 /// renderer samples the same thing.
 #[cfg(target_os = "windows")]

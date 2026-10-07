@@ -123,13 +123,16 @@ http_client = { workspace = true, features = ["test-support"] }
 proptest = { workspace = true }
 reqwest_client = { workspace = true, features = ["test-support"] }
 
-# The `path_a` example's producers. Dev-dependencies on purpose: the facade's own graph stays free
-# of the renderer crates, and an example is the only thing in it that has to name a backend's types.
+# The `imported_texture` example's producers. Dev-dependencies on purpose: the facade's own graph
+# stays free of the renderer crates, and an example is the only thing in it that has to name a
+# backend's types.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dev-dependencies]
 gpui_wgpu.workspace = true
 wgpu.workspace = true
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+core-foundation.workspace = true
+core-video.workspace = true
 foreign-types.workspace = true
 metal.workspace = true
 pollster.workspace = true

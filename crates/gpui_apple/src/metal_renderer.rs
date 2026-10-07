@@ -1183,7 +1183,7 @@ impl MetalRenderer {
         );
 
         for (index, surface) in surfaces.iter().enumerate() {
-            // The Metal arm draws the one transport it has: a CoreVideo buffer. The unified
+            // The Metal renderer draws the one transport it has: a CoreVideo buffer. The unified
             // `SurfaceSource` is single-variant on macOS, so the fallback is unreachable here.
             let image_buffer = match &surface.source {
                 SurfaceSource::CoreVideo(image_buffer) => image_buffer,

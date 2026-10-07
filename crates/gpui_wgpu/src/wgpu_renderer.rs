@@ -202,7 +202,7 @@ struct WgpuResources {
     path_intermediate_view: Option<wgpu::TextureView>,
     path_msaa_texture: Option<wgpu::Texture>,
     path_msaa_view: Option<wgpu::TextureView>,
-    /// The imported dma-buf textures, kept across frames like the Metal arm's `CVMetalTextureCache`.
+    /// The imported dma-buf textures, kept across frames like the Metal renderer's `CVMetalTextureCache`.
     #[cfg(target_os = "linux")]
     dmabuf_textures: crate::DmaBufTextureCache,
 }
@@ -1965,7 +1965,7 @@ impl WgpuRendererCore {
                 continue;
             }
             // The cache owns the imported textures and hands back cheap clones of their handles — as
-            // the Metal arm's `CVMetalTextureCache` does. The mutable borrow ends before the rest of
+            // the Metal renderer's `CVMetalTextureCache` does. The mutable borrow ends before the rest of
             // the resources are read.
             let textures = {
                 let resources = self.resources_mut();
