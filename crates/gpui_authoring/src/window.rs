@@ -11,8 +11,8 @@ use crate::{
     DEFAULT_WINDOW_SIZE,
     Decorations, DevicePixels, DispatchActionListener, DispatchEventResult, DispatchNodeId,
     DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, FontId,
-    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, ImportedTextureHandle, InputHandler,
-    InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
+    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, ImportedTextureHandle,
+    InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
     KeystrokeEvent, LayoutId, LineLayoutIndex, MeasureContext, MeasureHandles, Modifiers,
     ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
     Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
@@ -3037,7 +3037,7 @@ impl Window<'_> {
     /// `ID3D11Device` or `MTLDevice` — the crate that owns the payload is where a caller
     /// downcasts, and `None` means this window's renderer has no device to lend.
     pub fn device_any(&self) -> Option<Rc<dyn Any>> {
-        self.core.platform_window.device_any()
+        self.core.platform_window.gpu_window()?.device_any()
     }
 
     /// Returns the custom-render primitives in the most recently rendered frame's scene: the
