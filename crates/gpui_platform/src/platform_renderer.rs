@@ -87,7 +87,7 @@ pub trait PlatformRenderer: NativeSceneHooks {
     /// belongs to whoever built the window's renderer, and a producer — a decoder, an engine, a
     /// viewport — has to render on *that* one. The return is erased because the shared trait must
     /// not name `ID3D11Device` or `MTLDevice`; the payload is the backend's own type (a
-    /// `GpuContext`, a `DirectXDevices`, a device), and the crate that owns it is where a caller
+    /// `WgpuContextSlot`, a `DirectXDevices`, a device), and the crate that owns it is where a caller
     /// downcasts. It is owned rather than borrowed because a caller reaches a renderer through a
     /// closure ([`PlatformWindow::with_renderer`](crate::PlatformWindow::with_renderer)), which
     /// no borrow can outlive.

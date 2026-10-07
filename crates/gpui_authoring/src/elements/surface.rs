@@ -1,9 +1,5 @@
-#[cfg(target_os = "linux")]
-use crate::LinuxWindowExt;
-#[cfg(target_os = "macos")]
-use crate::MacWindowExt;
-#[cfg(target_os = "windows")]
-use crate::WindowsWindowExt;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use crate::GpuCanvasContext;
 use crate::{
     App, Bounds, Element, ElementId, GlobalElementId, IntoElement, LayoutId, ObjectFit, Pixels,
     Style, StyleRefinement, Styled, Window,
@@ -133,7 +129,11 @@ impl Element for Surface {
             allow(unused_variables)
         )]
         window: &mut Window,
-        _: &mut App,
+        #[cfg_attr(
+            not(any(target_os = "macos", target_os = "windows")),
+            allow(unused_variables)
+        )]
+        cx: &mut App,
     ) {
         match &self.source {
             #[cfg(target_os = "macos")]
@@ -144,7 +144,8 @@ impl Element for Surface {
                 );
                 let new_bounds = self.object_fit.get_bounds(bounds, size);
                 // TODO: Add support for corner_radii
-                window.paint_surface(new_bounds, image_buffer.clone());
+                let mut ctx = GpuCanvasContext::new(window, cx, new_bounds);
+                ctx.paint_surface(image_buffer.clone());
             }
             #[cfg(target_os = "windows")]
             SurfaceSource::DirectX(source) => {
@@ -153,7 +154,8 @@ impl Element for Surface {
                     None => bounds,
                 };
                 // TODO: Add support for corner_radii
-                window.paint_surface(new_bounds, source.clone());
+                let mut ctx = GpuCanvasContext::new(window, cx, new_bounds);
+                ctx.paint_surface(SurfaceSource::DirectX(source.clone()));
             }
             #[cfg(target_os = "linux")]
             SurfaceSource::DmaBuf(handle) => {
@@ -163,7 +165,8 @@ impl Element for Surface {
                 );
                 let new_bounds = self.object_fit.get_bounds(bounds, size);
                 // TODO: Add support for corner_radii
-                window.paint_surface(new_bounds, handle.clone());
+                let mut ctx = GpuCanvasContext::new(window, cx, new_bounds);
+                ctx.paint_surface(handle.clone());
             }
             #[allow(unreachable_patterns)]
             _ => {}

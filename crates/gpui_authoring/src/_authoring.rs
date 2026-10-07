@@ -58,10 +58,12 @@
 //! replaced. [`LayoutId`](crate::LayoutId) is likewise an opaque token, so a
 //! custom element keeps working when the layout engine is replaced.
 //!
-//! Anything that only applies to one platform lives in an extension trait
-//! beside [`Window`](crate::Window) instead of on it: `MacWindowExt` adds
-//! `paint_surface` for a CoreVideo buffer, `WindowsWindowExt` for a Direct3D
-//! texture or view, and `LinuxWindowExt` for a dma-buf.
+//! Compositing pixels produced outside GPUI is the one place a platform-specific
+//! payload reaches the window. It goes through [`gpu_canvas`](crate::gpu_canvas),
+//! whose callback receives a [`GpuCanvasContext`](crate::GpuCanvasContext): the
+//! context's `paint_surface` takes a CoreVideo buffer, a Direct3D texture or
+//! view, or a dma-buf, and its `paint_texture` takes a texture made on the
+//! window renderer's own device.
 //!
 //! ## What is not authoring API
 //!

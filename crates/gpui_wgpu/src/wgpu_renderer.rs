@@ -171,7 +171,7 @@ struct WgpuBindGroupLayouts {
 }
 
 /// Shared GPU context reference, used to coordinate device recovery across multiple windows.
-pub type GpuContext = Rc<RefCell<Option<WgpuContext>>>;
+pub type WgpuContextSlot = Rc<RefCell<Option<WgpuContext>>>;
 
 enum InstanceData {
     Storage(wgpu::Buffer),
@@ -257,7 +257,7 @@ enum RendererState {
 pub struct WgpuRenderer {
     /// Shared GPU context for device recovery coordination (unused on WASM).
     #[allow(dead_code)]
-    context: Option<GpuContext>,
+    context: Option<WgpuContextSlot>,
     /// Compositor GPU hint for adapter selection (unused on WASM).
     #[allow(dead_code)]
     compositor_gpu: Option<CompositorGpuHint>,
@@ -301,7 +301,7 @@ impl WgpuRenderer {
     /// of the returned renderer.
     #[cfg(not(target_family = "wasm"))]
     pub fn new<W>(
-        gpu_context: GpuContext,
+        gpu_context: WgpuContextSlot,
         window: &W,
         config: WgpuSurfaceConfig,
         compositor_gpu: Option<CompositorGpuHint>,
@@ -383,7 +383,7 @@ impl WgpuRenderer {
     }
 
     fn new_internal(
-        gpu_context: Option<GpuContext>,
+        gpu_context: Option<WgpuContextSlot>,
         context: &WgpuContext,
         surface: wgpu::Surface<'static>,
         config: WgpuSurfaceConfig,
@@ -1169,7 +1169,7 @@ impl WgpuRenderer {
 
     /// The shared context slot this renderer draws through, if it has one.
     #[cfg(not(target_family = "wasm"))]
-    pub fn gpu_context(&self) -> Option<GpuContext> {
+    pub fn gpu_context(&self) -> Option<WgpuContextSlot> {
         self.context.clone()
     }
 

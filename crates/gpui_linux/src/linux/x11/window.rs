@@ -451,7 +451,7 @@ impl X11WindowState {
         handle: WindowId,
         client: X11ClientStatePtr,
         executor: ForegroundExecutor,
-        gpu_context: gpui_wgpu::GpuContext,
+        gpu_context: gpui_wgpu::WgpuContextSlot,
         compositor_gpu: Option<CompositorGpuHint>,
         params: WindowParams,
         xcb: &Rc<XCBConnection>,
@@ -942,7 +942,7 @@ impl X11Window {
         handle: WindowId,
         client: X11ClientStatePtr,
         executor: ForegroundExecutor,
-        gpu_context: gpui_wgpu::GpuContext,
+        gpu_context: gpui_wgpu::WgpuContextSlot,
         compositor_gpu: Option<CompositorGpuHint>,
         params: WindowParams,
         xcb: &Rc<XCBConnection>,
@@ -1767,9 +1767,9 @@ impl PlatformWindow for X11Window {
         self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
     }
 
-    /// This window's renderer's device — the client's shared `GpuContext`, which every wgpu window
-    /// in the process draws through, so a texture a producer makes on it is one this window can
-    /// sample.
+    /// This window's renderer's device — the client's shared `WgpuContextSlot`, which every wgpu
+    /// window in the process draws through, so a texture a producer makes on it is one this window
+    /// can sample.
     fn device_any(&self) -> Option<std::rc::Rc<dyn std::any::Any>> {
         self.0.state.borrow().renderer.device_any()
     }

@@ -104,7 +104,7 @@ use gpui_platform::{
     Size, TouchPhase, WindowButtonLayout, WindowId, WindowKind, WindowParams, point, profiler, px,
     size,
 };
-use gpui_wgpu::{CompositorGpuHint, GpuContext};
+use gpui_wgpu::{CompositorGpuHint, WgpuContextSlot};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_v1,
 };
@@ -316,7 +316,7 @@ pub struct Output {
 pub(crate) struct WaylandClientState {
     serial_tracker: SerialTracker,
     globals: Globals,
-    pub gpu_context: GpuContext,
+    pub gpu_context: WgpuContextSlot,
     pub compositor_gpu: Option<CompositorGpuHint>,
     wl_seat: wl_seat::WlSeat, // TODO: Multi seat support
     wl_pointer: Option<wl_pointer::WlPointer>,

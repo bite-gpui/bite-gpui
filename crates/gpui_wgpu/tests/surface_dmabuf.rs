@@ -1,7 +1,7 @@
 //! An external surface composited through the authoring API, end to end.
 //!
 //! Two authoring layers reach one: the `surface()` element (single-plane `Bgra8`/`Rgba8`, two-plane
-//! `Nv12`) and `gpu_canvas()`'s `on_render_texture` (a same-device `wgpu::TextureView`). The producer
+//! `Nv12`) and `gpu_canvas(..)`'s paint callback (a same-device `wgpu::TextureView`). The producer
 //! is a bare Vulkan device (not wgpu), the consumer is the platform's headless renderer — the same
 //! one a window drives — and the pixels are read back with `capture_screenshot`.
 //!
@@ -33,6 +33,7 @@
 
 #![cfg(all(target_os = "linux", feature = "test-support"))]
 
+use std::any::Any;
 use std::cell::Cell;
 use std::io::Write as _;
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -40,11 +41,11 @@ use std::rc::Rc;
 
 use ash::vk;
 use gpui::{
-    AnyWindowHandle, AppContext as _, Context, DmaBufFormat, DmaBufHandle, DmaBufPlane,
+    AnyWindowHandle, AppContext as _, Context, Corners, DmaBufFormat, DmaBufHandle, DmaBufPlane,
     HeadlessAppContext, ImportedTextureHandle, IntoElement, Render, Window, div, gpu_canvas,
     prelude::*, px, size, surface,
 };
-use gpui_wgpu::{CosmicTextSystem, GpuContext, ImportedTextureExt as _};
+use gpui_wgpu::{CosmicTextSystem, ImportedTextureExt as _, WgpuContextSlot};
 
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 64;
@@ -191,8 +192,8 @@ fn composite(handle: DmaBufHandle) -> anyhow::Result<[u8; 4]> {
     Ok(image.get_pixel(WIDTH / 2, HEIGHT / 2).0)
 }
 
-/// A view painting a same-device texture through `gpu_canvas().on_render_texture`, and whether the
-/// paint-time callback found a device to make it on.
+/// A view painting a same-device texture through `gpu_canvas(..)`, and whether the paint-time
+/// callback found a device to make it on.
 struct CanvasView {
     colour: [u8; 4],
     painted: Rc<Cell<bool>>,
@@ -202,23 +203,27 @@ impl Render for CanvasView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let colour = self.colour;
         let painted = self.painted.clone();
-        gpu_canvas()
-            .size_full()
-            .on_render_texture(move |_bounds, window, _cx| {
-                let handle = imported_texture(window, colour)?;
-                painted.set(true);
-                Some(handle)
-            })
+        gpu_canvas(move |gpu| {
+            let Some(handle) = imported_texture(gpu.device_any(), colour) else {
+                return;
+            };
+            painted.set(true);
+            gpu.paint_texture(handle, Corners::default(), 1.0, false);
+        })
+        .size_full()
     }
 }
 
-/// Make `colour` a texture on the window's own device and wrap it as an [`ImportedTextureHandle`].
+/// Make `colour` a texture on the renderer's own device and wrap it as an [`ImportedTextureHandle`].
 /// `None` when the window's renderer lends no device.
-fn imported_texture(window: &mut Window, colour: [u8; 4]) -> Option<ImportedTextureHandle> {
-    // A producer reaches the renderer's device through the window's public seam. The payload is
-    // the shared context slot (`GpuContext`), and a window whose renderer lends none hands back
+fn imported_texture(
+    device_any: Option<Rc<dyn Any>>,
+    colour: [u8; 4],
+) -> Option<ImportedTextureHandle> {
+    // A producer reaches the renderer's device through the canvas's public seam. The payload is
+    // the shared context slot (`WgpuContextSlot`), and a window whose renderer lends none hands back
     // `None` — which is what the headless harness here does.
-    let slot = window.device_any()?.downcast::<GpuContext>().ok()?;
+    let slot = device_any?.downcast::<WgpuContextSlot>().ok()?;
     let context = slot.borrow();
     let context = context.as_ref()?;
 
@@ -445,7 +450,7 @@ fn a_gpu_canvas_composites_a_same_device_texture() {
         eprintln!("skipping: no Vulkan adapter for the headless renderer");
         return;
     }
-    // The other authoring layer: `gpu_canvas().on_render_texture` wants a texture on the renderer's
+    // The other authoring layer: `gpu_canvas(..)`'s paint callback wants a texture on the renderer's
     // own device, which a producer reaches through the window's public seam. The headless harness
     // used here holds its renderer erased as a `SceneRenderer` and does not forward
     // `PlatformWindow::device_any`, so no device is lent and the callback paints nothing: skip

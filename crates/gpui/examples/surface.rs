@@ -13,21 +13,20 @@
 //!
 //! - `surface(source)` is an ordinary element. It lays out and stacks like any other child, and the
 //!   renderer samples `source` while it composites the frame.
-//! - `gpu_canvas()` is a box whose content a paint-time callback supplies: `on_render_surface` where
-//!   the renderer consumes a surface source, or `on_render_texture` where the producer renders on the
-//!   window's own device and hands over a texture.
+//! - `gpu_canvas(..)` is a box whose content a paint-time callback supplies: it receives a
+//!   `GpuCanvasContext` and either paints a surface source into the canvas, or paints a texture the
+//!   producer rendered on the window's own device.
 //!
 //! # The payloads, by renderer
 //!
 //! Only the combinations the host renderer supports are built and shown; each is labelled in place.
 //!
 //! - **wgpu** (Linux): `surface()` carries a dma-buf handle in each of `Bgra8`, `Rgba8` and `Nv12`;
-//!   `gpu_canvas().on_render_texture(..)` carries a `wgpu` texture view.
+//!   `gpu_canvas(..)` paints a `wgpu` texture view.
 //! - **Direct3D 11** (Windows): `surface()` carries a `B8G8R8A8_UNORM` texture, and separately a
-//!   shader-resource view the producer made; `gpu_canvas().on_render_surface(..)` carries a surface
-//!   source.
-//! - **Metal** (macOS): `surface()` carries a CoreVideo pixel buffer; `gpu_canvas()` carries the same
-//!   buffer through `on_render_surface(..)` and an `id<MTLTexture>` through `on_render_texture(..)`.
+//!   shader-resource view the producer made; `gpu_canvas(..)` paints a surface source.
+//! - **Metal** (macOS): `surface()` carries a CoreVideo pixel buffer; `gpu_canvas(..)` paints the same
+//!   buffer and an `id<MTLTexture>`.
 //!
 //! # One colour, in each payload's own format
 //!
@@ -225,6 +224,7 @@ mod demo {
     /// backs the imported texture.
     #[cfg(target_os = "linux")]
     mod wgpu_backend {
+        use std::any::Any;
         use std::cell::RefCell;
         use std::os::fd::{FromRawFd, OwnedFd};
         use std::rc::Rc;
@@ -233,7 +233,7 @@ mod demo {
         use anyhow::{Context as _, Result};
         use ash::vk;
         use gpui::{
-            AnyElement, DmaBufFormat, DmaBufHandle, DmaBufPlane, ImportedTextureHandle,
+            AnyElement, Corners, DmaBufFormat, DmaBufHandle, DmaBufPlane, ImportedTextureHandle,
             ImportedTextureExt as _, Window, gpu_canvas, prelude::*, surface,
         };
 
@@ -323,8 +323,8 @@ mod demo {
         }
 
         impl ImportedTile {
-            fn new(window: &mut Window) -> Result<Self> {
-                let (device, queue) = device(window)?;
+            fn new(device_any: Option<Rc<dyn Any>>) -> Result<Self> {
+                let (device, queue) = device(device_any)?;
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("surface_showcase"),
                     size: wgpu::Extent3d {
@@ -399,33 +399,38 @@ mod demo {
                     "surface() · DmaBufFormat::Nv12",
                 ),
                 panel(
-                    gpu_canvas()
-                        .size_full()
-                        .on_render_texture(move |_bounds, window, _cx| {
-                            let mut tile = imported.borrow_mut();
-                            if tile.is_none() {
-                                match ImportedTile::new(window) {
-                                    Ok(built) => *tile = Some(built),
-                                    Err(error) => {
-                                        log::error!(
-                                            "surface: cannot produce the imported texture: {error:#}"
-                                        );
-                                        return None;
-                                    }
+                    gpu_canvas(move |gpu| {
+                        let mut tile = imported.borrow_mut();
+                        if tile.is_none() {
+                            match ImportedTile::new(gpu.device_any()) {
+                                Ok(built) => *tile = Some(built),
+                                Err(error) => {
+                                    log::error!(
+                                        "surface: cannot produce the imported texture: {error:#}"
+                                    );
+                                    return;
                                 }
                             }
-                            Some(tile.as_ref().expect("the tile was just built").handle.clone())
-                        }),
-                    "gpu_canvas().on_render_texture(..) · wgpu texture view",
+                        }
+                        let handle = tile
+                            .as_ref()
+                            .expect("the tile was just built")
+                            .handle
+                            .clone();
+                        gpu.paint_texture(handle, Corners::default(), 1.0, false);
+                    })
+                    .size_full(),
+                    "gpu_canvas(..) · wgpu texture view",
                 ),
             ]
         }
 
         /// The wgpu device and queue the window's renderer draws through.
-        fn device(window: &Window) -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
-            let slot = window
-                .device_any()
-                .and_then(|any| any.downcast::<gpui_wgpu::GpuContext>().ok())
+        fn device(
+            device_any: Option<Rc<dyn Any>>,
+        ) -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
+            let slot = device_any
+                .and_then(|any| any.downcast::<gpui_wgpu::WgpuContextSlot>().ok())
                 .context("the window's renderer lends a wgpu context")?;
             let context = slot.borrow();
             let context = context.as_ref().context("the shared context slot is empty")?;
@@ -587,7 +592,7 @@ mod demo {
             texture_variant: ID3D11Texture2D,
             /// `surface(DirectXSource::View)`: the producer made the view.
             view_variant: ID3D11ShaderResourceView,
-            /// `gpu_canvas().on_render_surface(..)`: the view handed over at paint time.
+            /// `gpu_canvas(..)`: the view handed over at paint time.
             canvas_variant: ID3D11ShaderResourceView,
         }
 
@@ -644,14 +649,11 @@ mod demo {
                     "surface() · DirectXSource::View",
                 ),
                 panel(
-                    gpu_canvas().size_full().on_render_surface(
-                        move |_bounds, _window, _cx| {
-                            Some(SurfaceSource::DirectX(DirectXSource::View(
-                                canvas_view.clone(),
-                            )))
-                        },
-                    ),
-                    "gpu_canvas().on_render_surface(..) · Direct3D 11 view",
+                    gpu_canvas(move |gpu| {
+                        gpu.paint_surface(SurfaceSource::DirectX(DirectXSource::View(canvas_view)));
+                    })
+                    .size_full(),
+                    "gpu_canvas(..) · Direct3D 11 view",
                 ),
             ]
         }
@@ -756,13 +758,14 @@ mod demo {
             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
         };
         use gpui::{
-            AnyElement, ImportedTextureHandle, SurfaceSource, Window, gpu_canvas, prelude::*, surface,
+            AnyElement, Corners, ImportedTextureHandle, SurfaceSource, Window, gpu_canvas,
+            prelude::*, surface,
         };
 
         use super::{OLIVE, TILE, error_panel, nv12_from_rgb, olive_bgra, panel, solid};
 
         pub struct Producer {
-            /// The CoreVideo buffer, for `surface()` and `on_render_surface`.
+            /// The CoreVideo buffer, for `surface()` and `gpu_canvas(..)`.
             buffer: CVPixelBuffer,
             /// Held so the device outlives the view taken from the texture.
             _device: Arc<wgpu::Device>,
@@ -848,20 +851,18 @@ mod demo {
                     "surface() · CoreVideo CVPixelBuffer",
                 ),
                 panel(
-                    gpu_canvas().size_full().on_render_surface(
-                        move |_bounds, _window, _cx| {
-                            Some(SurfaceSource::CoreVideo(canvas_buffer.clone()))
-                        },
-                    ),
-                    "gpu_canvas().on_render_surface(..) · CoreVideo",
+                    gpu_canvas(move |gpu| {
+                        gpu.paint_surface(SurfaceSource::CoreVideo(canvas_buffer));
+                    })
+                    .size_full(),
+                    "gpu_canvas(..) · CoreVideo",
                 ),
                 panel(
-                    gpu_canvas()
-                        .size_full()
-                        .on_render_texture(move |_bounds, _window, _cx| {
-                            Some(imported.clone())
-                        }),
-                    "gpu_canvas().on_render_texture(..) · id<MTLTexture>",
+                    gpu_canvas(move |gpu| {
+                        gpu.paint_texture(imported, Corners::default(), 1.0, false);
+                    })
+                    .size_full(),
+                    "gpu_canvas(..) · id<MTLTexture>",
                 ),
             ]
         }
