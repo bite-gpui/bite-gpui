@@ -528,17 +528,17 @@ fn a_decoded_h264_surface_composites_through_the_shader() {
         eprintln!("skipping: no Vulkan adapter for the headless renderer");
         return;
     }
-    let Some((_decoded, handle)) = gpui_va::decode(gpui_va::FIXTURE) else {
+    let Some(frame) = gpui_va::decode(gpui_va::FIXTURE) else {
         eprintln!("skipping: no libavcodec of the declared ABI, or no VA-API device");
         return;
     };
     assert_ne!(
-        handle.modifier,
+        frame.handle().modifier,
         DmaBufHandle::LINEAR,
         "a decoded surface is tiled"
     );
 
-    let (width, height, pixels) = composite_pixels(handle);
+    let (width, height, pixels) = composite_pixels(frame.handle().clone());
     // A decoded surface is the fixture's 128×128, and the surface element fits it to the window; on
     // a HiDPI headless window the capture is larger than the element, so sample the *capture* and
     // read the seven bar centres out of it.
@@ -557,6 +557,44 @@ fn a_decoded_h264_surface_composites_through_the_shader() {
         }
         assert_eq!(got[3], 255, "bar {bar} should be opaque");
     }
+}
+
+/// A stream, played: every frame of the clip decodes to its own surface, and successive frames reach
+/// the renderer as *different* pictures. That is the proof no surface was recycled under a frame
+/// still being sampled — a reused surface would paint the same bars twice.
+#[test]
+fn successive_frames_of_a_clip_composite_differently() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+    let Some(mut decoder) = gpui_va::Decoder::open() else {
+        eprintln!("skipping: no libavcodec of the declared ABI, or no VA-API device");
+        return;
+    };
+    decoder.send(gpui_va::CLIP).expect("feed the clip");
+    decoder.finish().expect("finish the clip");
+
+    // Hold every frame, as a player must: releasing one returns its surface to the pool.
+    let mut frames = Vec::new();
+    while let Some(frame) = decoder.receive() {
+        frames.push(frame);
+    }
+    if frames.len() < 2 {
+        eprintln!("skipping: the clip yielded fewer than two frames");
+        return;
+    }
+
+    let first = composite_pixels(frames[0].handle().clone());
+    let last = composite_pixels(frames[frames.len() - 1].handle().clone());
+    let centre = |(width, height, pixels): (u32, u32, Vec<[u8; 4]>)| {
+        pixels[(height / 2 * width + width / 2) as usize]
+    };
+    assert_ne!(
+        centre(first),
+        centre(last),
+        "the scrolled clip frames should paint different bars",
+    );
 }
 
 #[test]
