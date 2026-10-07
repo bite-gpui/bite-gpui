@@ -42,10 +42,21 @@ use anyhow::{Context as _, Result};
 use ash::vk;
 use gpui_engine::{DmaBufFormat, DmaBufHandle, DmaBufPlane};
 
-/// A plane's texture, adopted into `wgpu`.
+/// A plane's texture, adopted into `wgpu`, and the view the renderer samples.
+///
+/// For a single-plane buffer the view is the whole texture. For `Nv12` the texture is the **one**
+/// multi-planar image over the buffer and the view is one of its two planes, so the pair of entries
+/// the importer returns are two views of one image — the shape a decoder exports — rather than two
+/// independently imported ones. That keeps the buffer the object its modifier describes, and avoids
+/// the per-plane `R8`/`RG8` representations a copy or a later feature would trip over.
+#[derive(Clone)]
 pub(crate) struct PlaneTexture {
-    /// The wgpu texture `wgpu` owns, over the imported image.
+    /// The wgpu texture `wgpu` owns, over the imported image. Held so the image — and the imported
+    /// memory behind it — outlives the view taken from it.
+    #[allow(dead_code, reason = "the view samples the image, but this keeps it alive")]
     pub texture: wgpu::Texture,
+    /// The view of that image this plane samples.
+    pub view: wgpu::TextureView,
 }
 
 /// Import a dma-buf as the texture(s) the surface pipeline composites.
@@ -71,7 +82,6 @@ pub(crate) fn import_dmabuf(
     let instance = hal.shared_instance().raw_instance();
     let physical = hal.raw_physical_device();
 
-    let mut textures = Vec::with_capacity(expected);
     match handle.format {
         DmaBufFormat::Bgra8 | DmaBufFormat::Rgba8 => {
             let (wgpu_format, vk_format) = match handle.format {
@@ -80,7 +90,7 @@ pub(crate) fn import_dmabuf(
                 }
                 _ => (wgpu::TextureFormat::Rgba8Unorm, vk::Format::R8G8B8A8_UNORM),
             };
-            textures.push(import_plane(
+            Ok(vec![import_plane(
                 device,
                 &*hal,
                 instance,
@@ -91,38 +101,152 @@ pub(crate) fn import_dmabuf(
                 wgpu_format,
                 handle.width,
                 handle.height,
-            )?);
+            )?])
         }
-        DmaBufFormat::Nv12 => {
-            // Plane 0 is luma at full resolution; plane 1 is interleaved chroma at half, in both
-            // dimensions.
-            textures.push(import_plane(
-                device,
-                &*hal,
-                instance,
-                physical,
-                &handle.planes[0],
-                handle.modifier,
-                vk::Format::R8_UNORM,
-                wgpu::TextureFormat::R8Unorm,
-                handle.width,
-                handle.height,
-            )?);
-            textures.push(import_plane(
-                device,
-                &*hal,
-                instance,
-                physical,
-                &handle.planes[1],
-                handle.modifier,
-                vk::Format::R8G8_UNORM,
-                wgpu::TextureFormat::Rg8Unorm,
-                handle.width / 2,
-                handle.height / 2,
-            )?);
-        }
+        // Plane 0 is luma at full resolution; plane 1 is interleaved chroma at half, in both
+        // dimensions. Both are planes of the one image the buffer describes.
+        DmaBufFormat::Nv12 => import_luma_chroma(device, &*hal, instance, physical, handle),
     }
-    Ok(textures)
+}
+
+/// Import an `Nv12` buffer's two planes as the **one** multi-planar image they describe, and view
+/// each plane.
+///
+/// The buffer is a single object at the two planes' offsets, which is what `vaExportSurfaceHandle`
+/// and GBM produce and what the plane layouts below state. Importing it as one `G8_B8R8_2PLANE_420`
+/// image (rather than two separate `R8`/`RG8` ones) is what keeps the buffer in the shape its
+/// modifier describes.
+fn import_luma_chroma(
+    device: &wgpu::Device,
+    hal: &wgpu::hal::vulkan::Device,
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    handle: &DmaBufHandle,
+) -> Result<Vec<PlaneTexture>> {
+    let raw = hal.raw_device();
+    let luma = &handle.planes[0];
+    let chroma = &handle.planes[1];
+    let tiled = handle.modifier != DmaBufHandle::LINEAR;
+
+    // The image binds at the object's base (`luma.offset`), so each plane's layout is its offset
+    // from that base; its row pitch is the plane's stride. The driver validates both.
+    let plane_layouts = [
+        vk::SubresourceLayout::default()
+            .offset(0)
+            .row_pitch(u64::from(luma.stride)),
+        vk::SubresourceLayout::default()
+            .offset(chroma.offset.saturating_sub(luma.offset))
+            .row_pitch(u64::from(chroma.stride)),
+    ];
+    let mut modifier_layout = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+        .drm_format_modifier(handle.modifier)
+        .plane_layouts(&plane_layouts);
+    let image_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
+        .extent(vk::Extent3D {
+            width: handle.width,
+            height: handle.height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(if tiled {
+            vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT
+        } else {
+            vk::ImageTiling::LINEAR
+        })
+        .usage(vk::ImageUsageFlags::SAMPLED)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image_info = if tiled {
+        image_info.push_next(&mut modifier_layout)
+    } else {
+        image_info
+    };
+    let image =
+        unsafe { raw.create_image(&image_info, None) }.context("create the imported image")?;
+    let requirements = unsafe { raw.get_image_memory_requirements(image) };
+
+    let fd = luma
+        .fd
+        .try_clone()
+        .context("duplicate the plane descriptor for the import")?
+        .into_raw_fd();
+    let memory = import_memory(
+        instance,
+        physical,
+        raw,
+        image,
+        requirements,
+        luma.offset,
+        fd,
+    )?;
+    unsafe { raw.bind_image_memory(image, memory, luma.offset) }
+        .context("bind the imported image at the object's base")?;
+
+    let size = wgpu::Extent3d {
+        width: handle.width,
+        height: handle.height,
+        depth_or_array_layers: 1,
+    };
+    let hal_texture = unsafe {
+        hal.texture_from_raw(
+            image,
+            &wgpu::hal::TextureDescriptor {
+                label: Some("dma-buf surface"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::NV12,
+                usage: wgpu::TextureUses::RESOURCE,
+                memory_flags: wgpu::hal::MemoryFlags::empty(),
+                view_formats: vec![wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm],
+            },
+            None,
+            wgpu::hal::vulkan::TextureMemory::Dedicated(memory),
+        )
+    };
+    let texture = unsafe {
+        device.create_texture_from_hal::<wgpu::hal::vulkan::Api>(
+            hal_texture,
+            &wgpu::TextureDescriptor {
+                label: Some("dma-buf surface"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::NV12,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm],
+            },
+        )
+    };
+
+    let luma_view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("dma-buf surface luma"),
+        format: Some(wgpu::TextureFormat::R8Unorm),
+        aspect: wgpu::TextureAspect::Plane0,
+        ..Default::default()
+    });
+    let chroma_view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("dma-buf surface chroma"),
+        format: Some(wgpu::TextureFormat::Rg8Unorm),
+        aspect: wgpu::TextureAspect::Plane1,
+        ..Default::default()
+    });
+    Ok(vec![
+        PlaneTexture {
+            texture: texture.clone(),
+            view: luma_view,
+        },
+        PlaneTexture {
+            texture,
+            view: chroma_view,
+        },
+    ])
 }
 
 /// How long the renderer waits for a producer's `sync_file` before dropping the surface for that
@@ -283,7 +407,11 @@ fn import_plane(
             },
         )
     };
-    Ok(PlaneTexture { texture })
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("dma-buf surface plane view"),
+        ..Default::default()
+    });
+    Ok(PlaneTexture { texture, view })
 }
 
 /// Import `fd` into a dedicated allocation for `image`, trying every memory type it can live in.
@@ -370,29 +498,24 @@ impl DmaBufTextureCache {
         &mut self,
         device: &wgpu::Device,
         handle: &DmaBufHandle,
-    ) -> Result<Vec<wgpu::Texture>> {
+    ) -> Result<Vec<PlaneTexture>> {
         self.frame += 1;
         let frame = self.frame;
 
         if let Some(index) = self.find(handle) {
             self.entries[index].last_used = frame;
-            return Ok(self.entries[index]
-                .textures
-                .iter()
-                .map(|plane| plane.texture.clone())
-                .collect());
+            return Ok(self.entries[index].textures.clone());
         }
 
         let imported = import_dmabuf(device, handle)?;
-        let textures = imported.iter().map(|plane| plane.texture.clone()).collect();
 
         self.evict_if_full();
         self.entries.push(CacheEntry {
             handle: handle.clone(),
-            textures: imported,
+            textures: imported.clone(),
             last_used: frame,
         });
-        Ok(textures)
+        Ok(imported)
     }
 
     /// The index of the entry for `handle`, if this buffer is already imported.

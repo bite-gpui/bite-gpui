@@ -433,6 +433,16 @@ impl WgpuContext {
         }
 
         let color_atlas_texture_format = Self::select_color_texture_format(adapter)?;
+
+        // A `Nv12` surface is one multi-planar image, a native format the device must be allowed to
+        // create; without the feature the import is refused and the surface dropped, rather than
+        // falling back to a pair of single-plane images the modifier does not describe.
+        if adapter
+            .features()
+            .contains(wgpu::Features::TEXTURE_FORMAT_NV12)
+        {
+            required_features |= wgpu::Features::TEXTURE_FORMAT_NV12;
+        }
         #[cfg(target_family = "wasm")]
         let required_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
             wgpu::Limits::downlevel_webgl2_defaults()

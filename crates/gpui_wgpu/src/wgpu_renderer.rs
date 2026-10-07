@@ -1989,16 +1989,14 @@ impl WgpuRendererCore {
             };
             let resources = self.resources();
 
-            let luma = textures[0].create_view(&wgpu::TextureViewDescriptor::default());
+            let luma = textures[0].view.clone();
             // A single plane samples as RGBA (format 1) and binds its own view for both texture
-            // slots; a second plane is chroma (format 0).
+            // slots; a second plane is chroma (format 0). Both views come from the importer, which for
+            // `Nv12` makes them the two planes of one multi-planar image.
             let (chroma, surface_format) = if textures.len() == 1 {
                 (luma.clone(), 1u32)
             } else {
-                (
-                    textures[1].create_view(&wgpu::TextureViewDescriptor::default()),
-                    0u32,
-                )
+                (textures[1].view.clone(), 0u32)
             };
 
             let chroma_reconstruction = match handle.chroma {
