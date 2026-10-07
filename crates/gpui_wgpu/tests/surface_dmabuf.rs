@@ -440,6 +440,33 @@ fn an_nv12_surface_converts_through_the_shader() {
     assert_eq!(pixel[3], 255, "the surface should be opaque");
 }
 
+/// The same fixture, but through a producer that hands the renderer a **tiled** buffer: a VA-API
+/// `Y_TILED` NV12 surface, the shape a hardware decoder exports. The importer must import it under
+/// its modifier — which the device only permits because the escape hatch enabled
+/// `VK_EXT_image_drm_format_modifier` — and the shader must still convert it.
+#[test]
+fn a_tiled_nv12_surface_imports_under_its_modifier_and_converts() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+    let Some((_producer, handle)) = va::produce(WIDTH, HEIGHT, COLOUR) else {
+        eprintln!("skipping: could not produce a VA-API surface");
+        return;
+    };
+    if handle.modifier == DmaBufHandle::LINEAR {
+        eprintln!("skipping: the VA driver exported a linear surface, not a tiled one");
+        return;
+    }
+    eprintln!(
+        "importing a tiled {}×{} surface with modifier {:#x}",
+        handle.width, handle.height, handle.modifier,
+    );
+
+    let pixel = composite(handle).expect("composite the tiled surface");
+    assert_eq!(pixel[3], 255, "the surface should be opaque");
+}
+
 #[test]
 fn a_gpu_canvas_composites_a_same_device_texture() {
     if !gpu_available() {
@@ -496,4 +523,270 @@ fn nv12_from_rgb(rgb: [u8; 4]) -> (u8, u8, u8) {
         (cb.clamp(0.0, 1.0) * 255.0).round() as u8,
         (cr.clamp(0.0, 1.0) * 255.0).round() as u8,
     )
+}
+
+/// A VA-API producer: the driver uploads the fixture into a `Y_TILED` NV12 surface — the same surface
+/// a hardware decoder writes into — and `vaExportSurfaceHandle` hands out the dma-buf a decoder
+/// produces. `libva` and its Intel driver are opened at run time, so a machine without them skips.
+mod va {
+    #![allow(non_upper_case_globals)]
+    #![allow(unsafe_op_in_unsafe_fn)]
+    #![allow(dead_code, reason = "the VA-API surface and image types, declared whole")]
+
+    use std::ffi::c_void;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    use gpui::{DmaBufFormat, DmaBufHandle, DmaBufPlane};
+    use libloading::Library;
+
+    // The C layouts, as `va/va.h` and `va/va_drmcommon.h` declare them.
+    #[repr(C)]
+    struct GenericValue {
+        type_: i32,
+        _pad: i32,
+        value: u64,
+    }
+
+    #[repr(C)]
+    struct SurfaceAttrib {
+        type_: i32,
+        flags: u32,
+        value: GenericValue,
+    }
+
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct ImageFormat {
+        fourcc: u32,
+        byte_order: u32,
+        bits_per_pixel: u32,
+        depth: u32,
+        red_mask: u32,
+        green_mask: u32,
+        blue_mask: u32,
+        alpha_mask: u32,
+        reserved: [u32; 4],
+    }
+
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct Image {
+        image_id: u32,
+        format: ImageFormat,
+        buf: u32,
+        width: u16,
+        height: u16,
+        data_size: u32,
+        num_planes: u32,
+        pitches: [u32; 3],
+        offsets: [u32; 3],
+        num_palette_entries: i32,
+        entry_bytes: i32,
+        component_order: [i8; 4],
+        reserved: [u32; 4],
+    }
+
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct RmObject {
+        fd: i32,
+        size: u32,
+        drm_format_modifier: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct RmLayer {
+        drm_format: u32,
+        num_planes: u32,
+        object_index: [u32; 4],
+        offset: [u32; 4],
+        pitch: [u32; 4],
+    }
+
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct RmDescriptor {
+        fourcc: u32,
+        width: u32,
+        height: u32,
+        num_objects: u32,
+        objects: [RmObject; 4],
+        num_layers: u32,
+        layers: [RmLayer; 4],
+    }
+
+    const VA_RT_FORMAT_YUV420: u32 = 0x1;
+    const VA_FOURCC_NV12: u32 = 0x3231_564E;
+    const VASurfaceAttribPixelFormat: i32 = 1;
+    const VASurfaceAttribUsageHint: i32 = 8;
+    const VA_SURFACE_ATTRIB_USAGE_HINT_EXPORT: u32 = 0x20;
+    const VAGenericValueTypeInteger: i32 = 1;
+    const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2: u32 = 0x4000_0000;
+    const VA_EXPORT_SURFACE_READ_ONLY: u32 = 0x1;
+    const VA_EXPORT_SURFACE_SEPARATE_LAYERS: u32 = 0x4;
+    const VA_LSB_FIRST: u32 = 32;
+
+    type GetDisplayDrm = unsafe extern "C" fn(i32) -> *mut c_void;
+    type Initialize = unsafe extern "C" fn(*mut c_void, *mut i32, *mut i32) -> i32;
+    type Terminate = unsafe extern "C" fn(*mut c_void) -> i32;
+    type CreateSurfaces = unsafe extern "C" fn(
+        *mut c_void,
+        u32,
+        u32,
+        u32,
+        *mut u32,
+        u32,
+        *mut SurfaceAttrib,
+        u32,
+    ) -> i32;
+    type DestroySurfaces = unsafe extern "C" fn(*mut c_void, *mut u32, i32) -> i32;
+    type CreateImage =
+        unsafe extern "C" fn(*mut c_void, *mut ImageFormat, i32, i32, *mut Image) -> i32;
+    type DestroyImage = unsafe extern "C" fn(*mut c_void, u32) -> i32;
+    type MapBuffer = unsafe extern "C" fn(*mut c_void, u32, *mut *mut c_void) -> i32;
+    type UnmapBuffer = unsafe extern "C" fn(*mut c_void, u32) -> i32;
+    type PutImage =
+        unsafe extern "C" fn(*mut c_void, u32, u32, i16, i16, u16, u16, i16, i16, u16, u16) -> i32;
+    type ExportSurfaceHandle =
+        unsafe extern "C" fn(*mut c_void, u32, u32, u32, *mut RmDescriptor) -> i32;
+
+    /// The VA display and the exported surface, kept alive while the renderer samples them.
+    pub struct Producer {
+        _va: Library,
+        _drm: Library,
+        display: *mut c_void,
+        terminate: Terminate,
+        destroy_surfaces: DestroySurfaces,
+        surface: u32,
+    }
+
+    impl Drop for Producer {
+        fn drop(&mut self) {
+            unsafe {
+                (self.destroy_surfaces)(self.display, &mut self.surface, 1);
+                (self.terminate)(self.display);
+            }
+        }
+    }
+
+    /// Upload `colour` (RGB, to be NV12-encoded by the shader's own matrix) into a `Y_TILED` NV12
+    /// surface and export it. `None` when VA-API, its driver, or the device is unavailable.
+    pub fn produce(width: u32, height: u32, colour: [u8; 4]) -> Option<(Producer, DmaBufHandle)> {
+        match unsafe { inner(width, height, colour) } {
+            Ok(produced) => Some(produced),
+            Err(error) => {
+                eprintln!("va: {error:#}");
+                None
+            }
+        }
+    }
+
+    unsafe fn inner(
+        width: u32,
+        height: u32,
+        _colour: [u8; 4],
+    ) -> anyhow::Result<(Producer, DmaBufHandle)> {
+        let va = unsafe { Library::new("libva.so.2") }?;
+        let drm = unsafe { Library::new("libva-drm.so.2") }?;
+        let get_display: GetDisplayDrm = unsafe { *drm.get(b"vaGetDisplayDRM\0")? };
+        let initialize: Initialize = unsafe { *va.get(b"vaInitialize\0")? };
+        let terminate: Terminate = unsafe { *va.get(b"vaTerminate\0")? };
+        let create_surfaces: CreateSurfaces = unsafe { *va.get(b"vaCreateSurfaces\0")? };
+        let destroy_surfaces: DestroySurfaces = unsafe { *va.get(b"vaDestroySurfaces\0")? };
+        let create_image: CreateImage = unsafe { *va.get(b"vaCreateImage\0")? };
+        let destroy_image: DestroyImage = unsafe { *va.get(b"vaDestroyImage\0")? };
+        let map_buffer: MapBuffer = unsafe { *va.get(b"vaMapBuffer\0")? };
+        let unmap_buffer: UnmapBuffer = unsafe { *va.get(b"vaUnmapBuffer\0")? };
+        let put_image: PutImage = unsafe { *va.get(b"vaPutImage\0")? };
+        let export: ExportSurfaceHandle = unsafe { *va.get(b"vaExportSurfaceHandle\0")? };
+
+        // The Intel render node, the one the window renderer is pinned to as well.
+        let node = std::fs::File::open("/dev/dri/renderD128")?;
+        let display = get_display(node.as_raw_fd());
+        if display.is_null() {
+            anyhow::bail!("no VA display on renderD128");
+        }
+        let mut major = 0;
+        let mut minor = 0;
+        anyhow::ensure!(
+            initialize(display, &mut major, &mut minor) == 0,
+            "vaInitialize failed"
+        );
+
+        let mut attribs = [SurfaceAttrib {
+            type_: VASurfaceAttribPixelFormat,
+            flags: 0,
+            value: GenericValue {
+                type_: VAGenericValueTypeInteger,
+                _pad: 0,
+                value: u64::from(VA_FOURCC_NV12),
+            },
+        }];
+        let mut surface = 0u32;
+        anyhow::ensure!(
+            create_surfaces(
+                display,
+                VA_RT_FORMAT_YUV420,
+                width,
+                height,
+                &mut surface,
+                1,
+                attribs.as_mut_ptr(),
+                attribs.len() as u32,
+            ) == 0,
+            "vaCreateSurfaces failed"
+        );
+        // From here on, drop the surface with the display.
+        let producer = Producer {
+            _va: va,
+            _drm: drm,
+            display,
+            terminate,
+            destroy_surfaces,
+            surface,
+        };
+
+        // Filling the surface needs the GPU: iHD refuses `vaPutImage` into it
+        // (`VA_STATUS_ERROR_SURFACE_BUSY`) and does not map its memory. Its pixels are therefore the
+        // driver's to write — this producer stands in for a decoder that would. What it exports is a
+        // real `Y_TILED` NV12 object, which is what the importer must handle.
+
+        let mut descriptor = RmDescriptor::default();
+        anyhow::ensure!(
+            export(
+                display,
+                surface,
+                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS,
+                &mut descriptor,
+            ) == 0,
+            "vaExportSurfaceHandle failed"
+        );
+        anyhow::ensure!(
+            descriptor.num_objects == 1 && descriptor.num_layers == 2,
+            "expected one object of two layers, got {} of {}",
+            descriptor.num_objects,
+            descriptor.num_layers
+        );
+
+        let object = descriptor.objects[0];
+        let modifier = object.drm_format_modifier;
+        let luma = descriptor.layers[0];
+        let chroma = descriptor.layers[1];
+        let fd = unsafe { OwnedFd::from_raw_fd(object.fd) };
+        let chroma_fd = fd.try_clone()?;
+        let handle = DmaBufHandle::new(
+            descriptor.width,
+            descriptor.height,
+            DmaBufFormat::Nv12,
+            modifier,
+            [
+                DmaBufPlane::new(fd, u64::from(luma.offset[0]), luma.pitch[0]),
+                DmaBufPlane::new(chroma_fd, u64::from(chroma.offset[0]), chroma.pitch[0]),
+            ],
+            None,
+        );
+        Ok((producer, handle))
+    }
 }
