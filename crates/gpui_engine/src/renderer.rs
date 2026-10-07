@@ -2,7 +2,26 @@
 
 use crate::{PlatformAtlas, Scene};
 use gpui_types::{DevicePixels, Size};
+use std::any::Any;
 use std::sync::Arc;
+
+/// Downcasting for [`SceneRenderer`] trait objects.
+///
+/// `SceneRenderer` is the GPU-agnostic seam: it presents a [`Scene`] and names no graphics API.
+/// The renderer *behind* it is what owns the device — and the caches, the textures and the other
+/// resources built on it — so a caller that needs those downcasts to the concrete backend renderer
+/// here, rather than having the window lend its guest's internals.
+impl dyn SceneRenderer + '_ {
+    /// `self` as the concrete renderer `T`, if that is what it is.
+    pub fn as_renderer<T: Any>(&self) -> Option<&T> {
+        (self as &dyn Any).downcast_ref::<T>()
+    }
+
+    /// The mutable form of [`as_renderer`](Self::as_renderer).
+    pub fn as_renderer_mut<T: Any>(&mut self) -> Option<&mut T> {
+        (self as &mut dyn Any).downcast_mut::<T>()
+    }
+}
 
 /// A frame read back from a renderer, as raw pixels.
 ///
@@ -77,7 +96,7 @@ impl PixelBuffer {
 /// fills a target without a CPU round trip, which is what a consumer on the GPU wants;
 /// [`read_pixels`](Self::read_pixels) pays for system memory only when a consumer on the CPU
 /// needs it; [`render_scene_to_image`](Self::render_scene_to_image) is the two together.
-pub trait SceneRenderer: 'static {
+pub trait SceneRenderer: Any {
     /// Encodes and submits `scene`, returning whether it was presented.
     ///
     /// Renderers that cannot observe presentation (or that render offscreen)
