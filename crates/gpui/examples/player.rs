@@ -16,13 +16,13 @@
 //! surface as a dma-buf under the DRM format modifier the driver chose, and the window's renderer
 //! imports that buffer and converts it — no copy through the CPU, no copy on the GPU.
 //!
-//! # The one thing to know
+//! # Bounded, not all-in-memory
 //!
-//! A VA surface is recycled by the decoder's pool when its `AVFrame` is released, so a frame still
-//! being sampled must not be released. This player therefore holds **every** decoded frame and
-//! cycles an index over them: playback is bounded by the stream's size in memory, not by a window of
-//! a few frames, which is what keeps it simple *and* free of the recycle-under-the-renderer tear a
-//! bounded queue has to fence against.
+//! The playback keeps only a few frames alive and recycles each surface once the renderer says it is
+//! done with it. Every handle the producer hands out carries a **release descriptor**; the renderer
+//! signals it from the completion callback of the submission that sampled the frame, and the producer
+//! waits on it before returning the surface to its pool — and never recycles the frame still on
+//! screen, which the scene re-samples every frame. That is what lets a stream play in constant memory.
 //!
 //! # Colour
 //!
@@ -49,9 +49,13 @@ mod demo {
     use std::time::{Duration, Instant};
 
     use gpui::{
-        AnyElement, App, Bounds, Context, IntoElement, Render, Window, WindowBounds, WindowOptions,
-        div, prelude::*, px, rgb, size, surface,
+        AnyElement, App, Bounds, Context, DmaBufHandle, IntoElement, Render, Window, WindowBounds,
+        WindowOptions, div, prelude::*, px, rgb, size, surface,
     };
+    use gpui_va::Playback;
+
+    /// How many frames the playback keeps alive at once. Small, because recycling is what allows it.
+    const DEPTH: usize = 4;
 
     /// The bundled clip's rate, 25 fps.
     fn frame_period() -> Duration {
@@ -76,33 +80,17 @@ mod demo {
     /// The stream to play: a file named on the command line, or the bundled clip.
     fn stream() -> Option<(String, Vec<u8>)> {
         match std::env::args().nth(1) {
-            Some(path) => std::fs::read(&path)
-                .ok()
-                .map(|bytes| (path, bytes)),
+            Some(path) => std::fs::read(&path).ok().map(|bytes| (path, bytes)),
             None => Some(("bundled clip".to_owned(), gpui_va::CLIP.to_vec())),
         }
     }
 
-    /// Decode a whole stream into the frames a player cycles through.
-    ///
-    /// Holding every frame is deliberate; see the module docs.
-    fn decode(stream: &[u8]) -> Option<Vec<gpui_va::Frame>> {
-        let mut decoder = gpui_va::Decoder::open()?;
-        decoder.send(stream).ok()?;
-        decoder.finish().ok()?;
-        let mut frames = Vec::new();
-        while let Some(frame) = decoder.receive() {
-            frames.push(frame);
-        }
-        (!frames.is_empty()).then_some(frames)
-    }
-
     struct Player {
-        /// Where the frames came from, for the caption.
+        playback: Option<Playback>,
+        /// The frame on screen: the scene re-samples it until the playback advances.
+        current: Option<DmaBufHandle>,
+        /// Where the frames came from, or why there are none.
         source: String,
-        /// Every decoded frame, held so no surface is recycled under the renderer.
-        frames: Vec<gpui_va::Frame>,
-        index: usize,
         playing: bool,
         /// When the current frame came due, so playback keeps the stream's rate.
         due: Instant,
@@ -110,37 +98,44 @@ mod demo {
 
     impl Player {
         fn new() -> Self {
-            let (source, frames) = match stream()
-                .and_then(|(source, bytes)| decode(&bytes).map(|frames| (source, frames)))
-            {
-                Some((source, frames)) => (source, frames),
-                None => (
-                    "no stream: libavcodec of the declared ABI, or the VA-API device, is missing"
-                        .to_owned(),
-                    Vec::new(),
-                ),
+            let (playback, source) = match stream() {
+                Some((source, bytes)) => match Playback::open(&bytes, DEPTH) {
+                    Some(playback) => (Some(playback), source),
+                    None => (
+                        None,
+                        "no stream: libavcodec of the declared ABI, or the VA-API device, is missing"
+                            .to_owned(),
+                    ),
+                },
+                None => (None, "cannot read the named stream".to_owned()),
             };
-            Self {
+            let mut player = Self {
+                playback,
+                current: None,
                 source,
-                frames,
-                index: 0,
                 playing: true,
                 due: Instant::now(),
-            }
+            };
+            player.advance();
+            player
         }
 
+        /// Take the next frame to show, if the playback has one to give.
         fn advance(&mut self) {
-            if !self.frames.is_empty() {
-                self.index = (self.index + 1) % self.frames.len();
+            if let Some(playback) = &mut self.playback
+                && let Some(handle) = playback.next()
+            {
+                self.current = Some(handle);
             }
         }
     }
 
     impl Render for Player {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            if self.playing && !self.frames.is_empty() {
-                // Advance every frame the wall clock says is due, so playback keeps the stream's
-                // rate however fast the window redraws.
+            if self.playing && self.playback.is_some() {
+                // Advance every frame the wall clock says is due, so playback keeps the stream's rate
+                // however fast the window redraws. A frame the renderer has not released yet is
+                // simply shown again.
                 let now = Instant::now();
                 while now.duration_since(self.due) >= frame_period() {
                     self.due += frame_period();
@@ -149,24 +144,21 @@ mod demo {
                 window.request_animation_frame();
             }
 
-            let picture: AnyElement = match self.frames.get(self.index) {
-                Some(frame) => surface(frame.handle().clone())
-                    .size_full()
-                    .into_any_element(),
+            let picture: AnyElement = match &self.current {
+                Some(handle) => surface(handle.clone()).size_full().into_any_element(),
                 None => div().size_full().bg(rgb(0x202024)).into_any_element(),
             };
 
-            let status = format!(
-                "{} · frame {} / {} · {}",
-                self.source,
-                if self.frames.is_empty() {
-                    0
-                } else {
-                    self.index + 1
-                },
-                self.frames.len(),
-                if self.playing { "playing" } else { "paused" },
-            );
+            let status = match &self.playback {
+                Some(playback) => format!(
+                    "{} · frame {} · {} live (of {DEPTH}) · {}",
+                    self.source,
+                    playback.position(),
+                    playback.live(),
+                    if self.playing { "playing" } else { "paused" },
+                ),
+                None => self.source.clone(),
+            };
 
             div()
                 .size_full()
