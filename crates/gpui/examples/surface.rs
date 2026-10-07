@@ -429,7 +429,7 @@ mod demo {
         /// never read: either type is held only so its memory outlives the exported dma-buf.
         #[allow(dead_code, reason = "held so the surface outlives the dma-buf it exported")]
         enum DecodedSurface {
-            Decoded(gpui_va::Decoded),
+            Decoded(gpui_va::Frame),
             StandIn(gpui_va::Surface),
         }
 
@@ -502,7 +502,10 @@ mod demo {
                 // libavcodec, into the same `Y_TILED` surface a video player would, and exports it.
                 // Where libavcodec is missing it falls back to a GPU-filled stand-in.
                 let (decoded, decoded_handle) = match gpui_va::decode(gpui_va::FIXTURE) {
-                    Some((surface, handle)) => (Some(DecodedSurface::Decoded(surface)), Some(handle)),
+                    Some(frame) => {
+                        let handle = frame.handle().clone();
+                        (Some(DecodedSurface::Decoded(frame)), Some(handle))
+                    }
                     None => match gpui_va::nv12(TILE, TILE, DECODED_COLOUR) {
                         Some((surface, handle)) => (Some(DecodedSurface::StandIn(surface)), Some(handle)),
                         None => (None, None),
