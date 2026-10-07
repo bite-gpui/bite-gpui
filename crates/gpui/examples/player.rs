@@ -26,10 +26,10 @@
 //!
 //! # Colour
 //!
-//! The renderer's surface shader converts NV12 with one fixed matrix, BT.601 full-range. The bundled
-//! clip is encoded to match, so it plays as drawn; a stream tagged otherwise (a limited-range
-//! BT.709 stream, as most real footage is) will look washed out or hue-shifted until the shader is
-//! told the stream's colour space.
+//! The renderer converts NV12 with the matrix and range the *producer declares on the frame's
+//! handle*, and `gpui_va` reads both off the stream — so footage plays as it was graded rather than
+//! through one assumed matrix. The bundled clip is full-range BT.601. A stream that names neither (as
+//! most do) is resolved by convention: limited range, and BT.601 below 576 lines, BT.709 above.
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
