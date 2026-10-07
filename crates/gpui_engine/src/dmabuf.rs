@@ -165,6 +165,14 @@ pub struct DmaBufHandle {
     /// An optional `sync_file` fence the renderer waits on before sampling the buffer; a fence that
     /// does not signal in time drops the surface for that frame rather than blocking the frame.
     pub acquire_fence: Option<Arc<OwnedFd>>,
+    /// An optional descriptor the renderer **signals** once it has finished sampling the buffer — the
+    /// mirror of [`acquire_fence`](Self::acquire_fence), which the renderer waits on. A producer that
+    /// recycles surfaces waits on this before returning one to its pool.
+    ///
+    /// It is not a `sync_file`: `wgpu` owns its queue and offers no way to export one, so what carries
+    /// the signal is an `eventfd` the producer makes, which the renderer writes to once the submission
+    /// that sampled the buffer has completed.
+    pub release: Option<Arc<OwnedFd>>,
     /// How the renderer should reconstruct chroma; the producer's hint for a YCbCr buffer, and
     /// ignored for an RGB one.
     pub chroma: ChromaReconstruction,
@@ -182,6 +190,8 @@ impl PartialEq for DmaBufHandle {
             && self.planes == other.planes
             && self.acquire_fence.as_ref().map(|fd| fd.as_raw_fd())
                 == other.acquire_fence.as_ref().map(|fd| fd.as_raw_fd())
+            && self.release.as_ref().map(|fd| fd.as_raw_fd())
+                == other.release.as_ref().map(|fd| fd.as_raw_fd())
             && self.chroma == other.chroma
             && self.color_space == other.color_space
     }
@@ -213,6 +223,7 @@ impl DmaBufHandle {
             modifier,
             planes: planes.into_iter().collect(),
             acquire_fence: acquire_fence.map(Arc::new),
+            release: None,
             chroma: ChromaReconstruction::default(),
             color_space: YuvColorSpace::default(),
         }
@@ -229,6 +240,13 @@ impl DmaBufHandle {
     /// understand the matrix or range falls back to its default (BT.601 full range).
     pub fn with_color_space(mut self, color_space: YuvColorSpace) -> Self {
         self.color_space = color_space;
+        self
+    }
+
+    /// Give the renderer a descriptor to signal once it has finished with this buffer, so a producer
+    /// that recycles the surface behind it can wait rather than guess. See [`Self::release`].
+    pub fn with_release(mut self, release: OwnedFd) -> Self {
+        self.release = Some(Arc::new(release));
         self
     }
 
@@ -372,5 +390,25 @@ mod tests {
         let declared = handle.clone().with_color_space(YuvColorSpace::BT709_LIMITED);
         assert_eq!(declared.color_space, YuvColorSpace::BT709_LIMITED);
         assert_ne!(handle, declared);
+    }
+
+    /// A producer may hand the renderer a descriptor to signal once it is done with the buffer, so a
+    /// surface can be recycled; it defaults to none, and two handles differing only in it are not the
+    /// same buffer.
+    #[test]
+    fn a_handle_carries_a_release_descriptor_when_asked() {
+        let handle = DmaBufHandle::new(
+            1,
+            1,
+            SurfaceFormatKind::rgba8(),
+            DmaBufHandle::LINEAR,
+            [DmaBufPlane::new(descriptor(), 0, 4)],
+            None,
+        );
+        assert!(handle.release.is_none());
+
+        let released = handle.clone().with_release(descriptor());
+        assert!(released.release.is_some());
+        assert_ne!(handle, released);
     }
 }
