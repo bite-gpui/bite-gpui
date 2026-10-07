@@ -440,6 +440,307 @@ fn an_nv12_surface_converts_through_the_shader() {
     assert_eq!(pixel[3], 255, "the surface should be opaque");
 }
 
+/// Clear a tiled `Nv12` dma-buf to `colour`, on the GPU.
+///
+/// iHD will not let a CPU write a decode surface — it does not map one, and `vaPutImage` returns
+/// `VA_STATUS_ERROR_SURFACE_BUSY` — so the fill has to be a GPU one. This imports the buffer into a
+/// Vulkan device the same way the renderer will, under the same modifier, and clears each plane,
+/// which a decoder's output would otherwise supply.
+fn fill_tiled(handle: &DmaBufHandle, colour: [u8; 4]) -> anyhow::Result<()> {
+    use std::os::fd::IntoRawFd;
+
+    use ash::vk;
+
+    let entry = unsafe { ash::Entry::load() }
+        .map_err(|error| anyhow::anyhow!("load vulkan: {error}"))?;
+    let app_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 1, 0));
+    let instance = unsafe {
+        entry.create_instance(
+            &vk::InstanceCreateInfo::default().application_info(&app_info),
+            None,
+        )
+    }?;
+    let devices = unsafe { instance.enumerate_physical_devices() }?;
+    let physical = devices
+        .iter()
+        .copied()
+        .find(|device| {
+            let properties = unsafe { instance.get_physical_device_properties(*device) };
+            properties.device_type == vk::PhysicalDeviceType::INTEGRATED_GPU
+        })
+        .or_else(|| devices.first().copied())
+        .ok_or_else(|| anyhow::anyhow!("no Vulkan device to fill on"))?;
+
+    let priority = [1.0f32];
+    let queue_info = vk::DeviceQueueCreateInfo::default()
+        .queue_family_index(0)
+        .queue_priorities(&priority);
+    let extensions = [
+        vk::KHR_EXTERNAL_MEMORY_FD_NAME.as_ptr(),
+        vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
+        vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME.as_ptr(),
+    ];
+    let device = unsafe {
+        instance.create_device(
+            physical,
+            &vk::DeviceCreateInfo::default()
+                .queue_create_infos(std::slice::from_ref(&queue_info))
+                .enabled_extension_names(&extensions),
+            None,
+        )
+    }?;
+    let queue = unsafe { device.get_device_queue(0, 0) };
+
+    // The image the renderer will also import: one object, two planes under the modifier, laid out
+    // exactly as `vaExportSurfaceHandle` reported them.
+    let luma = &handle.planes[0];
+    let chroma = &handle.planes[1];
+    let plane_layouts = [
+        vk::SubresourceLayout::default()
+            .offset(0)
+            .row_pitch(u64::from(luma.stride)),
+        vk::SubresourceLayout::default()
+            .offset(chroma.offset.saturating_sub(luma.offset))
+            .row_pitch(u64::from(chroma.stride)),
+    ];
+    let mut modifier_info = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+        .drm_format_modifier(handle.modifier)
+        .plane_layouts(&plane_layouts);
+    let image_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
+        .extent(vk::Extent3D {
+            width: handle.width,
+            height: handle.height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .push_next(&mut modifier_info);
+    let image = unsafe { device.create_image(&image_info, None) }?;
+    let requirements = unsafe { device.get_image_memory_requirements(image) };
+
+    let fd = luma.fd.try_clone()?.into_raw_fd();
+    let mut memory = None;
+    let mut last_error = None;
+    for index in 0..32u32 {
+        if requirements.memory_type_bits & (1 << index) == 0 {
+            continue;
+        }
+        let mut import = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+            .fd(fd);
+        let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
+        let allocate_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(luma.offset + requirements.size)
+            .memory_type_index(index)
+            .push_next(&mut import)
+            .push_next(&mut dedicated);
+        match unsafe { device.allocate_memory(&allocate_info, None) } {
+            Ok(allocated) => {
+                memory = Some(allocated);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let memory = memory.ok_or_else(|| {
+        anyhow::anyhow!("no memory type accepted the fill import (last: {last_error:?})")
+    })?;
+    unsafe { device.bind_image_memory(image, memory, luma.offset) }?;
+
+    // A host-visible staging buffer holding the linear NV12 to upload; the driver tiles it into the
+    // surface, which is how a decoder's output would otherwise arrive.
+    let luma_size = u64::from(handle.width) * u64::from(handle.height);
+    let chroma_size = u64::from(handle.width / 2) * u64::from(handle.height / 2) * 2;
+    let staging = unsafe {
+        device.create_buffer(
+            &vk::BufferCreateInfo::default()
+                .size(luma_size + chroma_size)
+                .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE),
+            None,
+        )
+    }?;
+    let staging_requirements = unsafe { device.get_buffer_memory_requirements(staging) };
+    let memory_properties = unsafe { instance.get_physical_device_memory_properties(physical) };
+    let host_type = (0..32u32)
+        .find(|index| {
+            let properties = memory_properties.memory_types[*index as usize].property_flags;
+            staging_requirements.memory_type_bits & (1 << index) != 0
+                && properties.contains(
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+        })
+        .ok_or_else(|| anyhow::anyhow!("no host-visible memory for the staging buffer"))?;
+    let staging_memory = unsafe {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(staging_requirements.size)
+                .memory_type_index(host_type),
+            None,
+        )
+    }?;
+    unsafe { device.bind_buffer_memory(staging, staging_memory, 0) }?;
+    let (y, cb, cr) = nv12_from_rgb(colour);
+    unsafe {
+        let mapped = device.map_memory(staging_memory, 0, staging_requirements.size, vk::MemoryMapFlags::empty())?
+            as *mut u8;
+        let bytes = std::slice::from_raw_parts_mut(mapped, (luma_size + chroma_size) as usize);
+        bytes[..luma_size as usize].fill(y);
+        for pair in bytes[luma_size as usize..].chunks_exact_mut(2) {
+            pair[0] = cb;
+            pair[1] = cr;
+        }
+        device.unmap_memory(staging_memory);
+    }
+
+    let pool = unsafe {
+        device.create_command_pool(
+            &vk::CommandPoolCreateInfo::default().queue_family_index(0),
+            None,
+        )
+    }?;
+    let command = unsafe {
+        device.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default()
+                .command_pool(pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1),
+        )
+    }?[0];
+
+    let plane = |aspect| vk::ImageSubresourceRange {
+        aspect_mask: aspect,
+        base_mip_level: 0,
+        level_count: 1,
+        base_array_layer: 0,
+        layer_count: 1,
+    };
+    let planes = [
+        plane(vk::ImageAspectFlags::PLANE_0),
+        plane(vk::ImageAspectFlags::PLANE_1),
+    ];
+    let barrier = |range, old, new, src, dst| {
+        vk::ImageMemoryBarrier::default()
+            .old_layout(old)
+            .new_layout(new)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(range)
+            .src_access_mask(src)
+            .dst_access_mask(dst)
+    };
+    let to_transfer: Vec<_> = planes
+        .iter()
+        .map(|range| {
+            barrier(
+                *range,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::TRANSFER_WRITE,
+            )
+        })
+        .collect();
+    let to_sampled: Vec<_> = planes
+        .iter()
+        .map(|range| {
+            barrier(
+                *range,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::AccessFlags::SHADER_READ,
+            )
+        })
+        .collect();
+
+    let regions = [
+        vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(handle.width)
+            .buffer_image_height(handle.height)
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::PLANE_0,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image_extent(vk::Extent3D {
+                width: handle.width,
+                height: handle.height,
+                depth: 1,
+            }),
+        vk::BufferImageCopy::default()
+            .buffer_offset(luma_size)
+            .buffer_row_length(handle.width / 2)
+            .buffer_image_height(handle.height / 2)
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::PLANE_1,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image_extent(vk::Extent3D {
+                width: handle.width / 2,
+                height: handle.height / 2,
+                depth: 1,
+            }),
+    ];
+    unsafe {
+        device.begin_command_buffer(command, &vk::CommandBufferBeginInfo::default())?;
+        device.cmd_pipeline_barrier(
+            command,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &to_transfer,
+        );
+        device.cmd_copy_buffer_to_image(
+            command,
+            staging,
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &regions,
+        );
+        device.cmd_pipeline_barrier(
+            command,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &to_sampled,
+        );
+        device.end_command_buffer(command)?;
+
+        let fence = device.create_fence(&vk::FenceCreateInfo::default(), None)?;
+        let commands = [command];
+        device.queue_submit(queue, &[vk::SubmitInfo::default().command_buffers(&commands)], fence)?;
+        device.wait_for_fences(&[fence], true, u64::MAX)?;
+        device.device_wait_idle()?;
+
+        device.destroy_fence(fence, None);
+        device.destroy_command_pool(pool, None);
+        device.destroy_buffer(staging, None);
+        device.free_memory(staging_memory, None);
+        device.destroy_image(image, None);
+        device.free_memory(memory, None);
+        device.destroy_device(None);
+        instance.destroy_instance(None);
+    }
+    Ok(())
+}
+
 /// The same fixture, but through a producer that hands the renderer a **tiled** buffer: a VA-API
 /// `Y_TILED` NV12 surface, the shape a hardware decoder exports. The importer must import it under
 /// its modifier — which the device only permits because the escape hatch enabled
@@ -450,7 +751,7 @@ fn a_tiled_nv12_surface_imports_under_its_modifier_and_converts() {
         eprintln!("skipping: no Vulkan adapter for the headless renderer");
         return;
     }
-    let Some((_producer, handle)) = va::produce(WIDTH, HEIGHT, COLOUR) else {
+    let Some((_producer, handle)) = va::produce(WIDTH, HEIGHT) else {
         eprintln!("skipping: could not produce a VA-API surface");
         return;
     };
@@ -462,8 +763,20 @@ fn a_tiled_nv12_surface_imports_under_its_modifier_and_converts() {
         "importing a tiled {}×{} surface with modifier {:#x}",
         handle.width, handle.height, handle.modifier,
     );
+    fill_tiled(&handle, COLOUR).expect("fill the tiled surface on the GPU");
 
     let pixel = composite(handle).expect("composite the tiled surface");
+    let (y, cb, cr) = nv12_from_rgb(COLOUR);
+    let expected =
+        ycbcr_to_rgb(f32::from(y) / 255.0, f32::from(cb) / 255.0, f32::from(cr) / 255.0);
+    for channel in 0..3 {
+        let want = (expected[channel] * 255.0).round() as i32;
+        let got = i32::from(pixel[channel]);
+        assert!(
+            (got - want).abs() <= 2,
+            "channel {channel} is {got}, but the shader's matrix predicts {want}",
+        );
+    }
     assert_eq!(pixel[3], 255, "the surface should be opaque");
 }
 
@@ -670,10 +983,10 @@ mod va {
         }
     }
 
-    /// Upload `colour` (RGB, to be NV12-encoded by the shader's own matrix) into a `Y_TILED` NV12
-    /// surface and export it. `None` when VA-API, its driver, or the device is unavailable.
-    pub fn produce(width: u32, height: u32, colour: [u8; 4]) -> Option<(Producer, DmaBufHandle)> {
-        match unsafe { inner(width, height, colour) } {
+    /// Create an NV12 `Y_TILED` surface and export it. `None` when VA-API, its driver, or the device
+    /// is unavailable. Its pixels are the driver's to write; see `fill_tiled`.
+    pub fn produce(width: u32, height: u32) -> Option<(Producer, DmaBufHandle)> {
+        match unsafe { inner(width, height) } {
             Ok(produced) => Some(produced),
             Err(error) => {
                 eprintln!("va: {error:#}");
@@ -682,11 +995,7 @@ mod va {
         }
     }
 
-    unsafe fn inner(
-        width: u32,
-        height: u32,
-        _colour: [u8; 4],
-    ) -> anyhow::Result<(Producer, DmaBufHandle)> {
+    unsafe fn inner(width: u32, height: u32) -> anyhow::Result<(Producer, DmaBufHandle)> {
         let va = unsafe { Library::new("libva.so.2") }?;
         let drm = unsafe { Library::new("libva-drm.so.2") }?;
         let get_display: GetDisplayDrm = unsafe { *drm.get(b"vaGetDisplayDRM\0")? };
