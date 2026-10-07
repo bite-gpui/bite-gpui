@@ -91,11 +91,60 @@ struct SurfaceParams {
     bounds: PodBounds,
     content_mask: PodBounds,
     /// `0` = `NV12` (sample and convert), `1` = a single RGBA/BGRA plane (sample straight through).
-    /// `chroma_reconstruction` is `0` for bilinear, `1` for luma-guided. The padding keeps the size
-    /// a multiple of 16.
+    /// `chroma_reconstruction` is `0` for bilinear, `1` for luma-guided. The padding keeps the two
+    /// words before `ycbcr_to_rgb` 16-byte aligned, so the `mat4x4` lands where the shader expects.
     surface_format: u32,
     chroma_reconstruction: u32,
     _pad: [u32; 2],
+    /// The `YUV -> RGB` matrix for the colour space the producer declared, column-major as WGSL's
+    /// `mat4x4<f32>` reads it; unused for a single-plane buffer.
+    ycbcr_to_rgb: [[f32; 4]; 4],
+}
+
+/// The matrix the surface fragment multiplies `vec4(y, cb, cr, 1)` by, column-major as WGSL's
+/// `mat4x4<f32>` reads it, inverting the colour space the producer declared.
+///
+/// Standard `YUV -> RGB`: the luma columns are the range's luma scale, the chroma columns carry the
+/// matrix's `Kr`/`Kb` terms times the range's chroma scale, and the constant column folds in both zero
+/// points. For BT.601 full range this reproduces the fixed matrix the shader used to carry.
+fn yuv_to_rgb(color_space: gpui_engine::YuvColorSpace) -> [[f32; 4]; 4] {
+    use gpui_engine::{YuvMatrix, YuvRange};
+
+    let (kr, kb) = match color_space.matrix {
+        YuvMatrix::Bt601 => (0.299f32, 0.114f32),
+        YuvMatrix::Bt709 => (0.2126f32, 0.0722f32),
+        YuvMatrix::Bt2020 => (0.2627f32, 0.0593f32),
+    };
+    let kg = 1.0 - kr - kb;
+    // The offsets the chroma columns carry, before the range's scale: `2(1-Kr)` for red from Cr,
+    // `2(1-Kb)` for blue from Cb, and the two green terms that keep the luma weights summing to one.
+    let red_cr = 2.0 * (1.0 - kr);
+    let blue_cb = 2.0 * (1.0 - kb);
+    let green_cb = 2.0 * kb * (1.0 - kb) / kg;
+    let green_cr = 2.0 * kr * (1.0 - kr) / kg;
+
+    // How the range maps a sample to its full-range value: a scale and a zero point each for luma and
+    // chroma. Full range has no offset and half-scale chroma, so for BT.601 it reproduces the fixed
+    // matrix the shader used to carry and leaves the hand-filled buffers' result unchanged; limited
+    // range uses the `16..235`/`128` studio points.
+    let (y_scale, c_scale, y_zero, c_zero) = match color_space.range {
+        YuvRange::Full => (1.0, 1.0, 0.0, 0.5),
+        YuvRange::Limited => (255.0 / 219.0, 255.0 / 224.0, 16.0 / 255.0, 128.0 / 255.0),
+    };
+
+    let (red_cr, blue_cb) = (red_cr * c_scale, blue_cb * c_scale);
+    let (green_cb, green_cr) = (green_cb * c_scale, green_cr * c_scale);
+    [
+        [y_scale, y_scale, y_scale, 0.0],
+        [0.0, -green_cb, blue_cb, 0.0],
+        [red_cr, -green_cr, 0.0, 0.0],
+        [
+            -red_cr * c_zero - y_zero * y_scale,
+            (green_cb + green_cr) * c_zero - y_zero * y_scale,
+            -blue_cb * c_zero - y_zero * y_scale,
+            1.0,
+        ],
+    ]
 }
 
 #[repr(C)]
@@ -2010,6 +2059,7 @@ impl WgpuRendererCore {
                 surface_format,
                 chroma_reconstruction,
                 _pad: [0; 2],
+                ycbcr_to_rgb: yuv_to_rgb(handle.color_space),
             };
             let params_buffer = resources.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("surface_params"),
