@@ -6,11 +6,17 @@
 //! `ID3D11ShaderResourceView`; it is plain data (descriptors and layout), so it pulls no GPU driver
 //! into the engine.
 //!
+//! A [`DmaBufHandle`] bundles that descriptor with the layout an importer needs to sample it: the
+//! surface size, the pixel [`format`](DmaBufHandle::format), the DRM format
+//! [`modifier`](DmaBufHandle::modifier), one [`DmaBufPlane`] per plane (an fd, a byte offset and a row
+//! stride), and an optional acquire fence. A producer builds one and hands it to the renderer; the
+//! renderer duplicates the plane descriptors into the kernel when it imports.
+//!
 //! # The producer's contract
 //!
-//! These are the invariants the P3 probe measured on real hardware
-//! (`bite-gpui-project/decisions/linux-dmabuf-probe.md`). The renderer *consumes* the descriptor; it
-//! does not negotiate it, and it cannot repair a buffer that violates one:
+//! The renderer *consumes* the descriptor; it does not negotiate it, and it cannot repair a buffer
+//! that violates one. These are the invariants an importer requires, so a producer must satisfy
+//! them:
 //!
 //! - **Uncompressed under the declared [`modifier`](DmaBufHandle::modifier).** A driver may enable
 //!   implicit (CCS) compression for a sampled tiled image, and that state is not carried by the
@@ -76,7 +82,7 @@ impl DmaBufPlane {
 
 /// A dma-buf a producer hands the renderer to composite as a surface.
 ///
-/// See the [module docs](self) for the producer's contract — uncompressed, linear across vendors,
+/// See the module documentation for the producer's contract — uncompressed, linear across vendors,
 /// dedicated when the planes are split.
 #[derive(Debug, Clone)]
 pub struct DmaBufHandle {

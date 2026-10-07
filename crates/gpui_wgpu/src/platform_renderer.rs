@@ -6,9 +6,9 @@
 //! the backend builds itself.
 //!
 //! macOS is the one platform left out. A window's renderer there must answer `MacSceneRenderer`,
-//! whose layer pointer a wgpu renderer has no answer for yet: the corner the macOS presentation
-//! probe measured but did not decide. The module therefore carries one `cfg` — not wasm, not
-//! macOS — instead of an item-by-item one.
+//! whose layer pointer a wgpu renderer cannot supply yet — the wgpu path does not present through a
+//! `CAMetalLayer` the window can install as its view's backing layer. The module therefore carries
+//! one `cfg` — not wasm, not macOS — instead of an item-by-item one.
 
 use anyhow::Result;
 use gpui_platform::{DevicePixels, GpuSpecs, PlatformRenderer, RendererTarget, Size};

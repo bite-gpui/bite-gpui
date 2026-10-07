@@ -1,23 +1,38 @@
 //! Importing a dma-buf into `wgpu` textures, on the Vulkan backend.
 //!
+//! A [`DmaBufHandle`](gpui_engine::DmaBufHandle) is a buffer that another component — a compositor,
+//! video decoder, camera or second GPU process — exports as a dma-buf: one file descriptor per plane
+//! plus the layout needed to interpret it (a format, a DRM format modifier, and a byte offset and
+//! row stride per plane). The renderer *consumes* such a handle to composite the buffer as a
+//! surface; it does not produce or negotiate one.
+//!
 //! `wgpu` can adopt a raw `VkImage` (`texture_from_raw`) but cannot create one over an external
-//! allocation, so the import is done with `ash` against the very device `wgpu` draws on. The recipe
-//! is the one the P3 probe proved
-//! (`bite-gpui-project`/`decisions/linux-dmabuf-probe.md`): create the image, import the descriptor
-//! into a **dedicated** allocation, bind it, and hand the image to `wgpu`. The dedicated
-//! allocation is not decoration — the probe found the discrete GPU refusing the import on every
-//! memory type without it, while still advertising the format `IMPORTABLE`.
+//! allocation, so the import is done with `ash` against the very device `wgpu` draws on: create the
+//! image, import the descriptor into a **dedicated** allocation, bind it, and hand the image to
+//! `wgpu`. The dedicated allocation is not decoration — a discrete GPU can refuse the import on
+//! every memory type without it, even while advertising the format as `IMPORTABLE`, so a dedicated
+//! allocation is what imports reliably across drivers.
 //!
 //! A descriptor is consumed by the import (the driver takes ownership), so each plane imports a
 //! `dup` of its descriptor; that is also what lets an `NV12` buffer's two planes, which may share one
 //! descriptor, become two independently-owned textures.
 //!
-//! **Linear only — a tiled buffer is refused.** Sampling a vendor-tiled modifier needs
-//! `VK_EXT_image_drm_format_modifier` enabled on the device the image is made on, and that device is
-//! `wgpu`'s: its Vulkan backend does not enable the extension and exposes no way to add one, so a
-//! `DRM_FORMAT_MODIFIER_EXT` image cannot be created there. A non-linear modifier is refused with a
-//! message rather than sampled wrong; it is an accepted limitation, and the future `wgpu-hal` change
-//! that would lift it is recorded in `bite-gpui-project/issues/0008-dmabuf-tiled-modifiers-wgpu.md`.
+//! # The producer's contract
+//!
+//! The importer validates the handle and refuses one it cannot honour, rather than compositing a
+//! wrong image. A producer must therefore:
+//!
+//! - **Export a linear buffer.** Sampling a vendor-tiled modifier needs
+//!   `VK_EXT_image_drm_format_modifier` enabled on the device the image is made on, and that device
+//!   is `wgpu`'s: its Vulkan backend does not enable the extension and exposes no way to add one, so
+//!   a `DRM_FORMAT_MODIFIER_EXT` image cannot be created there. A non-linear modifier is refused with
+//!   a message rather than sampled wrong, so a producer must declare
+//!   [`DRM_FORMAT_MOD_LINEAR`](gpui_engine::DmaBufHandle::LINEAR).
+//! - **Carry one plane per format.** One plane for `Bgra8`/`Rgba8`, two for `Nv12`; a handle whose
+//!   plane count does not match its format is refused.
+//!
+//! See [`DmaBufHandle`](gpui_engine::DmaBufHandle) for the descriptor itself and the full set of
+//! invariants a dma-buf import requires.
 
 use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
@@ -44,7 +59,7 @@ pub(crate) fn import_dmabuf(
         handle.modifier == DmaBufHandle::LINEAR,
         "gpui_wgpu imports linear dma-bufs only, but this buffer declares modifier {:#x}: a tiled \
          modifier needs VK_EXT_image_drm_format_modifier, which wgpu does not enable on the renderer's \
-         device (issues/0008); a producer must use DRM_FORMAT_MOD_LINEAR",
+         device; a producer must use DRM_FORMAT_MOD_LINEAR",
         handle.modifier,
     );
     let expected = match handle.format {
@@ -255,8 +270,9 @@ fn import_plane(
 /// `offset` is where the image binds within the buffer, so the allocation must span
 /// `offset + requirements.size` — a plane at a non-zero offset (an `NV12` buffer's chroma) needs the
 /// whole buffer, not just its own tail. Which memory type a driver accepts a dma-buf into is not
-/// always the obvious one — the probe saw a discrete GPU refuse it on every type until the
-/// allocation was dedicated — so this tries them all rather than guessing.
+/// always the obvious one — a discrete GPU can refuse the import on every type until the allocation
+/// is dedicated, and the one type that imports may not be the one advertising the format as
+/// `IMPORTABLE` — so this tries them all rather than guessing.
 fn import_memory(
     instance: &ash::Instance,
     physical: vk::PhysicalDevice,

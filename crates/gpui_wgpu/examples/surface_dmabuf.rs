@@ -1,6 +1,6 @@
 //! Compose a dma-buf through the authoring `surface()` element and read the frame back.
 //!
-//! This is W3's exit criterion — *a dma-buf composites on a Linux host with an adapter* — end to end,
+//! It composites a dma-buf on a Linux host with an adapter, end to end,
 //! without a compositor. It is an ordinary GPUI app: a view whose `render` returns `surface(handle)`,
 //! mounted in a real window through [`HeadlessAppContext`], laid out and drawn by the real renderer,
 //! then captured with `capture_screenshot`. Nothing below reaches past the authoring API — the dma-buf
