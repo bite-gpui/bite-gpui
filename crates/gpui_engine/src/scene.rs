@@ -785,6 +785,24 @@ impl From<PolychromeSprite> for Primitive {
     }
 }
 
+/// Where a Windows surface's pixels come from. Both arms end at the same
+/// `ID3D11ShaderResourceView` in the renderer; the difference is who makes it.
+///
+/// The texture arm is the ergonomic default: an application that already renders on the window
+/// renderer's own device holds the resource and hands it here, and the renderer — which owns the
+/// device — makes the view. The view arm is the escape for a producer that is the authority on its
+/// own format, plane and mip interpretation and would rather make the view itself. Either way the
+/// renderer samples the same thing.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub enum DirectXSource {
+    /// A texture on the window renderer's own device — the renderer makes the view.
+    Texture(windows::Win32::Graphics::Direct3D11::ID3D11Texture2D),
+    /// A view the producer already made — it is the authority on the interpretation.
+    View(windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView),
+}
+
 /// A source of a surface's content: pixels GPUI did not draw, arriving on the renderer's own
 /// device or from another one.
 ///
@@ -798,9 +816,10 @@ pub enum SurfaceSource {
     /// A CoreVideo image buffer, backed by an IOSurface.
     #[cfg(target_os = "macos")]
     CoreVideo(core_video::pixel_buffer::CVPixelBuffer),
-    /// A Direct3D 11 shader resource view, made on the window renderer's own device.
+    /// The pixels of a Direct3D 11 surface, as either a texture the renderer views or a view a
+    /// producer already made. [`DirectXSource`] carries both and explains why both are offered.
     #[cfg(target_os = "windows")]
-    DirectX(windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView),
+    DirectX(DirectXSource),
     /// A dma-buf: an fd plus a DRM fourcc, modifier, stride and offset.
     #[cfg(target_os = "linux")]
     DmaBuf(crate::dmabuf::DmaBufHandle),
@@ -814,9 +833,30 @@ impl From<core_video::pixel_buffer::CVPixelBuffer> for SurfaceSource {
 }
 
 #[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView> for DirectXSource {
+    fn from(view: windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView) -> Self {
+        DirectXSource::View(view)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D> for DirectXSource {
+    fn from(texture: windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Self {
+        DirectXSource::Texture(texture)
+    }
+}
+
+#[cfg(target_os = "windows")]
 impl From<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView> for SurfaceSource {
     fn from(view: windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView) -> Self {
-        SurfaceSource::DirectX(view)
+        SurfaceSource::DirectX(view.into())
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D> for SurfaceSource {
+    fn from(texture: windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Self {
+        SurfaceSource::DirectX(texture.into())
     }
 }
 

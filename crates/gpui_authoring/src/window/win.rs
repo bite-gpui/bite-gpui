@@ -5,25 +5,29 @@
 //! system types. Import the extension trait to reach them.
 
 use crate::{Bounds, Pixels, Window};
-use gpui_engine::SurfaceSource;
-use windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView;
+use gpui_engine::{DirectXSource, SurfaceSource};
 
 /// Windows-specific drawing on a [`Window`].
 pub trait WindowsWindowExt {
     /// Paint a Direct3D 11 surface into the scene for the next frame at the
     /// current z-index.
     ///
-    /// The view has to be made on this window's renderer's own device — one
-    /// resource with two views of it and nothing to synchronise — which is the
-    /// device [`Window::device_any`](crate::Window::device_any) lends. A view
-    /// from another device composites nothing rather than the wrong memory: the
-    /// renderer's binding is what rejects it. This method should only be called
-    /// as part of the paint phase of element drawing.
-    fn paint_surface(&mut self, bounds: Bounds<Pixels>, view: ID3D11ShaderResourceView);
+    /// The payload is handed on as it arrived, and the renderer makes the
+    /// shader resource view — the view has to be made on this window's
+    /// renderer's own device, one resource with two views of it and nothing to
+    /// synchronise, which is the device [`Window::device_any`](crate::Window::device_any)
+    /// lends. A [`DirectXSource::Texture`] is the common case: the application
+    /// hands the texture it holds, and the renderer views it. A
+    /// [`DirectXSource::View`] is for a producer that is the authority on its
+    /// own format, plane and mip interpretation and makes the view itself. A
+    /// source from another device composites nothing rather than the wrong
+    /// memory: the renderer's binding is what rejects it. This method should
+    /// only be called as part of the paint phase of element drawing.
+    fn paint_surface(&mut self, bounds: Bounds<Pixels>, source: DirectXSource);
 }
 
 impl WindowsWindowExt for Window<'_> {
-    fn paint_surface(&mut self, bounds: Bounds<Pixels>, view: ID3D11ShaderResourceView) {
+    fn paint_surface(&mut self, bounds: Bounds<Pixels>, source: DirectXSource) {
         use crate::PaintSurface;
 
         self.core.invalidator.debug_assert_paint();
@@ -37,7 +41,7 @@ impl WindowsWindowExt for Window<'_> {
                 order: 0,
                 bounds,
                 content_mask,
-                source: SurfaceSource::DirectX(view),
+                source: SurfaceSource::DirectX(source),
             });
     }
 }

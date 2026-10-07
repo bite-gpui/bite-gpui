@@ -11,6 +11,8 @@ use crate::{
 // The payload lives in the engine beside `PaintSurface`, the primitive it becomes: `surface()`
 // takes one and `draw_surfaces` reads it, and neither the element nor a renderer invents a
 // transport of its own.
+#[cfg(target_os = "windows")]
+use gpui_engine::DirectXSource;
 use gpui_engine::SurfaceSource;
 use refineable::Refineable;
 
@@ -101,13 +103,13 @@ impl Element for Surface {
                 window.paint_surface(new_bounds, image_buffer.clone());
             }
             #[cfg(target_os = "windows")]
-            SurfaceSource::DirectX(view) => {
-                let new_bounds = match directx_view_size(view) {
+            SurfaceSource::DirectX(source) => {
+                let new_bounds = match directx_source_size(source) {
                     Some(size) => self.object_fit.get_bounds(bounds, size),
                     None => bounds,
                 };
                 // TODO: Add support for corner_radii
-                window.paint_surface(new_bounds, view.clone());
+                window.paint_surface(new_bounds, source.clone());
             }
             #[cfg(target_os = "linux")]
             SurfaceSource::DmaBuf(handle) => {
@@ -139,23 +141,27 @@ impl Styled for Surface {
     }
 }
 
-/// The pixel size of the texture behind a Direct3D shader resource view.
+/// The pixel size of the texture behind a Direct3D surface source.
 ///
-/// The Windows arm fits the surface to its bounds exactly as the macOS arm does, and a view carries
-/// no size of its own — the resource behind it does. A view whose resource is not a texture, or
-/// whose query fails, has no size to fit, and the element falls back to its bounds.
+/// The Windows arm fits the surface to its bounds exactly as the macOS arm does, and neither a
+/// texture nor a view carries a size of its own: the texture is the resource, and the view's size is
+/// the resource behind it. A source whose resource is not a texture, or whose query fails, has no
+/// size to fit, and the element falls back to its bounds.
 #[cfg(target_os = "windows")]
-fn directx_view_size(
-    view: &windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView,
-) -> Option<crate::Size<crate::DevicePixels>> {
+fn directx_source_size(source: &DirectXSource) -> Option<crate::Size<crate::DevicePixels>> {
     use windows::Win32::Graphics::Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Texture2D};
     use windows::core::Interface as _;
 
     unsafe {
-        let resource = view.GetResource().ok()?;
-        let texture: ID3D11Texture2D = resource.cast().ok()?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
-        texture.GetDesc(&mut desc);
+        match source {
+            DirectXSource::Texture(texture) => texture.GetDesc(&mut desc),
+            DirectXSource::View(view) => {
+                let resource = view.GetResource().ok()?;
+                let texture: ID3D11Texture2D = resource.cast().ok()?;
+                texture.GetDesc(&mut desc);
+            }
+        }
         Some(crate::size(
             crate::DevicePixels::from(desc.Width as i32),
             crate::DevicePixels::from(desc.Height as i32),

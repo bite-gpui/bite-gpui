@@ -184,9 +184,9 @@ impl Element for GpuCanvas {
                     window.paint_surface(bounds, image_buffer);
                 }
                 #[cfg(target_os = "windows")]
-                gpui_engine::SurfaceSource::DirectX(view) => {
+                gpui_engine::SurfaceSource::DirectX(source) => {
                     use crate::WindowsWindowExt as _;
-                    window.paint_surface(bounds, view);
+                    window.paint_surface(bounds, source);
                 }
                 #[allow(unreachable_patterns)]
                 _ => {}
