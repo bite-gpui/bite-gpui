@@ -9,8 +9,10 @@
 //! A [`DmaBufHandle`] bundles that descriptor with the layout an importer needs to sample it: the
 //! surface size, the pixel [`format`](DmaBufHandle::format), the DRM format
 //! [`modifier`](DmaBufHandle::modifier), one [`DmaBufPlane`] per plane (an fd, a byte offset and a row
-//! stride), and an optional acquire fence. A producer builds one and hands it to the renderer; the
-//! renderer duplicates the plane descriptors into the kernel when it imports.
+//! stride), an optional acquire fence, and — for a YCbCr buffer — how to reconstruct
+//! [`chroma`](DmaBufHandle::chroma) and which [`color_space`](DmaBufHandle::color_space) the bytes are
+//! in. A producer builds one and hands it to the renderer; the renderer duplicates the plane
+//! descriptors into the kernel when it imports.
 //!
 //! # The producer's contract
 //!
@@ -96,6 +98,62 @@ pub enum ChromaReconstruction {
     LumaGuided,
 }
 
+/// The colour matrix relating an `Nv12` buffer's luma/chroma to RGB.
+///
+/// The producer's declaration, not the format's: an `Nv12` buffer carries YCbCr either way, and which
+/// matrix turns it back into RGB is a property of the video, not the buffer. A renderer inverts the
+/// matrix named here when it converts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum YuvMatrix {
+    /// BT.601 — `SMPTE 170M` / `BT.470 BG` / `FCC`. The default, and what standard definition is in.
+    #[default]
+    Bt601,
+    /// BT.709 — what high definition is in.
+    Bt709,
+    /// BT.2020 non-constant-luminance — UHD and wide gamut.
+    Bt2020,
+}
+
+/// Whether an `Nv12` buffer's bytes are full or limited ("studio") range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum YuvRange {
+    /// Full range: luma over `0..255`, chroma over `0..255`. `JPEG`/`PC` range, and the default here.
+    #[default]
+    Full,
+    /// Limited range: luma over `16..235`, chroma over `16..240`. `MPEG`/`TV` range, and what almost
+    /// every real stream is in — a full-range buffer read as limited loses contrast, and the reverse
+    /// clips.
+    Limited,
+}
+
+/// The YCbCr an [`Nv12`](DmaBufFormat::Nv12) buffer's bytes are in: the matrix and the range.
+///
+/// A hint, like [`ChromaReconstruction`] and to the same end — it says how to read the colour the
+/// format carries. A renderer that does not understand one falls back to the default, which is
+/// BT.601 full range: the shape a hand-filled buffer is in, and what the Linux backend assumed before
+/// this was declarable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct YuvColorSpace {
+    /// The colour matrix.
+    pub matrix: YuvMatrix,
+    /// The luma/chroma range.
+    pub range: YuvRange,
+}
+
+impl YuvColorSpace {
+    /// BT.601, limited range — what standard-definition video is almost always in.
+    pub const BT601_LIMITED: Self = Self {
+        matrix: YuvMatrix::Bt601,
+        range: YuvRange::Limited,
+    };
+
+    /// BT.709, limited range — what high-definition video is almost always in.
+    pub const BT709_LIMITED: Self = Self {
+        matrix: YuvMatrix::Bt709,
+        range: YuvRange::Limited,
+    };
+}
+
 /// A dma-buf a producer hands the renderer to composite as a surface.
 ///
 /// See the module documentation for the producer's contract — uncompressed, linear across vendors,
@@ -118,6 +176,9 @@ pub struct DmaBufHandle {
     /// How the renderer should reconstruct chroma; the producer's hint for a [`DmaBufFormat::Nv12`]
     /// buffer, and ignored for a single-plane one.
     pub chroma: ChromaReconstruction,
+    /// The colour space this buffer's [`DmaBufFormat::Nv12`] bytes are in; ignored for a single-plane
+    /// one, whose bytes are already RGB.
+    pub color_space: YuvColorSpace,
 }
 
 impl PartialEq for DmaBufHandle {
@@ -130,6 +191,7 @@ impl PartialEq for DmaBufHandle {
             && self.acquire_fence.as_ref().map(|fd| fd.as_raw_fd())
                 == other.acquire_fence.as_ref().map(|fd| fd.as_raw_fd())
             && self.chroma == other.chroma
+            && self.color_space == other.color_space
     }
 }
 
@@ -159,6 +221,7 @@ impl DmaBufHandle {
             planes: planes.into_iter().collect(),
             acquire_fence: acquire_fence.map(Arc::new),
             chroma: ChromaReconstruction::default(),
+            color_space: YuvColorSpace::default(),
         }
     }
 
@@ -166,6 +229,13 @@ impl DmaBufHandle {
     /// rather than [bilinearly](ChromaReconstruction::Bilinear). A hint: a renderer may ignore it.
     pub fn with_chroma(mut self, chroma: ChromaReconstruction) -> Self {
         self.chroma = chroma;
+        self
+    }
+
+    /// Declare the colour space this buffer's `Nv12` bytes are in. A hint: a renderer that does not
+    /// understand the matrix or range falls back to its default (BT.601 full range).
+    pub fn with_color_space(mut self, color_space: YuvColorSpace) -> Self {
+        self.color_space = color_space;
         self
     }
 
@@ -264,5 +334,49 @@ mod tests {
         );
         let source: crate::SurfaceSource = handle.clone().into();
         assert_eq!(source, crate::SurfaceSource::DmaBuf(handle));
+    }
+
+    /// A handle defaults to BT.601 full range — the space a hand-filled buffer is in, and what the
+    /// backend assumed before the colour space was declarable.
+    #[test]
+    fn a_handle_defaults_to_bt601_full_range() {
+        let handle = DmaBufHandle::new(
+            2,
+            2,
+            DmaBufFormat::Nv12,
+            DmaBufHandle::LINEAR,
+            [
+                DmaBufPlane::new(descriptor(), 0, 2),
+                DmaBufPlane::new(descriptor(), 4, 2),
+            ],
+            None,
+        );
+        assert_eq!(
+            handle.color_space,
+            YuvColorSpace {
+                matrix: YuvMatrix::Bt601,
+                range: YuvRange::Full,
+            },
+        );
+    }
+
+    /// The declared colour space is part of the handle's identity, so a scene that compares handles
+    /// does not take two differently-converted buffers for one.
+    #[test]
+    fn the_colour_space_is_part_of_identity() {
+        let handle = DmaBufHandle::new(
+            2,
+            2,
+            DmaBufFormat::Nv12,
+            DmaBufHandle::LINEAR,
+            [
+                DmaBufPlane::new(descriptor(), 0, 2),
+                DmaBufPlane::new(descriptor(), 4, 2),
+            ],
+            None,
+        );
+        let declared = handle.clone().with_color_space(YuvColorSpace::BT709_LIMITED);
+        assert_eq!(declared.color_space, YuvColorSpace::BT709_LIMITED);
+        assert_ne!(handle, declared);
     }
 }
