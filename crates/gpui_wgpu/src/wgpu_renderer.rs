@@ -1294,18 +1294,18 @@ impl WgpuRenderer {
                 // Textures must be destroyed before the surface can be reconfigured.
                 drop(frame);
                 surface.configure(&core.resources.device, &self.surface_config);
-                return false;
+                return core.release_unpresented(scene);
             }
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 surface.configure(&core.resources.device, &self.surface_config);
-                return false;
+                return core.release_unpresented(scene);
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return false;
+                return core.release_unpresented(scene);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
                 self.last_surface_error = Some("Surface texture validation error".to_string());
-                return false;
+                return core.release_unpresented(scene);
             }
         };
 
@@ -1328,7 +1328,7 @@ impl WgpuRenderer {
             wgpu::Color::TRANSPARENT,
         ) {
             log::error!("{error:#}");
-            return false;
+            return core.release_unpresented(scene);
         }
 
         frame.present();
@@ -1621,7 +1621,7 @@ impl WgpuRendererCore {
         clear_color: wgpu::Color,
     ) -> Result<wgpu::SubmissionIndex> {
         let mut instance_offset = 0;
-        let mut releases: Vec<Arc<OwnedFd>> = Vec::new();
+        let releases = Self::surface_releases(scene);
         let instance_bindings = self
             .write_instances(scene, &mut instance_offset)
             .with_context(|| {
@@ -1761,7 +1761,7 @@ impl WgpuRendererCore {
                     // dma-buf on Linux, and nothing under this renderer on the other platforms
                     // yet.
                     PrimitiveBatch::Surfaces(range) => {
-                        self.draw_surfaces(&scene.surfaces[range.clone()], &mut pass, &mut releases)?;
+                        self.draw_surfaces(&scene.surfaces[range.clone()], &mut pass)?;
                     }
                 }
             }
@@ -2004,6 +2004,47 @@ impl WgpuRendererCore {
             })
     }
 
+    /// The release descriptors of a scene's dma-buf surfaces: the signals a producer waits on to
+    /// know the renderer is done with each buffer. Collected from the whole scene rather than only
+    /// the surfaces that are drawn, so a frame that culls a surface still releases it. Empty where
+    /// the platform has no dma-buf source.
+    fn surface_releases(scene: &Scene) -> Vec<Arc<OwnedFd>> {
+        #[cfg(target_os = "linux")]
+        {
+            scene
+                .surfaces
+                .iter()
+                .filter_map(|surface| match &surface.source {
+                    gpui_engine::SurfaceSource::DmaBuf(handle) => handle.release.clone(),
+                })
+                .collect()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = scene;
+            Vec::new()
+        }
+    }
+
+    /// Register the releases of a scene the frame will not present, so a producer's surface is not
+    /// left waiting on a frame that never sampled it. A window that drops a frame — suboptimal,
+    /// timed out, occluded — must still release the buffers the application handed it, or the
+    /// producer's bounded ring waits on one for good. The closures fire once the GPU has caught up
+    /// with the queue's existing work, so nothing is sampling the buffer in the meantime.
+    fn release_unpresented(&self, scene: &Scene) -> bool {
+        let releases = Self::surface_releases(scene);
+        if !releases.is_empty() {
+            self.resources()
+                .queue
+                .on_submitted_work_done(move || {
+                    for release in &releases {
+                        crate::dmabuf::signal_release(release);
+                    }
+                });
+        }
+        false
+    }
+
     /// Composite the scene's surfaces.
     ///
     /// A surface's source becomes one or two textures: a single RGBA/BGRA plane samples straight
@@ -2015,25 +2056,16 @@ impl WgpuRendererCore {
         &mut self,
         surfaces: &[PaintSurface],
         pass: &mut wgpu::RenderPass<'_>,
-        releases: &mut Vec<Arc<OwnedFd>>,
     ) -> Result<()> {
         if surfaces.is_empty() {
             return Ok(());
         }
-        #[cfg(not(target_os = "linux"))]
-        let _ = releases;
         pass.set_pipeline(&self.resources().pipelines.surfaces);
         pass.set_bind_group(0, &self.resources().globals_bind_group, &[]);
 
         #[cfg(target_os = "linux")]
         for surface in surfaces {
             let gpui_engine::SurfaceSource::DmaBuf(handle) = &surface.source;
-            // Ask to be told when the GPU is done with this buffer, so its producer can recycle the
-            // surface. Registered even when the import below drops the surface, so a producer is
-            // never left waiting for a buffer this renderer declined to sample.
-            if let Some(release) = &handle.release {
-                releases.push(release.clone());
-            }
             // Wait for the producer's fence before sampling; a producer that never signals loses
             // this frame rather than stalling the UI.
             if let Some(fence) = &handle.acquire_fence

@@ -36,6 +36,7 @@
 use std::cell::Cell;
 use std::io::Write as _;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::path::Path;
 use std::rc::Rc;
 
 use ash::vk;
@@ -734,6 +735,85 @@ fn a_gpu_canvas_composites_a_same_device_texture() {
         return;
     };
     assert_eq!(pixel, COLOUR);
+}
+
+/// The producer's whole point: a *bounded* playback keeps advancing. Each frame the renderer
+/// composites has its release descriptor signalled, so the playback returns that surface to the
+/// decoder's pool and hands out the next — the dma-buf handshake end to end, in constant memory.
+///
+/// The order matters, and this pins it: a frame is taken only once the previous one has been
+/// composited. A frame taken and then not drawn is never sampled, so its release is never signalled,
+/// and the playback waits on it for good — which is exactly what stalled the `player` example.
+#[test]
+fn a_bounded_playback_plays_through_the_renderer() {
+    use std::cell::RefCell;
+
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+
+    /// Paints whatever frame the test has handed it.
+    struct PlaybackSurfaceView {
+        handle: Rc<RefCell<Option<DmaBufHandle>>>,
+    }
+
+    impl Render for PlaybackSurfaceView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            match self.handle.borrow().as_ref() {
+                Some(handle) => div()
+                    .size_full()
+                    .child(surface(handle.clone()).size_full())
+                    .into_any_element(),
+                None => div().size_full().into_any_element(),
+            }
+        }
+    }
+
+    let fixture = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../gpui_va/fixtures/clip.mp4"
+    ));
+    let Some(mut playback) = gpui_va::Playback::open_path(fixture, 4) else {
+        eprintln!("skipping: no libavformat/libavcodec of the declared ABI, or no VA-API device");
+        return;
+    };
+
+    let handle: Rc<RefCell<Option<DmaBufHandle>>> = Rc::new(RefCell::new(None));
+    let text_system = std::sync::Arc::new(CosmicTextSystem::new("fallback"));
+    let mut cx = HeadlessAppContext::with_platform(text_system, std::sync::Arc::new(()), || {
+        Ok(gpui::current_headless_renderer())
+    });
+    let view_handle = handle.clone();
+    let window = cx
+        .open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), move |_window, cx| {
+            cx.new(|_| PlaybackSurfaceView {
+                handle: view_handle,
+            })
+        })
+        .expect("a window");
+    let window: AnyWindowHandle = window.into();
+
+    // Each pass draws the frame on screen and reads it back. The read-back polls the device, which
+    // runs the submission's release callback; only then is the next frame taken, so every frame is
+    // composited before it is replaced.
+    for _ in 0..30 {
+        cx.update_window(window, |_, window, cx| {
+            let _ = window.draw(cx);
+        })
+        .expect("draw a frame");
+        let _ = cx.capture_screenshot(window).expect("capture the frame");
+        *handle.borrow_mut() = playback.next();
+        if playback.position() > 12 {
+            break;
+        }
+    }
+
+    assert!(
+        playback.position() > 12,
+        "the playback should keep advancing past its four-frame bound, reached {}",
+        playback.position()
+    );
 }
 
 /// The `fs_surface` matrix, on the CPU: `ycbcr_to_RGB * vec4(y, cb, cr, 1)`.
