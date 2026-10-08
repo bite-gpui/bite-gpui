@@ -544,6 +544,7 @@ pub struct WaylandWindowStatePtr {
     callbacks: Rc<RefCell<Callbacks>>,
     frame_loop: Rc<Cell<FrameLoop>>,
     frame_ping: Ping,
+    fallback_token: FallbackToken,
 }
 
 impl WaylandWindowState {
@@ -759,10 +760,65 @@ enum FrameLoop {
     Ticking,
     RescheduleRequested,
     PresentationFailed,
+    /// Presented; waiting on the compositor's `wl_callback` for the next tick.
     AwaitingCallback,
+    /// As [`AwaitingCallback`](Self::AwaitingCallback), but a retry timer is racing the
+    /// callback so a compositor that stops repainting cannot strand the loop.
+    AwaitingCallbackWithRetry,
     Scheduled,
     RetryScheduled,
     Parked,
+}
+
+/// Decides whether a fallback frame tick is still the one to run.
+///
+/// After a present the loop waits on the compositor's `wl_callback`. If that never arrives —
+/// a surface the compositor stops repainting — the retry timer drives the frame instead.
+/// Whichever of the callback and the timer acts first claims the token, so the other observes
+/// a stale value and does nothing: the frame is driven exactly once, while the callback still
+/// wins when the compositor is healthy and keeps its pacing.
+#[derive(Clone, Default)]
+pub(crate) struct FallbackToken(Rc<Cell<u64>>);
+
+impl FallbackToken {
+    /// Claim the token for a newly armed fallback, returning the value its tick must still
+    /// observe to be current.
+    fn arm(&self) -> u64 {
+        let next = self.0.get().wrapping_add(1);
+        self.0.set(next);
+        next
+    }
+
+    /// Give up any armed fallback: the event it was racing has already arrived.
+    fn retire(&self) {
+        self.0.set(self.0.get().wrapping_add(1));
+    }
+
+    /// Whether a fallback that captured `token` is still the current one.
+    fn is_current(&self, token: u64) -> bool {
+        self.0.get() == token
+    }
+}
+
+#[cfg(test)]
+mod fallback_token_tests {
+    use super::FallbackToken;
+
+    #[test]
+    fn arming_claims_the_token_and_retiring_hands_it_on() {
+        let token = FallbackToken::default();
+        let armed = token.arm();
+        assert!(token.is_current(armed));
+
+        // The compositor callback won the race: the armed fallback is no longer current.
+        token.retire();
+        assert!(!token.is_current(armed));
+
+        // A later fallback arms a fresh value, which invalidates the previous one.
+        let rearmed = token.arm();
+        assert!(token.is_current(rearmed));
+        assert!(!token.is_current(armed));
+    }
 }
 
 pub(crate) struct WaylandWindow(pub WaylandWindowStatePtr);
@@ -883,6 +939,7 @@ impl WaylandWindow {
             callbacks: Rc::new(RefCell::new(Callbacks::default())),
             frame_loop: Rc::new(Cell::new(FrameLoop::Unconfigured)),
             frame_ping,
+            fallback_token: FallbackToken::default(),
         });
 
         // Kick things off
@@ -969,7 +1026,10 @@ impl WaylandWindowStatePtr {
         let mut state = self.state.borrow_mut();
 
         let frame_loop = self.frame_loop.get();
-        if frame_loop == FrameLoop::AwaitingCallback {
+        if matches!(
+            frame_loop,
+            FrameLoop::AwaitingCallback | FrameLoop::AwaitingCallbackWithRetry
+        ) {
             return;
         }
 
@@ -1013,7 +1073,13 @@ impl WaylandWindowStatePtr {
         // Another wl_surface commit may have carried this callback while a retry
         // timer owned the render-loop wakeup.
         self.state.borrow_mut().pending_frame_callback = None;
-        if self.frame_loop.get() == FrameLoop::AwaitingCallback {
+        // This is the tick we were awaiting: retire any fallback armed for it, so it
+        // cannot drive a second frame.
+        self.fallback_token.retire();
+        if matches!(
+            self.frame_loop.get(),
+            FrameLoop::AwaitingCallback | FrameLoop::AwaitingCallbackWithRetry
+        ) {
             self.frame();
         }
     }
@@ -1026,6 +1092,18 @@ impl WaylandWindowStatePtr {
 
     pub fn retry_timer_fired(&self) {
         if self.frame_loop.get() == FrameLoop::RetryScheduled {
+            self.frame();
+        }
+    }
+
+    /// The fallback tick for a window that presented and never received the compositor
+    /// callback it was waiting on. Drives the frame only while the loop is still awaiting
+    /// one and `token` is still current; if the callback — or a newer fallback — got there
+    /// first, this is the loser of the race and does nothing.
+    pub fn awaiting_retry_fired(&self, token: u64) {
+        if self.frame_loop.get() == FrameLoop::AwaitingCallbackWithRetry
+            && self.fallback_token.is_current(token)
+        {
             self.frame();
         }
     }
@@ -1043,8 +1121,26 @@ impl WaylandWindowStatePtr {
             FrameLoop::Ticking => {
                 self.frame_loop.set(FrameLoop::RescheduleRequested);
             }
-            // A wake is already armed: a ping or retry timer is in flight, or a
-            // presented buffer guarantees a compositor frame callback.
+            FrameLoop::AwaitingCallback => {
+                // A presented buffer usually earns a compositor frame callback, but a
+                // surface the compositor stops repainting — occluded, or on no output —
+                // may never get one, and every later wake lands here too. With demand
+                // outstanding, arm the retry timer as a fallback so the wake cannot be
+                // lost; the callback still wins the race when it arrives.
+                let token = self.fallback_token.arm();
+                let state = self.state.borrow();
+                let armed = state
+                    .client
+                    .clone()
+                    .schedule_frame_fallback(&state.surface.id(), token);
+                drop(state);
+                if armed {
+                    self.frame_loop.set(FrameLoop::AwaitingCallbackWithRetry);
+                }
+            }
+            // A wake is already armed: a ping or retry timer is in flight, a fallback
+            // tick is racing the compositor callback, or a presented buffer's callback
+            // is on its way.
             _ => {}
         }
     }
