@@ -46,14 +46,14 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo check -p gpui
 
-  # Path A's Metal rows. They need a Metal device, which only a macOS runner has, and the one a
+  # The imported surface path's Metal rows. They need a Metal device, which only a macOS runner has, and the one a
   # hosted runner has is real rather than emulated -- the presentation probe records `Apple
   # Paravirtual device`, a real Metal device behind a hypervisor, which is stronger than the
   # Windows rows' WARP. No release profile is needed, unlike the Windows job: `gpui_apple`'s build
   # script compiles the shaders with `xcrun metal` in every profile. The filter is the
   # imported-texture rows and not the crate's whole suite, and `grep` is what keeps the gate from
   # passing vacuously if the filter ever stops matching anything.
-  macos-path-a:
+  macos-imported-surface:
     name: cargo test -p gpui_apple imported_texture (macos-14)
     runs-on: macos-14
     steps:
@@ -80,7 +80,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo check --release -p gpui
 
-  # Path A's Direct3D rows. They need a swap chain and a device, which no Linux gate has and no
+  # The imported surface path's Direct3D rows. They need a swap chain and a device, which no Linux gate has and no
   # cross-compile reaches, and a hosted runner has both because it has WARP -- the probes record
   # `Microsoft Basic Render Driver`, which is enough for a readback even though it is not enough
   # to call a result "works on hardware". Release for the `windows` job's reason, which is also
@@ -91,7 +91,7 @@ jobs:
   # keyboard -- have never run on a runner, and deciding what a GPU-less or headless run means for
   # them is its own change. `grep` is what keeps the gate from passing vacuously if a filter ever
   # stops matching anything.
-  windows-path-a:
+  windows-imported-surface:
     name: cargo test --release -p gpui_windows imported_texture|surface (windows-latest)
     runs-on: windows-latest
     steps:
@@ -115,7 +115,7 @@ jobs:
   # `gpui_interop`'s test adds no HLSL of its own, so there is no `fxc`-only artifact it needs; the
   # renderer it drives still compiles its shaders, in debug, at run time from the shader source in
   # the checkout (`D3DCompileFromFile`), which a Windows runner can do. So debug runs the same code
-  # path for a faster build, exactly as `macos-path-a` is debug for `gpui_apple`'s same reason.
+  # path for a faster build, exactly as `macos-imported-surface` is debug for `gpui_apple`'s same reason.
   #
   # The filter is the test's own name: `cargo test`'s filter matches test names, and the file's name
   # is a binary rather than a test, so `cross_device_surface` would match nothing. `grep` stops the
@@ -146,10 +146,10 @@ jobs:
   # with nothing executed, which is what this job is for.
   #
   # `-p gpui_authoring --lib` is where the renderer seam's test lives, and `-p gpui_engine --lib`
-  # is where Path A's encoding tests do. Neither needs a display: the first opens a window through
+  # is where the imported surface path's encoding tests do. Neither needs a display: the first opens a window through
   # `TestPlatform`, the second builds engine types and no window at all, so one runner is enough
   # and `script/linux` installs what their build needs. `gpui_wgpu`'s tests stay out, and not for
-  # lack of trying: the three Path A rows they hold need a GPU *adapter*, which a bare runner is
+  # lack of trying: the three imported-surface rows they hold need a GPU *adapter*, which a bare runner is
   # not guaranteed to have, and the suite's older tests fail rather than skip without one. Widening
   # the filter to them means deciding what a GPU-less runner should do -- making those tests skip,
   # or the tests that need a device gated some other way -- which is its own change.
