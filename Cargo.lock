@@ -7956,6 +7956,7 @@ dependencies = [
  "anyhow",
  "ash",
  "gpui_engine",
+ "gpui_surface_producer",
  "libc",
  "libloading",
  "log",
