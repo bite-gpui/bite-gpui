@@ -7908,6 +7908,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_surface_producer"
+version = "0.1.0"
+dependencies = [
+ "gpui_engine",
+]
+
+[[package]]
 name = "gpui_tokio"
 version = "0.1.0"
 dependencies = [
