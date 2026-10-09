@@ -109,6 +109,7 @@ members = [
     "crates/gpui_util",
     "crates/gpui_surface_producer",
     "crates/gpui_va",
+    "crates/gpui_video",
     "crates/gpui_web",
     "crates/gpui_wgpu",
     "crates/gpui_windows",
@@ -388,6 +389,7 @@ gpui_types = { path = "crates/gpui_types" }
 gpui_util = { path = "crates/gpui_util" }
 gpui_surface_producer = { path = "crates/gpui_surface_producer" }
 gpui_va = { path = "crates/gpui_va" }
+gpui_video = { path = "crates/gpui_video" }
 gpui_web = { path = "crates/gpui_web" }
 gpui_wgpu = { path = "crates/gpui_wgpu" }
 gpui_windows = { path = "crates/gpui_windows", default-features = false }

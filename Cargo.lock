@@ -7963,6 +7963,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_video"
+version = "0.1.0"
+dependencies = [
+ "gpui_authoring",
+ "gpui_surface_producer",
+]
+
+[[package]]
 name = "gpui_web"
 version = "0.1.0"
 dependencies = [
