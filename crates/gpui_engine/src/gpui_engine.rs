@@ -23,6 +23,7 @@ mod render;
 mod renderer;
 mod scene;
 mod style;
+mod surface_format;
 mod text;
 mod text_system;
 
@@ -39,5 +40,6 @@ pub use render::*;
 pub use renderer::*;
 pub use scene::*;
 pub use style::*;
+pub use surface_format::*;
 pub use text::*;
 pub use text_system::*;

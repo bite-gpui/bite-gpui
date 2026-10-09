@@ -18,8 +18,8 @@ metal = "0.33"
 objc2 = "0.6.3"
 wgpu = "29.0.4"
 
-# The renderer itself, at the version a Path A application would depend on. `test-support` is what
-# exposes `MetalRenderer::new_headless`, the way the crate's own rows reach it.
+# The renderer itself, at the version an application on the imported surface path would depend on.
+# `test-support` is what exposes `MetalRenderer::new_headless`, the way the crate's own rows reach it.
 gpui_apple = { path = "../../crates/gpui_apple", features = ["test-support"] }
 gpui_engine = { path = "../../crates/gpui_engine" }
 gpui_platform = { path = "../../crates/gpui_platform", features = ["test-support"] }

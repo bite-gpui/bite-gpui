@@ -1,15 +1,14 @@
 use std::{
-    any::Any,
-    rc::Rc,
     slice,
     sync::{Arc, OnceLock},
 };
 
 use anyhow::{Context, Result};
+use collections::HashMap;
 use gpui_util::ResultExt;
 use windows::{
     Win32::{
-        Foundation::HWND,
+        Foundation::{HANDLE, HWND},
         Graphics::{
             Direct3D::*,
             Direct3D11::*,
@@ -24,9 +23,10 @@ use windows::{
 use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
 use crate::*;
 use gpui_engine::{
-    AtlasTextureId, CustomRenderPrimitive, MonochromeSprite, PaintSurface, Path, PlatformAtlas,
-    PolychromeSprite, PrimitiveBatch, Quad, Scene, SceneRenderer, SubpixelSprite, SurfaceSource,
-    Underline, get_gamma_correction_ratios,
+    AtlasTextureId, CustomRenderPrimitive, DirectXSource, GpuRenderer, MonochromeSprite,
+    PaintSurface, Path, PlatformAtlas, PolychromeSprite, PrimitiveBatch, Quad, Scene,
+    SceneRenderer, SharedDirectXSurface, SubpixelSprite, SurfaceSource, Underline,
+    get_gamma_correction_ratios,
 };
 use gpui_platform::*;
 
@@ -38,6 +38,10 @@ const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
 /// The 2D texture limit of every Direct3D 11 feature level GPUI runs on; the atlas clamps to the
 /// same value (`MAX_ATLAS_SIZE`).
 const MAX_TEXTURE_SIZE: u32 = 16_384;
+/// How many frames a view the renderer made for a producer's texture outlives the last frame that
+/// named it before the cache drops it. See `DirectXRenderer::surface_view` for the rule this is a
+/// part of.
+const SURFACE_VIEW_CACHE_PATIENCE: u64 = 2;
 
 pub(crate) struct FontInfo {
     pub gamma_ratios: [f32; 4],
@@ -46,7 +50,30 @@ pub(crate) struct FontInfo {
     pub is_bgr: bool,
 }
 
-pub(crate) struct DirectXRenderer {
+/// One entry of [`DirectXRenderer`]'s surface-view cache: a view the renderer made for a producer's
+/// `Texture`-variant surface, and the frame that last named it.
+struct SurfaceView {
+    view: ID3D11ShaderResourceView,
+    last_used: u64,
+}
+
+/// One entry of [`DirectXRenderer`]'s shared-surface cache: a producer's texture, opened on the
+/// renderer's device, and the view of it.
+struct SharedSurfaceView {
+    view: ID3D11ShaderResourceView,
+    /// Held so the view's resource cannot be released underneath it.
+    _texture: ID3D11Texture2D,
+    last_used: u64,
+}
+
+/// One entry of [`DirectXRenderer`]'s shared-fence cache: a producer's fence, opened on the
+/// renderer's device.
+struct SharedFenceEntry {
+    fence: ID3D11Fence,
+    last_used: u64,
+}
+
+pub struct DirectXRenderer {
     hwnd: HWND,
     atlas: Arc<DirectXAtlas>,
     devices: Option<DirectXRendererDevices>,
@@ -65,6 +92,18 @@ pub(crate) struct DirectXRenderer {
     /// In that case we want to discard the first frame that we draw as we got reset in the middle of a frame
     /// meaning we lost all the allocated gpu textures and scene resources.
     skip_draws: bool,
+
+    /// Views the renderer made for the `Texture` variant of a surface, keyed by the texture's raw COM
+    /// interface pointer. See [`DirectXRenderer::surface_view`] for why this exists and for the
+    /// rule that invalidates and prunes it.
+    surface_views: HashMap<usize, SurfaceView>,
+    /// Producer-shared textures the renderer opened on its own device, keyed by their NT handle. See
+    /// [`DirectXRenderer::surface_view`] for the rule that invalidates and prunes it.
+    shared_surfaces: HashMap<usize, SharedSurfaceView>,
+    /// Producer-shared fences the renderer opened on its own device, keyed by their NT handle.
+    shared_fences: HashMap<usize, SharedFenceEntry>,
+    /// The frame the surface-view cache stamps entries with; incremented once per `render`.
+    frame_index: u64,
 }
 
 /// Direct3D objects
@@ -216,6 +255,10 @@ impl DirectXRenderer {
             width: 1,
             height: 1,
             skip_draws: false,
+            surface_views: HashMap::default(),
+            shared_surfaces: HashMap::default(),
+            shared_fences: HashMap::default(),
+            frame_index: 0,
         })
     }
 
@@ -228,14 +271,6 @@ impl DirectXRenderer {
 
     pub(crate) fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
-    }
-
-    /// The device the renderer draws on, which is the device a Path A producer has to make its
-    /// texture on: the same-device rule is what makes the token, rather than a handle, enough.
-    ///
-    /// `None` while a device-lost recovery is pending, as the renderer's other device uses are.
-    pub(crate) fn device(&self) -> Option<&ID3D11Device> {
-        self.devices.as_ref().map(|devices| &devices.device)
     }
 
     fn pre_draw(&self, clear_color: &[f32; 4]) -> Result<()> {
@@ -299,6 +334,12 @@ impl DirectXRenderer {
 
     fn handle_device_lost_impl(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
         let disable_direct_composition = self.direct_composition.is_none();
+
+        // The cached views were made on the device being replaced, so the new one cannot sample
+        // them; drop them before the old device is released below.
+        self.surface_views.clear();
+        self.shared_surfaces.clear();
+        self.shared_fences.clear();
 
         unsafe {
             #[cfg(debug_assertions)]
@@ -387,6 +428,8 @@ impl DirectXRenderer {
         scene: &Scene,
         background_appearance: WindowBackgroundAppearance,
     ) -> Result<()> {
+        // Age the surface-view cache one frame; see `surface_view` for what an entry's stamp means.
+        self.frame_index = self.frame_index.wrapping_add(1);
         self.pre_draw(&match background_appearance {
             WindowBackgroundAppearance::Opaque => [1.0f32; 4],
             _ => [0.0f32; 4],
@@ -442,6 +485,7 @@ impl DirectXRenderer {
                 )
             })?;
         }
+        self.prune_surface_views();
         Ok(())
     }
 
@@ -875,6 +919,14 @@ impl DirectXRenderer {
         if surfaces.is_empty() {
             return Ok(());
         }
+
+        // Resolve every surface to the view to sample before borrowing the device: the `Texture`
+        // variant consults the view cache (a `&mut self` use) and the draws below only read.
+        let views: Vec<Option<ID3D11ShaderResourceView>> = surfaces
+            .iter()
+            .map(|surface| self.surface_view(&surface.source))
+            .collect();
+
         let devices = self.devices.as_ref().context("devices missing")?;
         let batch_params_buffer = self
             .globals
@@ -884,23 +936,21 @@ impl DirectXRenderer {
 
         // One draw per surface: the view is the surface's own and the engine never names it, so
         // there is no batch to group beyond the record slice the encoding already shares — the
-        // shape the imported-texture arm takes, for the same reason.
-        for (offset, surface) in surfaces.iter().enumerate() {
-            let view = match &surface.source {
-                SurfaceSource::DirectX(view) => view,
-                #[allow(unreachable_patterns)]
-                _ => continue,
+        // shape the imported-texture path takes, for the same reason.
+        for (offset, view) in views.into_iter().enumerate() {
+            let Some(view) = view else {
+                continue;
             };
 
             // Fault softly, and for one frame only: a view that does not name a sampleable 2D
             // texture is dropped rather than allowed to fault the frame the rest of the UI is in.
-            if !surface_view_is_sampleable(view) {
+            if !surface_view_is_sampleable(&view) {
                 continue;
             }
 
             self.pipelines.surfaces_pipeline.draw_range_with_texture(
                 &devices.device_context,
-                slice::from_ref(&Some(view.clone())),
+                slice::from_ref(&Some(view)),
                 batch_params_buffer,
                 slice::from_ref(&self.globals.imported_texture_sampler),
                 (start + offset) as u32,
@@ -917,6 +967,159 @@ impl DirectXRenderer {
             }
         }
         Ok(())
+    }
+
+    /// The view to sample for `source`, making one for the `Texture` variant the first time it is seen.
+    ///
+    /// A `View` variant already carries the producer's view, so it is used as it is. A `Texture` variant
+    /// carries the texture instead — a producer that ships the resource and lets the renderer make
+    /// the view, the same-device half of the rule the `View` variant states — so the renderer builds
+    /// the view here, with `create_imported_texture_view`, the rules the imported-texture path
+    /// already uses for format and usage.
+    ///
+    /// The `Texture` variant's views are cached, because a shader resource view is a descriptor with a
+    /// GPU-side allocation: one per frame would be a cost the `View` variant never pays. The key is the
+    /// texture's raw COM interface pointer (`Interface::as_raw`), which is stable across the clones
+    /// a producer hands over frame to frame. It is a sound key because a cached view holds a
+    /// reference to the resource it views, so while an entry is live the texture cannot be released
+    /// and its pointer cannot be recycled by an unrelated texture: a hit always names the same live
+    /// object.
+    ///
+    /// Invalidation and lifetime:
+    /// - a replaced device makes every cached view invalid, so `handle_device_lost` clears the map;
+    /// - [`Self::prune_surface_views`] drops an entry once no surface has named its texture for
+    ///   [`SURFACE_VIEW_CACHE_PATIENCE`] frames. That drop is the only point that releases the last
+    ///   reference to a texture the producer has already released; until then the renderer holds
+    ///   it, exactly as any other view of it would.
+    ///
+    /// A texture the renderer cannot view — another device's, or a format the view rules refuse —
+    /// is skipped for the frame rather than faulting the frame the rest of the UI shares, the same
+    /// soft fault `surface_view_is_sampleable` makes.
+    fn surface_view(&mut self, source: &SurfaceSource) -> Option<ID3D11ShaderResourceView> {
+        let source = match source {
+            SurfaceSource::DirectX(source) => source,
+            // On a platform with no Direct3D surface backend, `SurfaceSource` is uninhabited here; the
+            // arm it matches is the one every cfg of this renderer has.
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        };
+        match source {
+            DirectXSource::View(view) => Some(view.clone()),
+            DirectXSource::Texture(texture) => {
+                let key = texture.as_raw().addr();
+                if let Some(entry) = self.surface_views.get_mut(&key) {
+                    entry.last_used = self.frame_index;
+                    return Some(entry.view.clone());
+                }
+
+                let device = self.devices.as_ref()?.device.clone();
+                let view = match create_imported_texture_view(&device, texture) {
+                    Ok(view) => view,
+                    Err(error) => {
+                        log::warn!(
+                            "a surface's texture could not be viewed; skipping it: {error:#}"
+                        );
+                        return None;
+                    }
+                };
+                self.surface_views.insert(
+                    key,
+                    SurfaceView {
+                        view: view.clone(),
+                        last_used: self.frame_index,
+                    },
+                );
+                Some(view)
+            }
+            DirectXSource::Shared(shared) => self.shared_surface_view(shared),
+        }
+    }
+
+    /// The view of a producer's shared texture, opening and viewing it on the renderer's device the
+    /// first time it is seen, and ordering the producer's writes before the draw.
+    ///
+    /// The handle is device-independent, so the renderer makes the device-side objects — the texture
+    /// `OpenSharedResource1` opens and the view of it — once, and caches them exactly as it caches a
+    /// `Texture`-variant view: cleared on a device replacement, pruned once no surface has named the
+    /// handle for [`SURFACE_VIEW_CACHE_PATIENCE`] frames. The fence is opened and cached the same
+    /// way, and waited on the context that will draw, so the sample is ordered behind the producer's
+    /// signal without a CPU poll.
+    fn shared_surface_view(
+        &mut self,
+        shared: &SharedDirectXSurface,
+    ) -> Option<ID3D11ShaderResourceView> {
+        let key = shared.texture.0 as usize;
+
+        let view = match self.shared_surfaces.get(&key) {
+            Some(entry) => entry.view.clone(),
+            None => {
+                let device = self.devices.as_ref()?.device.clone();
+                let (texture, view) = match open_shared_surface(&device, shared) {
+                    Ok(opened) => opened,
+                    Err(error) => {
+                        log::warn!("a shared surface could not be opened; skipping it: {error:#}");
+                        return None;
+                    }
+                };
+                self.shared_surfaces.insert(
+                    key,
+                    SharedSurfaceView {
+                        view: view.clone(),
+                        _texture: texture,
+                        last_used: self.frame_index,
+                    },
+                );
+                view
+            }
+        };
+        if let Some(entry) = self.shared_surfaces.get_mut(&key) {
+            entry.last_used = self.frame_index;
+        }
+
+        if let Some(sync) = &shared.fence {
+            let device = self.devices.as_ref()?.device.clone();
+            let context = self.devices.as_ref()?.device_context.clone();
+            match self.shared_fence(&device, sync.handle) {
+                Ok(fence) => {
+                    if let Err(error) = wait_for_fence(&context, &fence, sync.value) {
+                        log::warn!("a shared surface's fence could not be waited on: {error:#}");
+                    }
+                }
+                Err(error) => log::warn!("a shared surface's fence could not be opened: {error:#}"),
+            }
+        }
+
+        Some(view)
+    }
+
+    /// The renderer's opened form of a producer's shared fence, opening and caching it the first
+    /// time it is seen.
+    fn shared_fence(&mut self, device: &ID3D11Device, handle: HANDLE) -> Result<ID3D11Fence> {
+        let key = handle.0 as usize;
+        if let Some(entry) = self.shared_fences.get_mut(&key) {
+            entry.last_used = self.frame_index;
+            return Ok(entry.fence.clone());
+        }
+        let fence = open_shared_fence(device, handle)?;
+        self.shared_fences.insert(
+            key,
+            SharedFenceEntry {
+                fence: fence.clone(),
+                last_used: self.frame_index,
+            },
+        );
+        Ok(fence)
+    }
+
+    /// Drops the surface views and shared-handle entries no surface has named for
+    /// `SURFACE_VIEW_CACHE_PATIENCE` frames. Called once per frame, after the batches; see
+    /// [`Self::surface_view`] for the rule.
+    fn prune_surface_views(&mut self) {
+        let frame = self.frame_index;
+        let fresh = |last_used: u64| frame.saturating_sub(last_used) <= SURFACE_VIEW_CACHE_PATIENCE;
+        self.surface_views.retain(|_, entry| fresh(entry.last_used));
+        self.shared_surfaces.retain(|_, entry| fresh(entry.last_used));
+        self.shared_fences.retain(|_, entry| fresh(entry.last_used));
     }
 
     fn draw_custom(&mut self, start: usize, customs: &[CustomRenderPrimitive]) -> Result<()> {
@@ -1764,6 +1967,59 @@ fn create_fragment_shader(device: &ID3D11Device, bytes: &[u8]) -> Result<ID3D11P
 ///
 /// A texture from another device fails here rather than composing silently: `D3D11` resolves a
 /// resource through the device that made it.
+/// Open a producer's shared texture on the renderer's device and make its view.
+///
+/// The Direct3D counterpart of importing a dma-buf: the handle is device-independent, so the
+/// renderer makes the device-side objects — the texture `OpenSharedResource1` opens and the view of
+/// it — on the device it draws with. `create_imported_texture_view` applies the same format and
+/// usage rules the same-device `Texture` variant uses.
+fn open_shared_surface(
+    device: &ID3D11Device,
+    shared: &SharedDirectXSurface,
+) -> Result<(ID3D11Texture2D, ID3D11ShaderResourceView)> {
+    let device1: ID3D11Device1 = device
+        .cast()
+        .context("the device is not a Direct3D 11.1 device")?;
+    // SAFETY: `shared.texture` names a live shared resource, and the returned texture and view are
+    // owned by the caller.
+    unsafe {
+        let texture: ID3D11Texture2D = device1
+            .OpenSharedResource1(shared.texture)
+            .context("opening the producer's shared texture")?;
+        let view = create_imported_texture_view(device, &texture)?;
+        Ok((texture, view))
+    }
+}
+
+/// Open a producer's shared fence on the renderer's device.
+fn open_shared_fence(device: &ID3D11Device, handle: HANDLE) -> Result<ID3D11Fence> {
+    let device5: ID3D11Device5 = device
+        .cast()
+        .context("the device is not a Direct3D 11.5 device")?;
+    // SAFETY: `handle` names a live shared fence, and the opened fence is returned to the caller.
+    unsafe {
+        let mut fence = None;
+        device5
+            .OpenSharedFence(handle, &mut fence)
+            .context("opening the producer's shared fence")?;
+        fence.context("OpenSharedFence returned no fence")
+    }
+}
+
+/// Insert a GPU-side wait for `fence` to reach `value`, on the context that will draw the surface.
+fn wait_for_fence(context: &ID3D11DeviceContext, fence: &ID3D11Fence, value: u64) -> Result<()> {
+    // SAFETY: `context` and `fence` are live, and the wait is GPU-side rather than a CPU poll.
+    unsafe {
+        let context4: ID3D11DeviceContext4 = context
+            .cast()
+            .context("the context is not a Direct3D 11.4 context")?;
+        context4
+            .Wait(fence, value)
+            .context("waiting for the producer's shared fence")?;
+    }
+    Ok(())
+}
+
 /// Whether a surface's view names a 2D texture the fragment can sample.
 ///
 /// The renderer did not make this view — a producer did — so the checks it would make while
@@ -1783,11 +2039,35 @@ fn surface_view_is_sampleable(view: &ID3D11ShaderResourceView) -> bool {
     }
 }
 
+/// The producer's texture, viewed with the target's own channel order.
+///
+/// `CreateShaderResourceView` may only re-interpret a resource within its own format family, so a
+/// texture whose channel order is the other way round — `R8G8B8A8` where the target is `B8G8R8A8`
+/// — is refused here rather than left to Direct3D. Direct3D's own refusal is not guaranteed, and
+/// where it does not come the view is made, the fragment writes the sample straight through, and
+/// the frame composites the wrong image with red and blue exchanged instead of failing. Refusing
+/// it here is what turns the `Texture` variant's wrong-format texture into the same skip-with-a-reason
+/// `surface_view` already gives a texture it cannot view.
 #[inline]
 fn create_imported_texture_view(
     device: &ID3D11Device,
     texture: &ID3D11Texture2D,
 ) -> Result<ID3D11ShaderResourceView> {
+    let texture_desc = unsafe {
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        texture.GetDesc(&mut desc);
+        desc
+    };
+    anyhow::ensure!(
+        matches!(
+            texture_desc.Format,
+            DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB
+        ),
+        "a texture the renderer views must be B8G8R8A8, the channel order the Direct3D target is \
+         in, but this one is {:?}",
+        texture_desc.Format
+    );
+
     let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
         Format: DXGI_FORMAT_B8G8R8A8_UNORM,
         ViewDimension: D3D_SRV_DIMENSION_TEXTURE2D,
@@ -2290,6 +2570,16 @@ mod dxgi {
     }
 }
 
+impl GpuRenderer for DirectXRenderer {
+    type Device = ID3D11Device;
+
+    /// The device, cloned out: the renderer is its only holder, so a producer reaches it through
+    /// the renderer, but the handle is owned so it can outlive the call that lent it.
+    fn device(&self) -> Option<ID3D11Device> {
+        self.devices.as_ref().map(|devices| devices.device.clone())
+    }
+}
+
 impl SceneRenderer for DirectXRenderer {
     fn draw(&mut self, scene: &Scene) -> bool {
         let background_appearance = self.background_appearance;
@@ -2350,17 +2640,6 @@ impl PlatformRenderer for DirectXRenderer {
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         DirectXRenderer::gpu_specs(self).log_err()
-    }
-
-    /// The device a producer has to make its texture on: this renderer's own, which the platform
-    /// built and it was constructed from, so a texture created on it is visible to the draws below
-    /// with no handle to open and nothing to synchronise.
-    ///
-    /// This is the route the Direct3D 11 producer path needs — a Media Foundation or DXVA decoder
-    /// decodes into a texture on this device — and a texture made from it needs
-    /// [`DirectXTextureExt`](crate::DirectXTextureExt) to become a token.
-    fn device_any(&self) -> Option<Rc<dyn Any>> {
-        DirectXRenderer::device(self).map(|device| Rc::new(device.clone()) as Rc<dyn Any>)
     }
 
     /// Windows device loss is not a lost surface: the platform replaces the DirectX devices
@@ -2561,7 +2840,7 @@ mod tests {
     /// The colour row. A producer's bytes have to come back unchanged, and on this renderer they
     /// do so exactly rather than approximately: the sampler reads the texture's own non-sRGB view
     /// and the fragment writes that straight into the non-sRGB target, so there is no transfer
-    /// function to cancel. A decode here would be the ≈2.2 error the wgpu arm's re-encode exists
+    /// function to cancel. A decode here would be the ≈2.2 error the wgpu backend's re-encode exists
     /// to cancel — and the only encoder this shader file has is `linear_to_srgb`'s approximation.
     #[test]
     fn an_imported_texture_round_trips_its_bytes() -> Result<()> {
@@ -2576,11 +2855,9 @@ mod tests {
         // Distinct per channel, and far from either end, so a transfer function applied once in
         // the wrong direction cannot round back to the same byte.
         let fixture = [200u8, 100, 50, 255];
-        // The producer's half: the device comes through the seam, which is the only route an
+        // The producer's half: the device comes through `GpuRenderer::device`, the route an
         // application has, and the texture is made on it rather than on the renderer's own field.
-        let device = renderer
-            .device_any()
-            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+        let device = GpuRenderer::device(&renderer)
             .context("the renderer lends its device through the seam")?;
         let texture = imported_texture(
             &device,
@@ -2599,9 +2876,9 @@ mod tests {
     }
 
     /// The surface row — the byte-for-byte round trip through `draw_surfaces` rather than
-    /// `draw_custom`. A surface carries its `ID3D11ShaderResourceView` already made, so the
-    /// producer's half is the same texture plus the view `create_imported_texture_view` builds;
-    /// the fragment samples it straight through, exactly as it samples an imported texture's.
+    /// `draw_custom`. This one carries a `DirectXSource::View`, the view the producer made, so the
+    /// producer's half is the same texture plus the view `create_imported_texture_view` builds; the
+    /// fragment samples it straight through, exactly as it samples an imported texture's.
     #[test]
     fn a_surface_round_trips_its_bytes() -> Result<()> {
         let viewport = Size {
@@ -2615,9 +2892,7 @@ mod tests {
         // Distinct per channel, and far from either end, so a transfer function applied once in
         // the wrong direction cannot round back to the same byte.
         let fixture = [200u8, 100, 50, 255];
-        let device = renderer
-            .device_any()
-            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+        let device = GpuRenderer::device(&renderer)
             .context("the renderer lends its device through the seam")?;
         let texture = imported_texture(
             &device,
@@ -2626,12 +2901,136 @@ mod tests {
             [fixture[2], fixture[1], fixture[0], fixture[3]],
         )?;
         let view = create_imported_texture_view(&device, &texture)?;
-        let scene = surface_scene(SurfaceSource::DirectX(view), viewport);
+        let scene = surface_scene(SurfaceSource::DirectX(DirectXSource::View(view)), viewport);
 
         let pixels = renderer.render_scene_to_image(&scene, viewport)?;
         assert_eq!((pixels.width(), pixels.height()), (8, 8));
         for (index, pixel) in pixels.data().chunks_exact(4).enumerate() {
             assert_eq!(pixel, fixture, "pixel {index} did not round trip");
+        }
+        Ok(())
+    }
+
+    /// The `Texture` variant of the surface row: the producer hands the texture rather than a view, and
+    /// the renderer makes the view itself, with the same `create_imported_texture_view` rules and
+    /// the non-sRGB format that leaves the fragment nothing to cancel. Two frames exercise both
+    /// sides of the view cache — the miss that builds the view and the hit that reuses it — so a
+    /// descriptor allocated per frame would show up here as a second, needless
+    /// `CreateShaderResourceView` rather than as a wrong pixel.
+    #[test]
+    fn a_surface_texture_round_trips_its_bytes() -> Result<()> {
+        let viewport = Size {
+            width: DevicePixels(8),
+            height: DevicePixels(8),
+        };
+        let Some(mut renderer) = test_renderer(viewport) else {
+            return Ok(());
+        };
+
+        // Distinct per channel, and far from either end, so a transfer function applied once in
+        // the wrong direction cannot round back to the same byte.
+        let fixture = [200u8, 100, 50, 255];
+        let device = GpuRenderer::device(&renderer)
+            .context("the renderer lends its device through the seam")?;
+        let texture = imported_texture(
+            &device,
+            1,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            [fixture[2], fixture[1], fixture[0], fixture[3]],
+        )?;
+        let scene = surface_scene(
+            SurfaceSource::DirectX(DirectXSource::Texture(texture)),
+            viewport,
+        );
+
+        for frame in 0..2 {
+            let pixels = renderer.render_scene_to_image(&scene, viewport)?;
+            assert_eq!((pixels.width(), pixels.height()), (8, 8));
+            for (index, pixel) in pixels.data().chunks_exact(4).enumerate() {
+                assert_eq!(
+                    pixel, fixture,
+                    "pixel {index} did not round trip on frame {frame}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The `Texture` variant's boundary. The view the renderer makes for a producer's texture is
+    /// fixed at the target's own `B8G8R8A8_UNORM` channel order, so a texture in the other order
+    /// is refused by `create_imported_texture_view` — skip-with-a-reason, the soft fault the `View`
+    /// variant's `surface_view_is_sampleable` makes — rather than viewed and composited with red and
+    /// blue exchanged. A composited surface would paint this texture's bytes over the whole
+    /// target; a skipped one leaves the frame's clear (white, the opaque background) untouched.
+    #[test]
+    fn a_surface_texture_in_the_wrong_format_is_skipped() -> Result<()> {
+        let viewport = Size {
+            width: DevicePixels(8),
+            height: DevicePixels(8),
+        };
+        let Some(mut renderer) = test_renderer(viewport) else {
+            return Ok(());
+        };
+
+        let device = GpuRenderer::device(&renderer)
+            .context("the renderer lends its device through the seam")?;
+        // RGBA rather than BGRA: same-device and otherwise sampleable, so only the channel order
+        // can be what refuses it. The bytes are distinctive so a composite would be unmistakable.
+        let texture = imported_texture(&device, 1, DXGI_FORMAT_R8G8B8A8_UNORM, [10, 20, 30, 255])?;
+        let scene = surface_scene(
+            SurfaceSource::DirectX(DirectXSource::Texture(texture)),
+            viewport,
+        );
+
+        // Refused, but softly: the frame still renders and reads back rather than faulting.
+        let pixels = renderer.render_scene_to_image(&scene, viewport)?;
+        assert_eq!((pixels.width(), pixels.height()), (8, 8));
+        for (index, pixel) in pixels.data().chunks_exact(4).enumerate() {
+            assert_eq!(
+                pixel,
+                [255, 255, 255, 255],
+                "pixel {index} was composited; the wrong-format texture was not skipped"
+            );
+        }
+        Ok(())
+    }
+
+    /// The `View` variant across successive frames: a producer's view is sampled as it is every frame —
+    /// unlike the `Texture` variant it is never cached — and the immediate unbind the draw does leaves
+    /// the next frame free to bind and sample it again.
+    #[test]
+    fn a_surface_view_round_trips_its_bytes() -> Result<()> {
+        let viewport = Size {
+            width: DevicePixels(8),
+            height: DevicePixels(8),
+        };
+        let Some(mut renderer) = test_renderer(viewport) else {
+            return Ok(());
+        };
+
+        // Distinct per channel, and far from either end, so a transfer function applied once in
+        // the wrong direction cannot round back to the same byte.
+        let fixture = [200u8, 100, 50, 255];
+        let device = GpuRenderer::device(&renderer)
+            .context("the renderer lends its device through the seam")?;
+        let texture = imported_texture(
+            &device,
+            1,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            [fixture[2], fixture[1], fixture[0], fixture[3]],
+        )?;
+        let view = create_imported_texture_view(&device, &texture)?;
+        let scene = surface_scene(SurfaceSource::DirectX(DirectXSource::View(view)), viewport);
+
+        for frame in 0..2 {
+            let pixels = renderer.render_scene_to_image(&scene, viewport)?;
+            assert_eq!((pixels.width(), pixels.height()), (8, 8));
+            for (index, pixel) in pixels.data().chunks_exact(4).enumerate() {
+                assert_eq!(
+                    pixel, fixture,
+                    "pixel {index} did not round trip on frame {frame}"
+                );
+            }
         }
         Ok(())
     }

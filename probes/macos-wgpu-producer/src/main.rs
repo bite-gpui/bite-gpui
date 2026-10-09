@@ -1,6 +1,7 @@
 //! Probe: can a wgpu producer serve GPUI's Metal renderer on macOS?
 //!
-//! Path A requires producer and consumer to be on the same device (decision 0002). On macOS the
+//! The imported surface path requires producer and consumer to be on the same device (decision
+//! 0002). On macOS the
 //! consumer is always `MetalRenderer`, which created the `MTLDevice` it draws on, and a wgpu
 //! producer has to reach *that* device: `wgpu-hal`'s Metal backend speaks `objc2-metal`, where GPUI
 //! speaks the `metal` crate, and it exposes no public constructor that takes a device. So the
@@ -145,7 +146,7 @@ mod imp {
         // -------------------------------------- 4. a wgpu texture, through the token
         let fixture = [200u8, 100, 50, 255];
         // The target is `Bgra8Unorm`, read back with its bytes swapped to RGBA, so the texture
-        // holds the fixture in BGRA order — the convention the in-tree Path A rows use too.
+        // holds the fixture in BGRA order — the convention the in-tree imported-surface rows use too.
         let stored = [fixture[2], fixture[1], fixture[0], fixture[3]];
 
         let written = device.create_texture(&wgpu::TextureDescriptor {

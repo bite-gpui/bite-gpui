@@ -1355,25 +1355,22 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
 struct SurfaceParams {
     bounds: Bounds,
     content_mask: Bounds,
-    // 0 = NV12 (sample luma and chroma, convert), 1 = a single RGBA/BGRA plane (sample straight
-    // through). The padding keeps the uniform's size a multiple of 16.
+    // 0 = NV12 (sample luma and chroma, convert), 1 = a single RGBA/BGRA plane (sample
+    // straight through). `chroma_reconstruction` is 0 for bilinear, 1 for luma-guided. The padding
+    // keeps the two words before `ycbcr_to_rgb` a multiple of 16 apart.
     surface_format: u32,
+    chroma_reconstruction: u32,
     _pad0: u32,
     _pad1: u32,
-    _pad2: u32,
+    // The YUV -> RGB matrix for the colour space the producer declared, column-major. Unused for a
+    // single-plane buffer, which is already RGB.
+    ycbcr_to_rgb: mat4x4<f32>,
 }
 
 @group(1) @binding(0) var<uniform> surface_locals: SurfaceParams;
 @group(1) @binding(1) var t_y: texture_2d<f32>;
 @group(1) @binding(2) var t_cb_cr: texture_2d<f32>;
 @group(1) @binding(3) var s_surface: sampler;
-
-const ycbcr_to_RGB = mat4x4<f32>(
-    vec4<f32>( 1.0000f,  1.0000f,  1.0000f, 0.0),
-    vec4<f32>( 0.0000f, -0.3441f,  1.7720f, 0.0),
-    vec4<f32>( 1.4020f, -0.7141f,  0.0000f, 0.0),
-    vec4<f32>(-0.7010f,  0.5291f, -0.8860f, 1.0),
-);
 
 struct SurfaceVarying {
     @builtin(position) position: vec4<f32>,
@@ -1392,6 +1389,36 @@ fn vs_surface(@builtin(vertex_index) vertex_id: u32) -> SurfaceVarying {
     return out;
 }
 
+// Chroma for a 4:2:0 plane, reconstructed with the full-resolution luma as a guide.
+//
+// The chroma plane is half-resolution in both axes, so a bilinear tap low-passes colour across a
+// luma edge: the colour bleeds where the luma does not. This takes the four chroma texels enclosing
+// `uv` and weights each by how close its luma is to the luma at `uv`, so the reconstruction follows
+// the sharp luma edge instead of smoothing across it. It recovers nothing the format discarded — it
+// only stops the interpolation inventing colour across an edge the luma already locates.
+const CHROMA_GUIDE_SHARPNESS = 32.0;
+
+fn sample_chroma_luma_guided(uv: vec2<f32>) -> vec2<f32> {
+    let texel = 1.0 / vec2<f32>(textureDimensions(t_cb_cr));
+    let centre_luma = textureSampleLevel(t_y, s_surface, uv, 0.0).r;
+
+    var weight_sum = 0.0;
+    var chroma_sum = vec2<f32>(0.0);
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        // The four chroma texel centres enclosing `uv`: (-0.5,-0.5) through (+0.5,+0.5).
+        let offset = vec2<f32>(f32(i & 1u), f32((i >> 1u) & 1u)) - vec2<f32>(0.5);
+        let at = uv + offset * texel;
+        let luma = textureSampleLevel(t_y, s_surface, at, 0.0).r;
+        let weight = exp(-abs(luma - centre_luma) * CHROMA_GUIDE_SHARPNESS);
+        chroma_sum = chroma_sum + textureSampleLevel(t_cb_cr, s_surface, at, 0.0).rg * weight;
+        weight_sum = weight_sum + weight;
+    }
+    if (weight_sum <= 0.0) {
+        return textureSampleLevel(t_cb_cr, s_surface, uv, 0.0).rg;
+    }
+    return chroma_sum / weight_sum;
+}
+
 @fragment
 fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
     // Alpha clip after using the derivatives.
@@ -1404,10 +1431,13 @@ fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
         return textureSampleLevel(t_y, s_surface, input.texture_position, 0.0);
     }
 
-    let y_cb_cr = vec4<f32>(
-        textureSampleLevel(t_y, s_surface, input.texture_position, 0.0).r,
-        textureSampleLevel(t_cb_cr, s_surface, input.texture_position, 0.0).rg,
-        1.0);
+    let luma = textureSampleLevel(t_y, s_surface, input.texture_position, 0.0).r;
+    var chroma: vec2<f32>;
+    if (surface_locals.chroma_reconstruction == 1u) {
+        chroma = sample_chroma_luma_guided(input.texture_position);
+    } else {
+        chroma = textureSampleLevel(t_cb_cr, s_surface, input.texture_position, 0.0).rg;
+    }
 
-    return ycbcr_to_RGB * y_cb_cr;
+    return surface_locals.ycbcr_to_rgb * vec4<f32>(luma, chroma, 1.0);
 }

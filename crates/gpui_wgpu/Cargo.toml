@@ -65,6 +65,10 @@ gpui = { workspace = true, features = ["bench-support", "platform"] }
 image.workspace = true
 naga = { version = "29.0.4", features = ["wgsl-in"] }
 
+# The VA-API producer the tiled dma-buf test uses.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_va.workspace = true
+
 [[bench]]
 name = "layout_line"
 harness = false

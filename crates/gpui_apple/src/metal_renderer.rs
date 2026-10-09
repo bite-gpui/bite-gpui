@@ -7,8 +7,8 @@ use cocoa::{
     quartzcore::AutoresizingMask,
 };
 use gpui_engine::{
-    AtlasTextureId, CustomRenderPrimitive, MetalTexture, PaintSurface, Path, PlatformAtlas,
-    PrimitiveBatch, Scene, SceneRenderer, SurfaceSource,
+    AtlasTextureId, CustomRenderPrimitive, GpuRenderer, MetalTexture, PaintSurface, Path,
+    PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer, SurfaceSource,
 };
 use gpui_platform::{
     Background, Bounds, ContentMask, DevicePixels, GpuSpecs, MacSceneRenderer, PlatformRenderer,
@@ -1183,7 +1183,7 @@ impl MetalRenderer {
         );
 
         for (index, surface) in surfaces.iter().enumerate() {
-            // The Metal arm draws the one transport it has: a CoreVideo buffer. The unified
+            // The Metal renderer draws the one transport it has: a CoreVideo buffer. The unified
             // `SurfaceSource` is single-variant on macOS, so the fallback is unreachable here.
             let image_buffer = match &surface.source {
                 SurfaceSource::CoreVideo(image_buffer) => image_buffer,
@@ -1779,18 +1779,22 @@ impl PlatformRenderer for MetalRenderer {
         None
     }
 
-    /// The device this renderer draws on. It created it, so it is the only holder: a producer that
-    /// wants to make a texture on it has to be handed this, and nothing else on macOS can.
-    fn device_any(&self) -> Option<std::rc::Rc<dyn std::any::Any>> {
-        Some(std::rc::Rc::new(self.device.clone()))
-    }
-
     fn update_transparency(&mut self, transparent: bool) {
         MetalRenderer::update_transparency(self, transparent);
     }
 
     fn destroy(&mut self) {
         MetalRenderer::destroy(self);
+    }
+}
+
+impl GpuRenderer for MetalRenderer {
+    type Device = metal::Device;
+
+    /// The device this renderer draws on. It created it, so it is the only holder: a producer
+    /// that wants to make a texture on it has to be handed this, and nothing else on macOS can.
+    fn device(&self) -> Option<metal::Device> {
+        Some(self.device.clone())
     }
 }
 
@@ -1841,5 +1845,13 @@ impl SceneRenderer for MetalHeadlessRenderer {
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.renderer.sprite_atlas().clone()
+    }
+}
+
+#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+impl GpuRenderer for MetalHeadlessRenderer {
+    type Device = metal::Device;
+    fn device(&self) -> Option<metal::Device> {
+        Some(self.renderer.device.clone())
     }
 }

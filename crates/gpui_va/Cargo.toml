@@ -1,0 +1,29 @@
+[package]
+name = "gpui_va"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_va.rs"
+doctest = false
+
+# A producer for the surface path is Linux-only and needs `libva` and a Vulkan device, so every
+# dependency is scoped to Linux and the crate is empty elsewhere.
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow.workspace = true
+gpui_engine.workspace = true
+# The producer seam the surface path is fed through, so a Linux playback and a macOS decoder reach
+# the same element. `gpui_surface_producer` depends only on the engine.
+gpui_surface_producer.workspace = true
+log.workspace = true
+# `dlopen` `libva`, so a machine without the driver compiles and skips rather than failing to link.
+libloading = "0.8"
+# The GPU copy that fills the surface, and the dma-buf export the driver does not do for us.
+ash = "0.38"
+# `eventfd`, and the `poll` a playback waits on a consumer's release with.
+libc.workspace = true

@@ -7535,9 +7535,12 @@ name = "gpui"
 version = "0.2.2"
 dependencies = [
  "anyhow",
+ "ash",
  "backtrace",
  "bindgen",
  "collections",
+ "core-foundation 0.10.0",
+ "core-video",
  "criterion",
  "embed-resource",
  "env_logger 0.11.8",
@@ -7549,6 +7552,7 @@ dependencies = [
  "gpui_platform",
  "gpui_runtime",
  "gpui_util",
+ "gpui_va",
  "gpui_web",
  "gpui_wgpu",
  "gpui_windows",
@@ -7711,6 +7715,18 @@ dependencies = [
  "smallvec",
  "stacksafe",
  "taffy",
+]
+
+[[package]]
+name = "gpui_interop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "embed-resource",
+ "gpui",
+ "gpui_windows",
+ "wgpu",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -7892,6 +7908,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_surface_producer"
+version = "0.1.0"
+dependencies = [
+ "gpui_engine",
+]
+
+[[package]]
 name = "gpui_tokio"
 version = "0.1.0"
 dependencies = [
@@ -7924,6 +7947,27 @@ dependencies = [
  "anyhow",
  "log",
  "which",
+]
+
+[[package]]
+name = "gpui_va"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ash",
+ "gpui_engine",
+ "gpui_surface_producer",
+ "libc",
+ "libloading",
+ "log",
+]
+
+[[package]]
+name = "gpui_video"
+version = "0.1.0"
+dependencies = [
+ "gpui_authoring",
+ "gpui_surface_producer",
 ]
 
 [[package]]
@@ -7970,6 +8014,7 @@ dependencies = [
  "gpui_engine",
  "gpui_platform",
  "gpui_util",
+ "gpui_va",
  "image",
  "itertools 0.14.0",
  "libc",

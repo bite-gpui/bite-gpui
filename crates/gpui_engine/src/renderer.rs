@@ -2,7 +2,45 @@
 
 use crate::{PlatformAtlas, Scene};
 use gpui_types::{DevicePixels, Size};
+use std::any::Any;
 use std::sync::Arc;
+
+/// Downcasting for [`SceneRenderer`] trait objects.
+///
+/// `SceneRenderer` is the GPU-agnostic seam: it presents a [`Scene`] and names no graphics API.
+/// The renderer *behind* it is what owns the device — and the caches, the textures and the other
+/// resources built on it — so a caller that needs those downcasts to the concrete backend renderer
+/// here, rather than having the window lend its guest's internals.
+impl dyn SceneRenderer + '_ {
+    /// `self` as the concrete renderer `T`, if that is what it is.
+    pub fn as_renderer<T: Any>(&self) -> Option<&T> {
+        (self as &dyn Any).downcast_ref::<T>()
+    }
+
+    /// The mutable form of [`as_renderer`](Self::as_renderer).
+    pub fn as_renderer_mut<T: Any>(&mut self) -> Option<&mut T> {
+        (self as &mut dyn Any).downcast_mut::<T>()
+    }
+}
+
+/// A renderer that owns a device a producer can make resources on.
+///
+/// The engine's [`SceneRenderer`] is GPU-agnostic and names no device, but a producer that must make
+/// a texture on the *window's* GPU has to reach the concrete device the renderer drew with — the
+/// same-device rule seen from the renderer's side. A renderer that owns one implements this; a
+/// renderer that has none to lend — a discard or capture-only one — simply does not, and is then
+/// absent from this door rather than answering it with a placeholder.
+///
+/// [`Device`](Self::Device) is the backend's own handle — an `ID3D11Device`, a `metal::Device`, a
+/// wgpu context — so this trait adds no dependency on any GPU driver: only an implementor names one.
+pub trait GpuRenderer: SceneRenderer {
+    /// The device this renderer draws on, and so the one a producer must make its texture on.
+    type Device;
+
+    /// The device, or `None` while there is none to lend: a renderer mid-recovery has taken its
+    /// device apart and has not yet rebuilt it.
+    fn device(&self) -> Option<Self::Device>;
+}
 
 /// A frame read back from a renderer, as raw pixels.
 ///
@@ -77,7 +115,7 @@ impl PixelBuffer {
 /// fills a target without a CPU round trip, which is what a consumer on the GPU wants;
 /// [`read_pixels`](Self::read_pixels) pays for system memory only when a consumer on the CPU
 /// needs it; [`render_scene_to_image`](Self::render_scene_to_image) is the two together.
-pub trait SceneRenderer: 'static {
+pub trait SceneRenderer: Any {
     /// Encodes and submits `scene`, returning whether it was presented.
     ///
     /// Renderers that cannot observe presentation (or that render offscreen)

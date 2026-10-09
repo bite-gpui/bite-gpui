@@ -123,13 +123,20 @@ http_client = { workspace = true, features = ["test-support"] }
 proptest = { workspace = true }
 reqwest_client = { workspace = true, features = ["test-support"] }
 
-# The `path_a` example's producers. Dev-dependencies on purpose: the facade's own graph stays free
+# The `surface` example's producers. Dev-dependencies on purpose: the facade's own graph stays free
 # of the renderer crates, and an example is the only thing in it that has to name a backend's types.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dev-dependencies]
+ash = "0.38"
 gpui_wgpu.workspace = true
 wgpu.workspace = true
 
+# The VA-API producer the example's decoded tab uses; it depends on `libva` at run time.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_va.workspace = true
+
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+core-foundation.workspace = true
+core-video.workspace = true
 foreign-types.workspace = true
 metal.workspace = true
 pollster.workspace = true

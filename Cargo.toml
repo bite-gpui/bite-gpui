@@ -96,6 +96,7 @@ members = [
     "crates/gpui_authoring",
     "crates/gpui_engine_default",
     "crates/gpui_engine",
+    "crates/gpui_interop",
     "crates/gpui_linux",
     "crates/gpui_macos",
     "crates/gpui_macros",
@@ -106,6 +107,9 @@ members = [
     "crates/gpui_tokio",
     "crates/gpui_types",
     "crates/gpui_util",
+    "crates/gpui_surface_producer",
+    "crates/gpui_va",
+    "crates/gpui_video",
     "crates/gpui_web",
     "crates/gpui_wgpu",
     "crates/gpui_windows",
@@ -373,6 +377,7 @@ gpui_apple = { path = "crates/gpui_apple" }
 gpui_authoring = { path = "crates/gpui_authoring" }
 gpui_engine_default = { path = "crates/gpui_engine_default" }
 gpui_engine = { path = "crates/gpui_engine" }
+gpui_interop = { path = "crates/gpui_interop" }
 gpui_linux = { path = "crates/gpui_linux", default-features = false }
 gpui_macos = { path = "crates/gpui_macos", default-features = false }
 gpui_macros = { path = "crates/gpui_macros" }
@@ -382,6 +387,9 @@ gpui_shared_string = { path = "crates/gpui_shared_string" }
 gpui_tokio = { path = "crates/gpui_tokio" }
 gpui_types = { path = "crates/gpui_types" }
 gpui_util = { path = "crates/gpui_util" }
+gpui_surface_producer = { path = "crates/gpui_surface_producer" }
+gpui_va = { path = "crates/gpui_va" }
+gpui_video = { path = "crates/gpui_video" }
 gpui_web = { path = "crates/gpui_web" }
 gpui_wgpu = { path = "crates/gpui_wgpu" }
 gpui_windows = { path = "crates/gpui_windows", default-features = false }

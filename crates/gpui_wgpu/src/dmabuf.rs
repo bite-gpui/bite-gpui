@@ -1,23 +1,39 @@
 //! Importing a dma-buf into `wgpu` textures, on the Vulkan backend.
 //!
+//! A [`DmaBufHandle`](gpui_engine::DmaBufHandle) is a buffer that another component — a compositor,
+//! video decoder, camera or second GPU process — exports as a dma-buf: one file descriptor per plane
+//! plus the layout needed to interpret it (a format, a DRM format modifier, and a byte offset and
+//! row stride per plane). The renderer *consumes* such a handle to composite the buffer as a
+//! surface; it does not produce or negotiate one.
+//!
 //! `wgpu` can adopt a raw `VkImage` (`texture_from_raw`) but cannot create one over an external
-//! allocation, so the import is done with `ash` against the very device `wgpu` draws on. The recipe
-//! is the one the P3 probe proved
-//! (`bite-gpui-project`/`decisions/linux-dmabuf-probe.md`): create the image, import the descriptor
-//! into a **dedicated** allocation, bind it, and hand the image to `wgpu`. The dedicated
-//! allocation is not decoration — the probe found the discrete GPU refusing the import on every
-//! memory type without it, while still advertising the format `IMPORTABLE`.
+//! allocation, so the import is done with `ash` against the very device `wgpu` draws on: create the
+//! image, import the descriptor into a **dedicated** allocation, bind it, and hand the image to
+//! `wgpu`. The dedicated allocation is not decoration — a discrete GPU can refuse the import on
+//! every memory type without it, even while advertising the format as `IMPORTABLE`, so a dedicated
+//! allocation is what imports reliably across drivers.
 //!
 //! A descriptor is consumed by the import (the driver takes ownership), so each plane imports a
 //! `dup` of its descriptor; that is also what lets an `NV12` buffer's two planes, which may share one
 //! descriptor, become two independently-owned textures.
 //!
-//! **Linear only — a tiled buffer is refused.** Sampling a vendor-tiled modifier needs
-//! `VK_EXT_image_drm_format_modifier` enabled on the device the image is made on, and that device is
-//! `wgpu`'s: its Vulkan backend does not enable the extension and exposes no way to add one, so a
-//! `DRM_FORMAT_MODIFIER_EXT` image cannot be created there. A non-linear modifier is refused with a
-//! message rather than sampled wrong; it is an accepted limitation, and the future `wgpu-hal` change
-//! that would lift it is recorded in `bite-gpui-project/issues/0008-dmabuf-tiled-modifiers-wgpu.md`.
+//! # The producer's contract
+//!
+//! The importer validates the handle and refuses one it cannot honour, rather than compositing a
+//! wrong image. A producer must therefore:
+//!
+//! - **Declare the buffer's tiling.** A single-plane-per-layer buffer is sampled as-is: the
+//!   importer creates the plane's image with the handle's [`modifier`](gpui_engine::DmaBufHandle::modifier),
+//!   so a producer may export a vendor-tiled buffer
+//!   ([`DRM_FORMAT_MOD_LINEAR`](gpui_engine::DmaBufHandle::LINEAR) is the portable choice, and a tiled
+//!   modifier is sampled only where the device enabled `VK_EXT_image_drm_format_modifier` — see
+//!   `WgpuContext::device_with_surface_import` — and otherwise refused by `vkCreateImage`).
+//! - **Carry one plane per format.** [`SurfaceFormatKind::plane_count`](gpui_engine::SurfaceFormatKind::plane_count)
+//!   says how many a format needs — one for packed RGB, two for semi-planar YCbCr, three for planar;
+//!   a handle whose plane count does not match its format is refused.
+//!
+//! See [`DmaBufHandle`](gpui_engine::DmaBufHandle) for the descriptor itself and the full set of
+//! invariants a dma-buf import requires.
 
 use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
@@ -25,93 +41,220 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use ash::vk;
-use gpui_engine::{DmaBufFormat, DmaBufHandle, DmaBufPlane};
+use gpui_engine::{DmaBufHandle, DmaBufPlane, RgbOrder, SampleDepth, Subsampling};
 
-/// A plane's texture, adopted into `wgpu`.
+/// A plane's texture, adopted into `wgpu`, and the view the renderer samples.
+///
+/// For a single-plane buffer the view is the whole texture. For `Nv12` the texture is the **one**
+/// multi-planar image over the buffer and the view is one of its two planes, so the pair of entries
+/// the importer returns are two views of one image — the shape a decoder exports — rather than two
+/// independently imported ones. That keeps the buffer the object its modifier describes, and avoids
+/// the per-plane `R8`/`RG8` representations a copy or a later feature would trip over.
+#[derive(Clone)]
 pub(crate) struct PlaneTexture {
-    /// The wgpu texture `wgpu` owns, over the imported image.
+    /// The wgpu texture `wgpu` owns, over the imported image. Held so the image — and the imported
+    /// memory behind it — outlives the view taken from it.
+    #[allow(dead_code, reason = "the view samples the image, but this keeps it alive")]
     pub texture: wgpu::Texture,
+    /// The view of that image this plane samples.
+    pub view: wgpu::TextureView,
 }
 
 /// Import a dma-buf as the texture(s) the surface pipeline composites.
 ///
-/// One texture for `Bgra8`/`Rgba8`, two (`R8` then `Rg8`) for `NV12`.
+/// One texture for a packed RGB buffer, two (the plane views of one multi-planar image) for `NV12`.
 pub(crate) fn import_dmabuf(
     device: &wgpu::Device,
     handle: &DmaBufHandle,
 ) -> Result<Vec<PlaneTexture>> {
-    anyhow::ensure!(
-        handle.modifier == DmaBufHandle::LINEAR,
-        "gpui_wgpu imports linear dma-bufs only, but this buffer declares modifier {:#x}: a tiled \
-         modifier needs VK_EXT_image_drm_format_modifier, which wgpu does not enable on the renderer's \
-         device (issues/0008); a producer must use DRM_FORMAT_MOD_LINEAR",
-        handle.modifier,
-    );
-    let expected = match handle.format {
-        DmaBufFormat::Bgra8 | DmaBufFormat::Rgba8 => 1,
-        DmaBufFormat::Nv12 => 2,
-    };
+    let format = handle.format;
+    let dimensions = format.dimensions();
+    let expected = dimensions.plane_count();
     anyhow::ensure!(
         handle.planes.len() == expected,
-        "{:?} needs {expected} plane(s), but the handle carries {}",
-        handle.format,
+        "{format} needs {expected} plane(s), but the handle carries {}",
         handle.planes.len(),
     );
 
     let hal = unsafe { device.as_hal::<wgpu::hal::vulkan::Api>() }
-        .context("the dma-buf surface arm needs the Vulkan backend")?;
+        .context("importing a dma-buf needs the Vulkan backend")?;
     let instance = hal.shared_instance().raw_instance();
     let physical = hal.raw_physical_device();
 
-    let mut textures = Vec::with_capacity(expected);
-    match handle.format {
-        DmaBufFormat::Bgra8 | DmaBufFormat::Rgba8 => {
-            let (wgpu_format, vk_format) = match handle.format {
-                DmaBufFormat::Bgra8 => {
-                    (wgpu::TextureFormat::Bgra8Unorm, vk::Format::B8G8R8A8_UNORM)
-                }
-                _ => (wgpu::TextureFormat::Rgba8Unorm, vk::Format::R8G8B8A8_UNORM),
-            };
-            textures.push(import_plane(
-                device,
-                &*hal,
-                instance,
-                physical,
-                &handle.planes[0],
-                vk_format,
-                wgpu_format,
-                handle.width,
-                handle.height,
-            )?);
-        }
-        DmaBufFormat::Nv12 => {
-            // Plane 0 is luma at full resolution; plane 1 is interleaved chroma at half, in both
-            // dimensions.
-            textures.push(import_plane(
-                device,
-                &*hal,
-                instance,
-                physical,
-                &handle.planes[0],
-                vk::Format::R8_UNORM,
-                wgpu::TextureFormat::R8Unorm,
-                handle.width,
-                handle.height,
-            )?);
-            textures.push(import_plane(
-                device,
-                &*hal,
-                instance,
-                physical,
-                &handle.planes[1],
-                vk::Format::R8G8_UNORM,
-                wgpu::TextureFormat::Rg8Unorm,
-                handle.width / 2,
-                handle.height / 2,
-            )?);
-        }
+    if !dimensions.is_yuv() {
+        // A packed RGB plane, sampled straight through: its `VkFormat` is its component order at its
+        // bit depth.
+        let (wgpu_format, vk_format) = match (dimensions.rgb_order(), dimensions.depth()) {
+            (RgbOrder::Bgr, SampleDepth::Bits8) => {
+                (wgpu::TextureFormat::Bgra8Unorm, vk::Format::B8G8R8A8_UNORM)
+            }
+            (RgbOrder::Rgb, SampleDepth::Bits8) => {
+                (wgpu::TextureFormat::Rgba8Unorm, vk::Format::R8G8B8A8_UNORM)
+            }
+            _ => anyhow::bail!("unsupported RGB surface format: {format}"),
+        };
+        return Ok(vec![import_plane(
+            device,
+            &*hal,
+            instance,
+            physical,
+            &handle.planes[0],
+            handle.modifier,
+            vk_format,
+            wgpu_format,
+            handle.width,
+            handle.height,
+        )?]);
     }
-    Ok(textures)
+
+    // A YCbCr buffer: plane 0 is luma at full resolution; plane 1 is interleaved chroma at half, in
+    // both dimensions. Both are planes of the one image the buffer describes. Only the 8-bit 4:2:0
+    // family is imported so far; a format outside it is dropped rather than sampled wrong.
+    anyhow::ensure!(
+        dimensions.subsampling() == Subsampling::C420 && dimensions.depth() == SampleDepth::Bits8,
+        "unsupported YCbCr surface format: {format}",
+    );
+    import_luma_chroma(device, &*hal, instance, physical, handle)
+}
+
+/// Import an `Nv12` buffer's two planes as the **one** multi-planar image they describe, and view
+/// each plane.
+///
+/// The buffer is a single object at the two planes' offsets, which is what `vaExportSurfaceHandle`
+/// and GBM produce and what the plane layouts below state. Importing it as one `G8_B8R8_2PLANE_420`
+/// image (rather than two separate `R8`/`RG8` ones) is what keeps the buffer in the shape its
+/// modifier describes.
+fn import_luma_chroma(
+    device: &wgpu::Device,
+    hal: &wgpu::hal::vulkan::Device,
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    handle: &DmaBufHandle,
+) -> Result<Vec<PlaneTexture>> {
+    let raw = hal.raw_device();
+    let luma = &handle.planes[0];
+    let chroma = &handle.planes[1];
+    let tiled = handle.modifier != DmaBufHandle::LINEAR;
+
+    // The image binds at the object's base (`luma.offset`), so each plane's layout is its offset
+    // from that base; its row pitch is the plane's stride. The driver validates both.
+    let plane_layouts = [
+        vk::SubresourceLayout::default()
+            .offset(0)
+            .row_pitch(u64::from(luma.stride)),
+        vk::SubresourceLayout::default()
+            .offset(chroma.offset.saturating_sub(luma.offset))
+            .row_pitch(u64::from(chroma.stride)),
+    ];
+    let mut modifier_layout = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+        .drm_format_modifier(handle.modifier)
+        .plane_layouts(&plane_layouts);
+    let image_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
+        .extent(vk::Extent3D {
+            width: handle.width,
+            height: handle.height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(if tiled {
+            vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT
+        } else {
+            vk::ImageTiling::LINEAR
+        })
+        .usage(vk::ImageUsageFlags::SAMPLED)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image_info = if tiled {
+        image_info.push_next(&mut modifier_layout)
+    } else {
+        image_info
+    };
+    let image =
+        unsafe { raw.create_image(&image_info, None) }.context("create the imported image")?;
+    let requirements = unsafe { raw.get_image_memory_requirements(image) };
+
+    let fd = luma
+        .fd
+        .try_clone()
+        .context("duplicate the plane descriptor for the import")?
+        .into_raw_fd();
+    let memory = import_memory(
+        instance,
+        physical,
+        raw,
+        image,
+        requirements,
+        luma.offset,
+        fd,
+    )?;
+    unsafe { raw.bind_image_memory(image, memory, luma.offset) }
+        .context("bind the imported image at the object's base")?;
+
+    let size = wgpu::Extent3d {
+        width: handle.width,
+        height: handle.height,
+        depth_or_array_layers: 1,
+    };
+    let hal_texture = unsafe {
+        hal.texture_from_raw(
+            image,
+            &wgpu::hal::TextureDescriptor {
+                label: Some("dma-buf surface"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::NV12,
+                usage: wgpu::TextureUses::RESOURCE,
+                memory_flags: wgpu::hal::MemoryFlags::empty(),
+                view_formats: vec![wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm],
+            },
+            None,
+            wgpu::hal::vulkan::TextureMemory::Dedicated(memory),
+        )
+    };
+    let texture = unsafe {
+        device.create_texture_from_hal::<wgpu::hal::vulkan::Api>(
+            hal_texture,
+            &wgpu::TextureDescriptor {
+                label: Some("dma-buf surface"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::NV12,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm],
+            },
+        )
+    };
+
+    let luma_view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("dma-buf surface luma"),
+        format: Some(wgpu::TextureFormat::R8Unorm),
+        aspect: wgpu::TextureAspect::Plane0,
+        ..Default::default()
+    });
+    let chroma_view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("dma-buf surface chroma"),
+        format: Some(wgpu::TextureFormat::Rg8Unorm),
+        aspect: wgpu::TextureAspect::Plane1,
+        ..Default::default()
+    });
+    Ok(vec![
+        PlaneTexture {
+            texture: texture.clone(),
+            view: luma_view,
+        },
+        PlaneTexture {
+            texture,
+            view: chroma_view,
+        },
+    ])
 }
 
 /// How long the renderer waits for a producer's `sync_file` before dropping the surface for that
@@ -157,7 +300,38 @@ pub(crate) fn wait_for_acquire_fence(fence: &OwnedFd, timeout: Duration) -> bool
     }
 }
 
-/// Import one plane's descriptor as a linear `VkImage`, and adopt it into a `wgpu` texture.
+/// Signal a producer's release descriptor: the buffer has been sampled and its surface may be
+/// recycled. The descriptor is an `eventfd` the producer made (see [`gpui_va`]'s playback); writing
+/// eight bytes increments it, which makes the producer's `poll` return.
+///
+/// Called from the `on_submitted_work_done` callback of the submission that sampled the buffer, so
+/// the GPU has finished with it — the mirror of [`wait_for_acquire_fence`], which the producer's
+/// decoder orders the other way.
+pub(crate) fn signal_release(release: &OwnedFd) {
+    let counter: u64 = 1;
+    // SAFETY: `release` is a valid open descriptor, and the pointer and length describe one `u64`.
+    let written = unsafe {
+        libc::write(
+            release.as_raw_fd(),
+            std::ptr::addr_of!(counter).cast(),
+            std::mem::size_of::<u64>(),
+        )
+    };
+    if written < 0 {
+        log::warn!(
+            "a dma-buf release descriptor did not signal: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+/// Import one plane's descriptor as a `VkImage`, and adopt it into a `wgpu` texture.
+///
+/// `modifier` is the buffer's DRM format modifier: [`DmaBufHandle::LINEAR`](gpui_engine::DmaBufHandle::LINEAR)
+/// makes a linear image, and any other value makes a tiled one whose single-`plane` layout is given
+/// explicitly, which is the shape `vaExportSurfaceHandle` and GBM exports describe. A tiled image
+/// needs `VK_EXT_image_drm_format_modifier` on the device, which `WgpuContext` enables; a device
+/// without it refuses the image, and the surface is dropped rather than sampled wrong.
 #[expect(clippy::too_many_arguments)]
 fn import_plane(
     device: &wgpu::Device,
@@ -165,12 +339,22 @@ fn import_plane(
     instance: &ash::Instance,
     physical: vk::PhysicalDevice,
     plane: &DmaBufPlane,
+    modifier: u64,
     vk_format: vk::Format,
     wgpu_format: wgpu::TextureFormat,
     width: u32,
     height: u32,
 ) -> Result<PlaneTexture> {
     let raw = hal.raw_device();
+    let tiled = modifier != DmaBufHandle::LINEAR;
+    // The image binds at the plane's offset within the object, so the plane's own layout starts at
+    // zero; its row pitch is the buffer's. The driver validates both against the modifier.
+    let plane_layout = vk::SubresourceLayout::default()
+        .offset(0)
+        .row_pitch(u64::from(plane.stride));
+    let mut modifier_layout = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+        .drm_format_modifier(modifier)
+        .plane_layouts(std::slice::from_ref(&plane_layout));
     let image_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
         .format(vk_format)
@@ -182,10 +366,19 @@ fn import_plane(
         .mip_levels(1)
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
-        .tiling(vk::ImageTiling::LINEAR)
+        .tiling(if tiled {
+            vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT
+        } else {
+            vk::ImageTiling::LINEAR
+        })
         .usage(vk::ImageUsageFlags::SAMPLED)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image_info = if tiled {
+        image_info.push_next(&mut modifier_layout)
+    } else {
+        image_info
+    };
     let image =
         unsafe { raw.create_image(&image_info, None) }.context("create the imported image")?;
     let requirements = unsafe { raw.get_image_memory_requirements(image) };
@@ -247,7 +440,11 @@ fn import_plane(
             },
         )
     };
-    Ok(PlaneTexture { texture })
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("dma-buf surface plane view"),
+        ..Default::default()
+    });
+    Ok(PlaneTexture { texture, view })
 }
 
 /// Import `fd` into a dedicated allocation for `image`, trying every memory type it can live in.
@@ -255,8 +452,9 @@ fn import_plane(
 /// `offset` is where the image binds within the buffer, so the allocation must span
 /// `offset + requirements.size` — a plane at a non-zero offset (an `NV12` buffer's chroma) needs the
 /// whole buffer, not just its own tail. Which memory type a driver accepts a dma-buf into is not
-/// always the obvious one — the probe saw a discrete GPU refuse it on every type until the
-/// allocation was dedicated — so this tries them all rather than guessing.
+/// always the obvious one — a discrete GPU can refuse the import on every type until the allocation
+/// is dedicated, and the one type that imports may not be the one advertising the format as
+/// `IMPORTABLE` — so this tries them all rather than guessing.
 fn import_memory(
     instance: &ash::Instance,
     physical: vk::PhysicalDevice,
@@ -293,7 +491,7 @@ fn import_memory(
 
 /// Reuses the textures imported for a dma-buf across frames.
 ///
-/// The Apple arm has the platform's `CVMetalTextureCache` for exactly this: a CoreVideo texture cache
+/// The Apple backend has the platform's `CVMetalTextureCache` for exactly this: a CoreVideo texture cache
 /// held on the renderer that hands back the same `MTLTexture` for the same `CVPixelBuffer`. There is
 /// no such facility for dma-bufs, so this is it — and it is what keeps painting a live surface from
 /// re-creating a `VkImage`, a dedicated allocation and a `wgpu::Texture` every frame.
@@ -333,29 +531,24 @@ impl DmaBufTextureCache {
         &mut self,
         device: &wgpu::Device,
         handle: &DmaBufHandle,
-    ) -> Result<Vec<wgpu::Texture>> {
+    ) -> Result<Vec<PlaneTexture>> {
         self.frame += 1;
         let frame = self.frame;
 
         if let Some(index) = self.find(handle) {
             self.entries[index].last_used = frame;
-            return Ok(self.entries[index]
-                .textures
-                .iter()
-                .map(|plane| plane.texture.clone())
-                .collect());
+            return Ok(self.entries[index].textures.clone());
         }
 
         let imported = import_dmabuf(device, handle)?;
-        let textures = imported.iter().map(|plane| plane.texture.clone()).collect();
 
         self.evict_if_full();
         self.entries.push(CacheEntry {
             handle: handle.clone(),
-            textures: imported,
+            textures: imported.clone(),
             last_used: frame,
         });
-        Ok(textures)
+        Ok(imported)
     }
 
     /// The index of the entry for `handle`, if this buffer is already imported.
@@ -399,6 +592,7 @@ fn same_buffer(a: &DmaBufHandle, b: &DmaBufHandle) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_engine::SurfaceFormatKind;
     use std::os::fd::OwnedFd;
 
     /// A real descriptor without a GPU: `/dev/null` is an open file, and any open file is a valid
@@ -411,7 +605,7 @@ mod tests {
         DmaBufHandle::new(
             width,
             2,
-            DmaBufFormat::Bgra8,
+            SurfaceFormatKind::bgra8(),
             DmaBufHandle::LINEAR,
             [DmaBufPlane::new(descriptor(), offset, stride)],
             None,
@@ -435,7 +629,7 @@ mod tests {
         let rgba = DmaBufHandle::new(
             4,
             2,
-            DmaBufFormat::Rgba8,
+            SurfaceFormatKind::rgba8(),
             DmaBufHandle::LINEAR,
             [DmaBufPlane::new(descriptor(), 0, 16)],
             None,

@@ -130,9 +130,9 @@ impl Scene {
                 self.polychrome_sprites.push(*sprite);
             }
             Primitive::Surface(surface) => {
-                // On a platform with no surface arm yet, `SurfaceSource` — and so `PaintSurface` —
+                // On a platform with no surface backend yet, `SurfaceSource` — and so `PaintSurface` —
                 // is uninhabited and this arm is unreachable. It stays for the platforms that do
-                // carry a source (macOS and Windows today, Linux once the dma-buf arm lands).
+                // carry a source (macOS and Windows today, Linux once the dma-buf backend lands).
                 #[allow(unreachable_code)]
                 {
                     surface.order = order;
@@ -785,6 +785,60 @@ impl From<PolychromeSprite> for Primitive {
     }
 }
 
+/// Where a Windows surface's pixels come from. Every variant ends at the same
+/// `ID3D11ShaderResourceView` in the renderer; the difference is who makes it, and on which device.
+///
+/// The texture variant is the ergonomic default for a producer that already renders on the window
+/// renderer's own device: it holds the resource and hands it here, and the renderer — which owns the
+/// device — makes the view. The view variant is the escape for a producer that is the authority on
+/// its own format, plane and mip interpretation and would rather make the view itself. Both are
+/// device-bound, so they must be made on the window renderer's device; the shared variant is the
+/// device-independent one — an NT handle the renderer opens on its own device and views — the
+/// Direct3D counterpart of a dma-buf or an IOSurface, and the one a `surface()` element can carry,
+/// because it can be built before the window's device exists.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub enum DirectXSource {
+    /// A texture on the window renderer's own device — the renderer makes the view.
+    Texture(windows::Win32::Graphics::Direct3D11::ID3D11Texture2D),
+    /// A view the producer already made — it is the authority on the interpretation.
+    View(windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView),
+    /// A texture shared across devices: the renderer opens the handle on its own device and views it.
+    Shared(SharedDirectXSurface),
+}
+
+/// A Direct3D texture a producer made on *its own* device and shared, plus the fence that orders its
+/// writes before the renderer samples it.
+///
+/// This is the device-independent Direct3D payload: the handle names a resource the renderer opens
+/// with `OpenSharedResource1` and views on the device it draws with, so the producer never needs the
+/// window's device — which is what lets `surface()` carry a Direct3D surface, where the device-bound
+/// [`Texture`](DirectXSource::Texture) and [`View`](DirectXSource::View) cannot.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedDirectXSurface {
+    /// The texture's NT handle, as `CreateSharedHandle` produced it.
+    pub texture: windows::Win32::Foundation::HANDLE,
+    /// The fence that orders the producer's writes before the draw, when it signals one; `None` for a
+    /// producer that has already flushed.
+    pub fence: Option<SharedDirectXFence>,
+    /// The texture's width in pixels, for the element's object-fit.
+    pub width: u32,
+    /// The texture's height in pixels, for the element's object-fit.
+    pub height: u32,
+}
+
+/// A producer's shared fence, and the value the renderer waits for before sampling the texture.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedDirectXFence {
+    /// The fence's NT handle, opened on the renderer's device with `OpenSharedFence`.
+    pub handle: windows::Win32::Foundation::HANDLE,
+    /// The value the renderer waits for on the device's context before it samples the texture.
+    pub value: u64,
+}
+
 /// A source of a surface's content: pixels GPUI did not draw, arriving on the renderer's own
 /// device or from another one.
 ///
@@ -798,9 +852,10 @@ pub enum SurfaceSource {
     /// A CoreVideo image buffer, backed by an IOSurface.
     #[cfg(target_os = "macos")]
     CoreVideo(core_video::pixel_buffer::CVPixelBuffer),
-    /// A Direct3D 11 shader resource view, made on the window renderer's own device.
+    /// The pixels of a Direct3D 11 surface, as either a texture the renderer views or a view a
+    /// producer already made. [`DirectXSource`] carries both and explains why both are offered.
     #[cfg(target_os = "windows")]
-    DirectX(windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView),
+    DirectX(DirectXSource),
     /// A dma-buf: an fd plus a DRM fourcc, modifier, stride and offset.
     #[cfg(target_os = "linux")]
     DmaBuf(crate::dmabuf::DmaBufHandle),
@@ -814,9 +869,30 @@ impl From<core_video::pixel_buffer::CVPixelBuffer> for SurfaceSource {
 }
 
 #[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView> for DirectXSource {
+    fn from(view: windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView) -> Self {
+        DirectXSource::View(view)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D> for DirectXSource {
+    fn from(texture: windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Self {
+        DirectXSource::Texture(texture)
+    }
+}
+
+#[cfg(target_os = "windows")]
 impl From<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView> for SurfaceSource {
     fn from(view: windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView) -> Self {
-        SurfaceSource::DirectX(view)
+        SurfaceSource::DirectX(view.into())
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D> for SurfaceSource {
+    fn from(texture: windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Self {
+        SurfaceSource::DirectX(texture.into())
     }
 }
 

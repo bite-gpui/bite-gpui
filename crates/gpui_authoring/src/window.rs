@@ -11,8 +11,8 @@ use crate::{
     DEFAULT_WINDOW_SIZE,
     Decorations, DevicePixels, DispatchActionListener, DispatchEventResult, DispatchNodeId,
     DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, FontId,
-    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, ImportedTextureHandle, InputHandler,
-    InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
+    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, ImportedTextureHandle,
+    InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
     KeystrokeEvent, LayoutId, LineLayoutIndex, MeasureContext, MeasureHandles, Modifiers,
     ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
     Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
@@ -72,22 +72,10 @@ use uuid::Uuid;
 
 pub(crate) mod a11y;
 mod frame_pipeline;
-#[cfg(target_os = "linux")]
-mod linux;
-#[cfg(target_os = "macos")]
-mod mac;
 mod prompts;
-#[cfg(target_os = "windows")]
-mod win;
 
 pub use a11y::A11ySubtreeBuilder;
 pub use frame_pipeline::{FramePipeline, StandardImmediatePipeline};
-#[cfg(target_os = "linux")]
-pub use linux::*;
-#[cfg(target_os = "macos")]
-pub use mac::*;
-#[cfg(target_os = "windows")]
-pub use win::*;
 
 use self::a11y::A11y;
 #[cfg(not(target_family = "wasm"))]
@@ -3041,17 +3029,6 @@ impl Window<'_> {
         self.frame_state.rendered_frame.scene.surfaces.clone()
     }
 
-    /// The graphics device this window's renderer draws on, if it has one to lend.
-    ///
-    /// This is how a producer reaches it, and it is the only route: the device belongs to whoever
-    /// built the window's renderer, and a texture has to be made on *that* device for the
-    /// renderer to sample it. The value is erased because one `Window` type cannot name
-    /// `ID3D11Device` or `MTLDevice` — the crate that owns the payload is where a caller
-    /// downcasts, and `None` means this window's renderer has no device to lend.
-    pub fn device_any(&self) -> Option<Rc<dyn Any>> {
-        self.core.platform_window.device_any()
-    }
-
     /// Returns the custom-render primitives in the most recently rendered frame's scene: the
     /// textures an application produced elsewhere and painted into this window. Like
     /// [`painted_quads`](Self::painted_quads), this is the scene as painted, before any renderer
@@ -3477,7 +3454,7 @@ impl Window<'_> {
     }
 
     #[inline]
-    fn snap_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<ScaledPixels> {
+    pub(crate) fn snap_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<ScaledPixels> {
         let scale_factor = self.scale_factor();
         let left = round_to_device_pixel(bounds.left().0, scale_factor);
         let top = round_to_device_pixel(bounds.top().0, scale_factor);
@@ -3515,7 +3492,7 @@ impl Window<'_> {
     }
 
     #[inline]
-    fn snapped_content_mask(&self) -> ContentMask<ScaledPixels> {
+    pub(crate) fn snapped_content_mask(&self) -> ContentMask<ScaledPixels> {
         ContentMask {
             bounds: self.cover_bounds(self.content_mask().bounds),
         }
@@ -5017,7 +4994,7 @@ impl Window<'_> {
     /// It is an error to hand over a texture from another device: the renderer's binding will
     /// reject it.
     /// Part of the [authoring surface](crate::_authoring) for custom elements.
-    pub fn paint_imported_texture(
+    pub(crate) fn paint_imported_texture(
         &mut self,
         handle: ImportedTextureHandle,
         bounds: Bounds<Pixels>,
@@ -8412,7 +8389,8 @@ mod tests {
         ParentElement, Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
         StandardImmediatePipeline, StatefulInteractiveElement as _, Styled, TestAppContext,
         TouchDragEvent, TouchEvent, TouchId, TouchPhase, Underline, UnderlineStyle, Window,
-        WindowAppearance, WindowMetrics, WindowOptions, canvas, div, hsla, point, px, size,
+        WindowAppearance, WindowMetrics, WindowOptions, canvas, div, gpu_canvas, hsla, point, px,
+        size,
     };
 
     /// Visibility transitions reach observers exactly once each, with the new
@@ -10182,18 +10160,11 @@ mod tests {
                 let corner_radii = self.corner_radii;
                 let opacity = self.opacity;
                 let flip_v = self.flip_v;
-                canvas(
-                    |_, _, _| (),
-                    move |_, _, window, _| {
-                        window.paint_imported_texture(
-                            handle.clone(),
-                            bounds,
-                            corner_radii,
-                            opacity,
-                            flip_v,
-                        );
-                    },
-                )
+                gpu_canvas(move |ctx| {
+                    ctx.paint_texture(handle.clone(), corner_radii, opacity, flip_v);
+                })
+                .w(bounds.size.width)
+                .h(bounds.size.height)
             }
         }
 
