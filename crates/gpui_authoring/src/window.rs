@@ -833,6 +833,35 @@ impl HitboxId {
     }
 }
 
+/// A predicate that says whether a [`Hitbox`] is present at a window position.
+///
+/// A hitbox with a filter is only hit where the filter allows the position; everywhere else
+/// hit-testing skips it — it neither claims the pointer nor blocks what is behind it — so the pointer
+/// reaches whatever the element is drawn over. This is how an element whose content does not fill its
+/// bounds declines the pointer over the gaps (see `GpuCanvas::occlude_where`). Unlike a hitbox's
+/// [`HitboxBehavior`], which is fixed when a frame is built, the filter is asked at the *event's*
+/// position — so the answer neither lags a frame nor needs a redraw to take effect.
+#[derive(Clone)]
+pub struct HitboxFilter(Rc<dyn Fn(Point<Pixels>) -> bool>);
+
+impl HitboxFilter {
+    /// Build a filter from `allows`, which is asked a window position and answers whether the hitbox
+    /// is present there.
+    pub fn new(allows: impl Fn(Point<Pixels>) -> bool + 'static) -> Self {
+        Self(Rc::new(allows))
+    }
+
+    fn allows(&self, position: Point<Pixels>) -> bool {
+        (self.0)(position)
+    }
+}
+
+impl Debug for HitboxFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HitboxFilter(..)")
+    }
+}
+
 /// A rectangular region that potentially blocks hitboxes inserted prior.
 /// See [Window::insert_hitbox] for more details.
 #[derive(Clone, Debug, Deref)]
@@ -847,6 +876,14 @@ pub struct Hitbox {
     /// Flags that specify hitbox behavior.
     pub behavior: HitboxBehavior,
 }
+
+// A hitbox crosses threads — the editor moves one inside a `ScrollbarLayout` to a background task — so
+// it must stay `Send` and `Sync`. That is why a `HitboxFilter`, which closes over an element's own
+// state, is not a field here but is kept beside the frame's hitboxes (see `Frame::hitbox_filters`).
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Hitbox>();
+};
 
 impl Hitbox {
     /// Checks if the hitbox is currently hovered. Returns `false` during keyboard input modality
@@ -1002,6 +1039,11 @@ pub(crate) struct Frame {
     pub(crate) dispatch_tree: DispatchTree,
     pub(crate) scene: Scene,
     pub(crate) hitboxes: Vec<Hitbox>,
+    /// Parallel to `hitboxes`: `Some` where the hitbox at that index carries a filter. A filter closes
+    /// over the element's own state, which is not `Send`, so it cannot live in `Hitbox` — a hitbox
+    /// crosses threads (the editor moves one to a background task), and a filter would poison that.
+    /// Kept beside the frame's hitboxes, on this thread, and looked up by index.
+    pub(crate) hitbox_filters: Vec<Option<HitboxFilter>>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
@@ -1058,6 +1100,7 @@ impl Frame {
             dispatch_tree,
             scene: Scene::default(),
             hitboxes: Vec::new(),
+            hitbox_filters: Vec::new(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
@@ -1088,6 +1131,7 @@ impl Frame {
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
         self.hitboxes.clear();
+        self.hitbox_filters.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();
@@ -1124,9 +1168,16 @@ impl Frame {
     pub(crate) fn hit_test(&self, position: Point<Pixels>) -> HitTest {
         let mut set_hover_hitbox_count = false;
         let mut hit_test = HitTest::default();
-        for hitbox in self.hitboxes.iter().rev() {
+        for (index, hitbox) in self.hitboxes.iter().enumerate().rev() {
             let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
             if bounds.contains(&position) {
+                if let Some(filter) = self.hitbox_filters.get(index).and_then(Option::as_ref)
+                    && !filter.allows(position)
+                {
+                    // Not present at this position: it neither claims the pointer nor blocks what is
+                    // behind it, so hit-testing carries on as if it were not here.
+                    continue;
+                }
                 hit_test.ids.push(hitbox.id);
                 if !set_hover_hitbox_count
                     && hitbox.behavior == HitboxBehavior::BlockMouseExceptScroll
@@ -4271,6 +4322,12 @@ impl Window<'_> {
                 .iter()
                 .cloned(),
         );
+        self.frame_state.next_frame.hitbox_filters.extend(
+            self.frame_state.rendered_frame.hitbox_filters
+                [range.start.hitboxes_index..range.end.hitboxes_index]
+                .iter()
+                .cloned(),
+        );
         self.frame_state.next_frame.tooltip_requests.extend(
             self.frame_state.rendered_frame.tooltip_requests
                 [range.start.tooltips_index..range.end.tooltips_index]
@@ -5679,6 +5736,19 @@ impl Window<'_> {
     /// This method should only be called as part of the prepaint phase of element drawing.
     /// Part of the [authoring surface](crate::_authoring) for custom elements.
     pub fn insert_hitbox(&mut self, bounds: Bounds<Pixels>, behavior: HitboxBehavior) -> Hitbox {
+        self.insert_hitbox_with_filter(bounds, behavior, None)
+    }
+
+    /// Like [`insert_hitbox`](Self::insert_hitbox), but the hitbox is only hit where `filter` allows
+    /// the position — everywhere else hit-testing skips it, so the pointer reaches what is drawn
+    /// behind it. Part of the [authoring surface](crate::_authoring) for a custom element whose
+    /// content does not fill its bounds (a transparent `gpu_canvas`, say).
+    pub fn insert_hitbox_with_filter(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        behavior: HitboxBehavior,
+        filter: Option<HitboxFilter>,
+    ) -> Hitbox {
         self.core.invalidator.debug_assert_prepaint();
 
         let content_mask = self.content_mask();
@@ -5691,6 +5761,7 @@ impl Window<'_> {
             behavior,
         };
         self.frame_state.next_frame.hitboxes.push(hitbox.clone());
+        self.frame_state.next_frame.hitbox_filters.push(filter);
         hitbox
     }
 
