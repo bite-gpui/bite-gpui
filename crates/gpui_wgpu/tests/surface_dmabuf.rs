@@ -174,7 +174,7 @@ impl Render for SurfaceView {
 fn composite(handle: DmaBufHandle) -> anyhow::Result<[u8; 4]> {
     let text_system = std::sync::Arc::new(CosmicTextSystem::new("fallback"));
     let mut cx = HeadlessAppContext::with_platform(text_system, std::sync::Arc::new(()), || {
-        Ok(gpui::current_headless_renderer())
+        gpui::current_headless_renderer()
     });
 
     let window = cx.open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |_window, cx| {
@@ -275,7 +275,7 @@ fn imported_texture(
 fn composite_canvas(colour: [u8; 4]) -> anyhow::Result<Option<[u8; 4]>> {
     let text_system = std::sync::Arc::new(CosmicTextSystem::new("fallback"));
     let mut cx = HeadlessAppContext::with_platform(text_system, std::sync::Arc::new(()), || {
-        Ok(gpui::current_headless_renderer())
+        gpui::current_headless_renderer()
     });
 
     let painted = Rc::new(Cell::new(false));
@@ -302,7 +302,7 @@ fn composite_canvas(colour: [u8; 4]) -> anyhow::Result<Option<[u8; 4]>> {
 /// The renderer the platform builds for a headless context; `None` where there is no adapter, which
 /// is a skip rather than a failure.
 fn gpu_available() -> bool {
-    gpui::current_headless_renderer().is_some()
+    gpui::current_headless_renderer().is_ok_and(|renderer| renderer.is_some())
 }
 
 #[test]

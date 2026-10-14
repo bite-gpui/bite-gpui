@@ -107,12 +107,12 @@ pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
 
 /// Returns a new [`crate::SceneRenderer`] for the current platform, if available.
 #[cfg(any(feature = "bench-support", feature = "test-support"))]
-pub fn current_headless_renderer() -> Option<Box<dyn crate::SceneRenderer>> {
+pub fn current_headless_renderer() -> anyhow::Result<Option<Box<dyn crate::SceneRenderer>>> {
     #[cfg(target_os = "macos")]
     {
-        Some(Box::new(
+        Ok(Some(Box::new(
             gpui_macos::metal_renderer::MetalHeadlessRenderer::new(),
-        ))
+        )))
     }
 
     #[cfg(all(
@@ -122,7 +122,8 @@ pub fn current_headless_renderer() -> Option<Box<dyn crate::SceneRenderer>> {
     {
         // The Linux platform owns no renderer of its own: wgpu is the renderer a window uses here,
         // so a headless context renders through the same code a window drives.
-        Some(Box::new(gpui_linux::WgpuHeadlessRenderer::new().ok()?))
+        gpui_linux::WgpuHeadlessRenderer::new()
+            .map(|renderer| Some(Box::new(renderer) as Box<dyn crate::SceneRenderer>))
     }
 
     #[cfg(not(any(
@@ -130,7 +131,7 @@ pub fn current_headless_renderer() -> Option<Box<dyn crate::SceneRenderer>> {
         all(feature = "platform", any(target_os = "linux", target_os = "freebsd")),
     )))]
     {
-        None
+        Ok(None)
     }
 }
 

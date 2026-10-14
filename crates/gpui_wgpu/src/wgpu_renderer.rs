@@ -2084,7 +2084,7 @@ impl WgpuRendererCore {
                     .min_uniform_buffer_offset_alignment,
             );
             let size = std::mem::size_of::<SurfaceParams>() as u64;
-            (size + align - 1) / align * align
+            size.div_ceil(align) * align
         };
         #[cfg(target_os = "linux")]
         let mut params_bytes = vec![0u8; params_stride as usize * surfaces.len()];
