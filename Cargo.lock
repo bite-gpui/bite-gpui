@@ -7536,6 +7536,7 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "backtrace",
+ "bench_metrics",
  "bindgen",
  "collections",
  "criterion",
