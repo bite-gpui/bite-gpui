@@ -19,6 +19,7 @@ use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::ops::Range;
+use std::os::fd::OwnedFd;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -91,9 +92,60 @@ struct SurfaceParams {
     bounds: PodBounds,
     content_mask: PodBounds,
     /// `0` = `NV12` (sample and convert), `1` = a single RGBA/BGRA plane (sample straight through).
-    /// Mirrors the shader's `SurfaceParams`; the padding keeps the size a multiple of 16.
+    /// `chroma_reconstruction` is `0` for bilinear, `1` for luma-guided. The padding keeps the two
+    /// words before `ycbcr_to_rgb` 16-byte aligned, so the `mat4x4` lands where the shader expects.
     surface_format: u32,
-    _pad: [u32; 3],
+    chroma_reconstruction: u32,
+    _pad: [u32; 2],
+    /// The `YUV -> RGB` matrix for the colour space the producer declared, column-major as WGSL's
+    /// `mat4x4<f32>` reads it; unused for a single-plane buffer.
+    ycbcr_to_rgb: [[f32; 4]; 4],
+}
+
+/// The matrix the surface fragment multiplies `vec4(y, cb, cr, 1)` by, column-major as WGSL's
+/// `mat4x4<f32>` reads it, inverting the colour space the producer declared.
+///
+/// Standard `YUV -> RGB`: the luma columns are the range's luma scale, the chroma columns carry the
+/// matrix's `Kr`/`Kb` terms times the range's chroma scale, and the constant column folds in both zero
+/// points. For BT.601 full range this reproduces the fixed matrix the shader used to carry.
+fn yuv_to_rgb(color_space: gpui_engine::YuvColorSpace) -> [[f32; 4]; 4] {
+    use gpui_engine::{YuvMatrix, YuvRange};
+
+    let (kr, kb) = match color_space.matrix {
+        YuvMatrix::Bt601 => (0.299f32, 0.114f32),
+        YuvMatrix::Bt709 => (0.2126f32, 0.0722f32),
+        YuvMatrix::Bt2020 => (0.2627f32, 0.0593f32),
+    };
+    let kg = 1.0 - kr - kb;
+    // The offsets the chroma columns carry, before the range's scale: `2(1-Kr)` for red from Cr,
+    // `2(1-Kb)` for blue from Cb, and the two green terms that keep the luma weights summing to one.
+    let red_cr = 2.0 * (1.0 - kr);
+    let blue_cb = 2.0 * (1.0 - kb);
+    let green_cb = 2.0 * kb * (1.0 - kb) / kg;
+    let green_cr = 2.0 * kr * (1.0 - kr) / kg;
+
+    // How the range maps a sample to its full-range value: a scale and a zero point each for luma and
+    // chroma. Full range has no offset and half-scale chroma, so for BT.601 it reproduces the fixed
+    // matrix the shader used to carry and leaves the hand-filled buffers' result unchanged; limited
+    // range uses the `16..235`/`128` studio points.
+    let (y_scale, c_scale, y_zero, c_zero) = match color_space.range {
+        YuvRange::Full => (1.0, 1.0, 0.0, 0.5),
+        YuvRange::Limited => (255.0 / 219.0, 255.0 / 224.0, 16.0 / 255.0, 128.0 / 255.0),
+    };
+
+    let (red_cr, blue_cb) = (red_cr * c_scale, blue_cb * c_scale);
+    let (green_cb, green_cr) = (green_cb * c_scale, green_cr * c_scale);
+    [
+        [y_scale, y_scale, y_scale, 0.0],
+        [0.0, -green_cb, blue_cb, 0.0],
+        [red_cr, -green_cr, 0.0, 0.0],
+        [
+            -red_cr * c_zero - y_zero * y_scale,
+            (green_cb + green_cr) * c_zero - y_zero * y_scale,
+            -blue_cb * c_zero - y_zero * y_scale,
+            1.0,
+        ],
+    ]
 }
 
 #[repr(C)]
@@ -200,6 +252,9 @@ struct WgpuResources {
     imported_texture_sampler: wgpu::Sampler,
     atlas_texture_bind_groups: FxHashMap<AtlasTextureId, CachedTextureBindGroup>,
     globals_buffer: wgpu::Buffer,
+    /// One uniform buffer for every surface's params in a frame, addressed by dynamic offset, held
+    /// across frames so the surface bind groups that reference it stay valid.
+    surface_params: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
     path_globals_bind_group: wgpu::BindGroup,
     instance_data: InstanceData,
@@ -588,7 +643,7 @@ impl WgpuRendererCore {
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
+                        has_dynamic_offset: true,
                         min_binding_size: NonZeroU64::new(
                             std::mem::size_of::<SurfaceParams>() as u64
                         ),
@@ -1242,18 +1297,18 @@ impl WgpuRenderer {
                 // Textures must be destroyed before the surface can be reconfigured.
                 drop(frame);
                 surface.configure(&core.resources.device, &self.surface_config);
-                return false;
+                return core.release_unpresented(scene);
             }
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 surface.configure(&core.resources.device, &self.surface_config);
-                return false;
+                return core.release_unpresented(scene);
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return false;
+                return core.release_unpresented(scene);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
                 self.last_surface_error = Some("Surface texture validation error".to_string());
-                return false;
+                return core.release_unpresented(scene);
             }
         };
 
@@ -1276,7 +1331,7 @@ impl WgpuRenderer {
             wgpu::Color::TRANSPARENT,
         ) {
             log::error!("{error:#}");
-            return false;
+            return core.release_unpresented(scene);
         }
 
         frame.present();
@@ -1420,6 +1475,12 @@ impl WgpuRendererCore {
             ],
         });
         let max_texture_size = device.limits().max_texture_dimension_2d;
+        let surface_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("surface_params"),
+            size: 1 << 20,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         Self {
             resources: WgpuResources {
@@ -1431,6 +1492,7 @@ impl WgpuRendererCore {
                 imported_texture_sampler,
                 atlas_texture_bind_groups: FxHashMap::default(),
                 globals_buffer,
+                surface_params,
                 globals_bind_group,
                 path_globals_bind_group,
                 instance_data,
@@ -1569,6 +1631,7 @@ impl WgpuRendererCore {
         clear_color: wgpu::Color,
     ) -> Result<wgpu::SubmissionIndex> {
         let mut instance_offset = 0;
+        let releases = Self::surface_releases(scene);
         let instance_bindings = self
             .write_instances(scene, &mut instance_offset)
             .with_context(|| {
@@ -1718,6 +1781,17 @@ impl WgpuRendererCore {
             .resources()
             .queue
             .submit(std::iter::once(encoder.finish()));
+        // Tell each producer its surface is free once the GPU has finished the submission that
+        // sampled it — the release signal's half of the dma-buf handshake.
+        if !releases.is_empty() {
+            self.resources()
+                .queue
+                .on_submitted_work_done(move || {
+                    for release in &releases {
+                        crate::dmabuf::signal_release(release);
+                    }
+                });
+        }
         Ok(submission)
     }
 
@@ -1940,6 +2014,47 @@ impl WgpuRendererCore {
             })
     }
 
+    /// The release descriptors of a scene's dma-buf surfaces: the signals a producer waits on to
+    /// know the renderer is done with each buffer. Collected from the whole scene rather than only
+    /// the surfaces that are drawn, so a frame that culls a surface still releases it. Empty where
+    /// the platform has no dma-buf source.
+    fn surface_releases(scene: &Scene) -> Vec<Arc<OwnedFd>> {
+        #[cfg(target_os = "linux")]
+        {
+            scene
+                .surfaces
+                .iter()
+                .filter_map(|surface| match &surface.source {
+                    gpui_engine::SurfaceSource::DmaBuf(handle) => handle.release.clone(),
+                })
+                .collect()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = scene;
+            Vec::new()
+        }
+    }
+
+    /// Register the releases of a scene the frame will not present, so a producer's surface is not
+    /// left waiting on a frame that never sampled it. A window that drops a frame — suboptimal,
+    /// timed out, occluded — must still release the buffers the application handed it, or the
+    /// producer's bounded ring waits on one for good. The closures fire once the GPU has caught up
+    /// with the queue's existing work, so nothing is sampling the buffer in the meantime.
+    fn release_unpresented(&self, scene: &Scene) -> bool {
+        let releases = Self::surface_releases(scene);
+        if !releases.is_empty() {
+            self.resources()
+                .queue
+                .on_submitted_work_done(move || {
+                    for release in &releases {
+                        crate::dmabuf::signal_release(release);
+                    }
+                });
+        }
+        false
+    }
+
     /// Composite the scene's surfaces.
     ///
     /// A surface's source becomes one or two textures: a single RGBA/BGRA plane samples straight
@@ -1958,8 +2073,23 @@ impl WgpuRendererCore {
         pass.set_pipeline(&self.resources().pipelines.surfaces);
         pass.set_bind_group(0, &self.resources().globals_bind_group, &[]);
 
+        // One params buffer, addressed at a dynamic offset per surface, rather than a `vkCreateBuffer`
+        // and its allocation per surface, per frame.
         #[cfg(target_os = "linux")]
-        for surface in surfaces {
+        let params_stride = {
+            let align = u64::from(
+                self.resources()
+                    .device
+                    .limits()
+                    .min_uniform_buffer_offset_alignment,
+            );
+            let size = std::mem::size_of::<SurfaceParams>() as u64;
+            (size + align - 1) / align * align
+        };
+        #[cfg(target_os = "linux")]
+        let mut params_bytes = vec![0u8; params_stride as usize * surfaces.len()];
+        #[cfg(target_os = "linux")]
+        for (index, surface) in surfaces.iter().enumerate() {
             let gpui_engine::SurfaceSource::DmaBuf(handle) = &surface.source;
             // Wait for the producer's fence before sampling; a producer that never signals loses
             // this frame rather than stalling the UI.
@@ -1970,8 +2100,8 @@ impl WgpuRendererCore {
                 continue;
             }
             // The cache owns the imported textures and hands back cheap clones of their handles — as
-            // the Metal renderer's `CVMetalTextureCache` does. The mutable borrow ends before the rest of
-            // the resources are read.
+            // the Metal renderer's `CVMetalTextureCache` does. The mutable borrow ends before the rest
+            // of the resources are read.
             let textures = {
                 let resources = self.resources_mut();
                 match resources
@@ -1987,33 +2117,33 @@ impl WgpuRendererCore {
             };
             let resources = self.resources();
 
-            let luma = textures[0].create_view(&wgpu::TextureViewDescriptor::default());
+            let luma = textures[0].view.clone();
             // A single plane samples as RGBA (format 1) and binds its own view for both texture
-            // slots; a second plane is chroma (format 0).
+            // slots; a second plane is chroma (format 0). Both views come from the importer, which for
+            // `Nv12` makes them the two planes of one multi-planar image.
             let (chroma, surface_format) = if textures.len() == 1 {
                 (luma.clone(), 1u32)
             } else {
-                (
-                    textures[1].create_view(&wgpu::TextureViewDescriptor::default()),
-                    0u32,
-                )
+                (textures[1].view.clone(), 0u32)
+            };
+
+            let chroma_reconstruction = match handle.chroma {
+                gpui_engine::ChromaReconstruction::Bilinear => 0,
+                gpui_engine::ChromaReconstruction::LumaGuided => 1,
             };
 
             let params = SurfaceParams {
                 bounds: surface.bounds.into(),
                 content_mask: surface.content_mask.bounds.into(),
                 surface_format,
-                _pad: [0; 3],
+                chroma_reconstruction,
+                _pad: [0; 2],
+                ycbcr_to_rgb: yuv_to_rgb(handle.color_space),
             };
-            let params_buffer = resources.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("surface_params"),
-                size: std::mem::size_of::<SurfaceParams>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            resources
-                .queue
-                .write_buffer(&params_buffer, 0, bytemuck::bytes_of(&params));
+            // Stage the bytes; one upload carries every surface's params, below the loop.
+            let params_offset = params_stride as usize * index;
+            params_bytes[params_offset..params_offset + std::mem::size_of::<SurfaceParams>()]
+                .copy_from_slice(bytemuck::bytes_of(&params));
 
             let bind_group = resources
                 .device
@@ -2023,7 +2153,13 @@ impl WgpuRendererCore {
                     entries: &[
                         wgpu::BindGroupEntry {
                             binding: 0,
-                            resource: params_buffer.as_entire_binding(),
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &resources.surface_params,
+                                offset: 0,
+                                size: NonZeroU64::new(
+                                    std::mem::size_of::<SurfaceParams>() as u64,
+                                ),
+                            }),
                         },
                         wgpu::BindGroupEntry {
                             binding: 1,
@@ -2041,9 +2177,15 @@ impl WgpuRendererCore {
                         },
                     ],
                 });
-            pass.set_bind_group(1, &bind_group, &[]);
+            pass.set_bind_group(1, &bind_group, &[params_offset as u32]);
             pass.draw(0..4, 0..1);
         }
+
+        // One upload for every surface's params, not one per surface.
+        #[cfg(target_os = "linux")]
+        self.resources()
+            .queue
+            .write_buffer(&self.resources().surface_params, 0, &params_bytes);
 
         Ok(())
     }
