@@ -472,6 +472,7 @@ mod tests {
 
     use proptest::prelude::*;
     use rand::prelude::*;
+    use rand::Rng as _;
     use scheduler::SpawnTime;
 
     use crate::{
