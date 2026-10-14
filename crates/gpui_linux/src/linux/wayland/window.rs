@@ -555,7 +555,7 @@ impl WaylandWindowState {
         viewport: Option<wp_viewport::WpViewport>,
         client: WaylandClientStatePtr,
         globals: Globals,
-        gpu_context: gpui_wgpu::GpuContext,
+        gpu_context: gpui_wgpu::WgpuContextSlot,
         compositor_gpu: Option<CompositorGpuHint>,
         options: WindowParams,
         parent: Option<WaylandWindowStatePtr>,
@@ -837,7 +837,7 @@ impl WaylandWindow {
     pub fn new(
         handle: WindowId,
         globals: Globals,
-        gpu_context: gpui_wgpu::GpuContext,
+        gpu_context: gpui_wgpu::WgpuContextSlot,
         compositor_gpu: Option<CompositorGpuHint>,
         client: WaylandClientStatePtr,
         params: WindowParams,
@@ -1954,13 +1954,6 @@ impl PlatformWindow for WaylandWindow {
 
     fn on_button_layout_changed(&self, callback: Box<dyn FnMut()>) {
         self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
-    }
-
-    /// This window's renderer's device — the client's shared `GpuContext`, which every wgpu window
-    /// in the process draws through, so a texture a producer makes on it is one this window can
-    /// sample.
-    fn device_any(&self) -> Option<std::rc::Rc<dyn std::any::Any>> {
-        self.borrow().renderer.device_any()
     }
 
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {

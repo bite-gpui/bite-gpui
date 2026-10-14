@@ -15,4 +15,4 @@ pub use imported_texture::*;
 pub use wgpu;
 pub use wgpu_atlas::*;
 pub use wgpu_context::*;
-pub use wgpu_renderer::{GpuContext, WgpuRenderer, WgpuSurfaceConfig};
+pub use wgpu_renderer::{WgpuContextSlot, WgpuRenderer, WgpuSurfaceConfig};

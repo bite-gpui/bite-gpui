@@ -1,9 +1,5 @@
-#[cfg(target_os = "linux")]
-use crate::LinuxWindowExt;
-#[cfg(target_os = "macos")]
-use crate::MacWindowExt;
-#[cfg(target_os = "windows")]
-use crate::WindowsWindowExt;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use crate::GpuCanvasContext;
 use crate::{
     App, Bounds, Element, ElementId, GlobalElementId, IntoElement, LayoutId, ObjectFit, Pixels,
     Style, StyleRefinement, Styled, Window,
@@ -47,10 +43,11 @@ pub struct Surface {
 /// handing over a view is the escape for a producer that is the authority on its own format and mip
 /// interpretation.
 ///
-/// A source must come from the device the window's renderer draws on.
-/// [`Window::device_any`](crate::Window::device_any) is how a producer obtains that device so it
-/// can make a same-device resource on it; a producer that lives on another device instead shares
-/// its resource with this one, the route `gpui_interop` takes.
+/// A source is produced by someone else, before this element paints. A same-device resource is made
+/// inside a [`gpu_canvas`](crate::gpu_canvas) callback, where the window renderer's device is
+/// reachable through [`GpuCanvasContext::device`](crate::GpuCanvasContext::device); a source this
+/// element takes was made off the window's device and shared with it — a dma-buf, a CoreVideo
+/// buffer, a shared Direct3D view — the route `gpui_interop` takes.
 ///
 /// ```rust
 /// use gpui::{div, surface};
@@ -133,7 +130,11 @@ impl Element for Surface {
             allow(unused_variables)
         )]
         window: &mut Window,
-        _: &mut App,
+        #[cfg_attr(
+            not(any(target_os = "macos", target_os = "windows")),
+            allow(unused_variables)
+        )]
+        cx: &mut App,
     ) {
         match &self.source {
             #[cfg(target_os = "macos")]
@@ -144,7 +145,8 @@ impl Element for Surface {
                 );
                 let new_bounds = self.object_fit.get_bounds(bounds, size);
                 // TODO: Add support for corner_radii
-                window.paint_surface(new_bounds, image_buffer.clone());
+                let mut ctx = GpuCanvasContext::new(window, cx, new_bounds);
+                ctx.paint_surface(image_buffer.clone());
             }
             #[cfg(target_os = "windows")]
             SurfaceSource::DirectX(source) => {
@@ -153,7 +155,8 @@ impl Element for Surface {
                     None => bounds,
                 };
                 // TODO: Add support for corner_radii
-                window.paint_surface(new_bounds, source.clone());
+                let mut ctx = GpuCanvasContext::new(window, cx, new_bounds);
+                ctx.paint_surface(SurfaceSource::DirectX(source.clone()));
             }
             #[cfg(target_os = "linux")]
             SurfaceSource::DmaBuf(handle) => {
@@ -163,7 +166,8 @@ impl Element for Surface {
                 );
                 let new_bounds = self.object_fit.get_bounds(bounds, size);
                 // TODO: Add support for corner_radii
-                window.paint_surface(new_bounds, handle.clone());
+                let mut ctx = GpuCanvasContext::new(window, cx, new_bounds);
+                ctx.paint_surface(handle.clone());
             }
             #[allow(unreachable_patterns)]
             _ => {}
@@ -204,6 +208,13 @@ fn directx_source_size(source: &DirectXSource) -> Option<crate::Size<crate::Devi
                 let resource = view.GetResource().ok()?;
                 let texture: ID3D11Texture2D = resource.cast().ok()?;
                 texture.GetDesc(&mut desc);
+            }
+            // A shared texture carries its size, because the renderer has not opened it yet.
+            DirectXSource::Shared(shared) => {
+                return Some(crate::size(
+                    crate::DevicePixels::from(shared.width as i32),
+                    crate::DevicePixels::from(shared.height as i32),
+                ));
             }
         }
         Some(crate::size(

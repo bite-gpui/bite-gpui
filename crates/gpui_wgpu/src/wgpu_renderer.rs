@@ -7,9 +7,7 @@ use gpui_engine::{
     PrimitiveBatch, Scene,
     SceneRenderer, get_gamma_correction_ratios,
 };
-use gpui_platform::{
-    Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size,
-};
+use gpui_platform::{Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size};
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -174,7 +172,7 @@ struct WgpuBindGroupLayouts {
 }
 
 /// Shared GPU context reference, used to coordinate device recovery across multiple windows.
-pub type GpuContext = Rc<RefCell<Option<WgpuContext>>>;
+pub type WgpuContextSlot = Rc<RefCell<Option<WgpuContext>>>;
 
 enum InstanceData {
     Storage(wgpu::Buffer),
@@ -207,7 +205,7 @@ struct WgpuResources {
     path_intermediate_view: Option<wgpu::TextureView>,
     path_msaa_texture: Option<wgpu::Texture>,
     path_msaa_view: Option<wgpu::TextureView>,
-    /// The imported dma-buf textures, kept across frames like the Metal arm's `CVMetalTextureCache`.
+    /// The imported dma-buf textures, kept across frames like the Metal renderer's `CVMetalTextureCache`.
     #[cfg(target_os = "linux")]
     dmabuf_textures: crate::DmaBufTextureCache,
     /// The target an offscreen renderer draws into. Always `None` for a renderer that has a
@@ -254,7 +252,7 @@ impl WgpuResources {
 pub struct WgpuRenderer {
     /// Shared GPU context for device recovery coordination (unused on WASM).
     #[allow(dead_code)]
-    context: Option<GpuContext>,
+    context: Option<WgpuContextSlot>,
     /// Compositor GPU hint for adapter selection (unused on WASM).
     #[allow(dead_code)]
     compositor_gpu: Option<CompositorGpuHint>,
@@ -305,7 +303,7 @@ impl WgpuRenderer {
     /// of the returned renderer.
     #[cfg(not(target_family = "wasm"))]
     pub fn new<W>(
-        gpu_context: GpuContext,
+        gpu_context: WgpuContextSlot,
         window: &W,
         config: WgpuSurfaceConfig,
         compositor_gpu: Option<CompositorGpuHint>,
@@ -366,7 +364,7 @@ impl WgpuRenderer {
     /// Creates a renderer with no window, drawing into an offscreen texture.
     ///
     /// The target is the whole of this renderer's output: it has no surface to present to and no
-    /// recovery to perform, so it also never holds a `GpuContext`. `format` is the *target's*
+    /// recovery to perform, so it also never holds a `WgpuContextSlot`. `format` is the *target's*
     /// format, and has to be the non-sRGB `_UNORM` a window's surface is, or every shader that
     /// writes a colour would encode it for the wrong target.
     #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
@@ -413,7 +411,7 @@ impl WgpuRenderer {
     /// an offscreen renderer has none, because it has no window to coordinate with. This is what
     /// `PlatformRenderer::device_any` hands a producer: the same `Rc` a factory was given.
     #[cfg(not(target_family = "wasm"))]
-    pub fn gpu_context(&self) -> Option<GpuContext> {
+    pub fn gpu_context(&self) -> Option<WgpuContextSlot> {
         self.context.clone()
     }
 
@@ -442,7 +440,7 @@ impl WgpuRenderer {
     }
 
     fn new_internal(
-        gpu_context: Option<GpuContext>,
+        gpu_context: Option<WgpuContextSlot>,
         context: &WgpuContext,
         surface: Option<wgpu::Surface<'static>>,
         offscreen_format: Option<wgpu::TextureFormat>,
@@ -2145,7 +2143,7 @@ impl WgpuRenderer {
                 continue;
             }
             // The cache owns the imported textures and hands back cheap clones of their handles — as
-            // the Metal arm's `CVMetalTextureCache` does. The mutable borrow ends before the rest of
+            // the Metal renderer's `CVMetalTextureCache` does. The mutable borrow ends before the rest of
             // the resources are read.
             let textures = {
                 let resources = self.resources_mut();
@@ -2710,6 +2708,7 @@ impl WgpuRenderer {
         Ok(())
     }
 }
+
 
 fn instance_range(range: Range<usize>) -> Range<u32> {
     range.start as u32..range.end as u32

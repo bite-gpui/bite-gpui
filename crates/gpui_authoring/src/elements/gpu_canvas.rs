@@ -6,21 +6,121 @@
 //! other layer.
 
 use crate::{
-    App, Bounds, Div, Element, ElementId, GlobalElementId, InteractiveElement, Interactivity,
-    IntoElement, LayoutId, ParentElement, Pixels, StyleRefinement, Styled, Window, div,
+    App, Bounds, Corners, Div, Element, ElementId, GlobalElementId, GpuRenderer,
+    ImportedTextureHandle, InteractiveElement, Interactivity, IntoElement, LayoutId, PaintSurface,
+    ParentElement, Pixels, StyleRefinement, Styled, SurfaceSource, Window, div,
 };
-#[cfg(not(target_os = "windows"))]
-use crate::{Corners, ImportedTextureHandle};
 
-/// Build a GPU canvas. Supply the content with `on_render_surface` (a `SurfaceSource`, on macOS or
-/// Windows) or `on_render_texture` (a same-device texture handle, elsewhere).
-pub fn gpu_canvas() -> GpuCanvas {
+/// Build a GPU canvas, an ordinary box whose content a paint-time callback supplies.
+///
+/// The callback receives a [`GpuCanvasContext`], the only place raw GPU import is reachable: call
+/// [`GpuCanvasContext::paint_surface`] to composite a surface produced outside GPUI, or
+/// [`GpuCanvasContext::paint_texture`] for a texture made on the window renderer's own device. The
+/// callback is `FnOnce` and consumed once, matching [`crate::Canvas`]: the element tree is rebuilt
+/// every frame, so it is used exactly once. Paint time is when the window's renderer — and so its
+/// device — is guaranteed to exist.
+pub fn gpu_canvas(content: impl 'static + FnOnce(&mut GpuCanvasContext)) -> GpuCanvas {
     GpuCanvas {
         div: div(),
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        on_render_surface: None,
-        #[cfg(not(target_os = "windows"))]
-        on_render_texture: None,
+        content: Some(Box::new(content)),
+    }
+}
+
+/// A slice of `Window` — the only place raw GPU import is reachable.
+///
+/// Handed to a `gpu_canvas` callback. A plain `&mut Window` or an `App` cannot composite a foreign
+/// surface; a canvas narrows the window to exactly the operations that can. Bounded by the canvas,
+/// so `paint_surface`/`paint_texture` composite into its bounds.
+pub struct GpuCanvasContext<'a, 'b> {
+    window: &'a mut Window<'b>,
+    cx: &'a mut App,
+    bounds: Bounds<Pixels>,
+}
+
+impl GpuCanvasContext<'_, '_> {
+    /// Composite `source` (a dma-buf, a Direct3D texture/view, or a CoreVideo buffer) into the
+    /// canvas's bounds for this frame.
+    pub fn paint_surface(&mut self, source: impl Into<SurfaceSource>) {
+        self.window.core.invalidator.debug_assert_paint();
+
+        let bounds = self.window.snap_bounds(self.bounds);
+        let content_mask = self.window.snapped_content_mask();
+        self.window
+            .frame_state
+            .next_frame
+            .scene
+            .insert_primitive(PaintSurface {
+                order: 0,
+                bounds,
+                content_mask,
+                source: source.into(),
+            });
+    }
+
+    /// Composite a texture produced on the window renderer's own device into the canvas's bounds.
+    pub fn paint_texture(
+        &mut self,
+        handle: ImportedTextureHandle,
+        corner_radii: Corners<Pixels>,
+        opacity: f32,
+        flip_v: bool,
+    ) {
+        self.window
+            .paint_imported_texture(handle, self.bounds, corner_radii, opacity, flip_v);
+    }
+
+    /// The canvas's bounds.
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        self.bounds
+    }
+
+    /// The window renderer's device, downcast to `R`.
+    ///
+    /// This is the same-device producer's door: it hands back an owned handle (`ID3D11Device`, a
+    /// `metal::Device`, a wgpu device and queue) that the caller may keep, because a borrow of the
+    /// renderer's device cannot outlive the call. Naming `R` is the assertion that the window draws
+    /// through that backend — a `#[cfg]`-selected producer already knows — so a mismatch panics; use
+    /// [`try_device`](Self::try_device) to handle it instead.
+    pub fn device<R: GpuRenderer>(&mut self) -> R::Device {
+        self.try_device::<R>().unwrap_or_else(|| {
+            panic!(
+                "the window's renderer is not a {}: use try_device to handle this",
+                std::any::type_name::<R>(),
+            )
+        })
+    }
+
+    /// The window renderer's device, downcast to `R`, or `None` when the renderer is not `R` or has
+    /// no device to lend right now.
+    ///
+    /// The fallible form of [`device`](Self::device), for a producer that degrades — paints a
+    /// dma-buf instead of a same-device texture, or skips the frame — rather than asserting the
+    /// backend it is running under.
+    pub fn try_device<R: GpuRenderer>(&mut self) -> Option<R::Device> {
+        let mut lent = None;
+        self.window.core.platform_window.with_renderer(&mut |renderer| {
+            lent = renderer.as_renderer::<R>().and_then(GpuRenderer::device);
+        });
+        lent
+    }
+
+    /// The application, mirroring the `cx` a `canvas()` callback receives.
+    pub fn cx(&mut self) -> &mut App {
+        self.cx
+    }
+}
+
+impl<'a, 'b> GpuCanvasContext<'a, 'b> {
+    pub(crate) fn new(
+        window: &'a mut Window<'b>,
+        cx: &'a mut App,
+        bounds: Bounds<Pixels>,
+    ) -> Self {
+        Self {
+            window,
+            cx,
+            bounds,
+        }
     }
 }
 
@@ -31,56 +131,7 @@ pub fn gpu_canvas() -> GpuCanvas {
 /// one thing a `Div` cannot: a surface primitive pushed after the box.
 pub struct GpuCanvas {
     div: Div,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    on_render_surface: Option<
-        Box<
-            dyn FnOnce(Bounds<Pixels>, &mut Window, &mut App) -> Option<gpui_engine::SurfaceSource>,
-        >,
-    >,
-    #[cfg(not(target_os = "windows"))]
-    on_render_texture: Option<
-        Box<dyn FnOnce(Bounds<Pixels>, &mut Window, &mut App) -> Option<ImportedTextureHandle>>,
-    >,
-}
-
-impl GpuCanvas {
-    /// Supply the content: a callback, run at paint time, that produces a [`SurfaceSource`]
-    /// on the window's renderer's device, or `None` to paint no surface this frame.
-    ///
-    /// The callback is `FnOnce` and consumed once, matching [`crate::Canvas`]: the element tree is
-    /// rebuilt every frame, so a mode is used exactly once. Paint time is when the window's
-    /// renderer — and so its device — is guaranteed to exist.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    pub fn on_render_surface(
-        mut self,
-        on_render: impl 'static
-        + FnOnce(
-            Bounds<Pixels>,
-            &mut Window,
-            &mut App,
-        ) -> Option<gpui_engine::SurfaceSource>,
-    ) -> Self {
-        self.on_render_surface = Some(Box::new(on_render));
-        self
-    }
-
-    /// Supply the content: a callback, run at paint time, that produces a same-device
-    /// [`ImportedTextureHandle`] — a `wgpu::TextureView` or an `id<MTLTexture>` — or `None` to
-    /// paint nothing this frame.
-    ///
-    /// This is the same-device path, which the surface enum does not cover on macOS and Linux: a
-    /// producer that renders on the window's own device hands its texture here rather than through
-    /// an `IOSurface` or a dma-buf. The callback is `FnOnce` and consumed once, matching
-    /// [`crate::Canvas`].
-    #[cfg(not(target_os = "windows"))]
-    pub fn on_render_texture(
-        mut self,
-        on_render: impl 'static
-        + FnOnce(Bounds<Pixels>, &mut Window, &mut App) -> Option<ImportedTextureHandle>,
-    ) -> Self {
-        self.on_render_texture = Some(Box::new(on_render));
-        self
-    }
+    content: Option<Box<dyn FnOnce(&mut GpuCanvasContext)>>,
 }
 
 impl Styled for GpuCanvas {
@@ -171,43 +222,8 @@ impl Element for GpuCanvas {
         self.div
             .paint(id, bounds, request_layout, prepaint, window, cx);
 
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if let Some(source) = self
-            .on_render_surface
-            .take()
-            .and_then(|on_render| on_render(bounds, window, cx))
-        {
-            match source {
-                #[cfg(target_os = "macos")]
-                gpui_engine::SurfaceSource::CoreVideo(image_buffer) => {
-                    use crate::MacWindowExt as _;
-                    window.paint_surface(bounds, image_buffer);
-                }
-                #[cfg(target_os = "windows")]
-                gpui_engine::SurfaceSource::DirectX(view) => {
-                    use crate::WindowsWindowExt as _;
-                    window.paint_surface(bounds, view);
-                }
-                #[allow(unreachable_patterns)]
-                _ => {}
-            }
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        if let Some(handle) = self
-            .on_render_texture
-            .take()
-            .and_then(|on_render| on_render(bounds, window, cx))
-        {
-            window.paint_imported_texture(
-                handle,
-                bounds,
-                // No rounded corners, opaque, and no y flip: the producer and the renderer are
-                // the same device with the same UV convention.
-                Corners::default(),
-                1.0,
-                false,
-            );
+        if let Some(content) = self.content.take() {
+            content(&mut GpuCanvasContext::new(window, cx, bounds));
         }
     }
 }
