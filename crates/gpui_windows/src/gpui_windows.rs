@@ -27,6 +27,7 @@ pub(crate) use direct_write::*;
 pub(crate) use directx_atlas::*;
 pub(crate) use directx_devices::*;
 pub(crate) use directx_renderer::*;
+pub use directx_renderer::DirectXRenderer;
 pub(crate) use dispatcher::*;
 pub(crate) use display::*;
 pub(crate) use events::*;
