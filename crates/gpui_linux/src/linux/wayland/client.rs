@@ -193,6 +193,12 @@ fn set_ime_cursor_rectangle_after_done(
 /// failed-present frames, so matching the output's actual refresh rate wouldn't be observable.
 const FRAME_RETRY_INTERVAL: Duration = Duration::from_micros(16_667);
 
+/// How long a window that has presented waits for the compositor's frame callback before a
+/// fallback tick drives the frame itself. Deliberately well over a refresh interval, so a healthy
+/// compositor's callback wins the race and keeps its pacing, while one that stops repainting an
+/// occluded surface cannot leave the loop waiting on a callback that never comes.
+const FRAME_FALLBACK_INTERVAL: Duration = Duration::from_millis(50);
+
 fn take_startup_activation_token_from_environment() -> Option<String> {
     let startup_activation_token = std::env::var(XDG_ACTIVATION_TOKEN_ENV_VAR)
         .ok()
@@ -570,6 +576,31 @@ impl WaylandClientStatePtr {
         ) {
             log::error!("Failed to schedule frame retry: {err}");
         }
+    }
+
+    /// Queue a fallback tick for a window that presented and is awaiting a compositor frame
+    /// callback. The window checks `expected` against its own token when the tick fires: if the
+    /// callback never arrived, the loop drives the frame itself, so a compositor that stops
+    /// repainting an occluded surface cannot strand the window. Returns whether the tick was
+    /// queued.
+    pub fn schedule_frame_fallback(&self, surface_id: &ObjectId, expected: u64) -> bool {
+        let client = self.get_client();
+        let state = client.borrow();
+        let surface_id = surface_id.clone();
+        state
+            .loop_handle
+            .insert_source(
+                Timer::from_duration(FRAME_FALLBACK_INTERVAL),
+                move |_, _, this| {
+                    let client = this.get_client();
+                    let window = get_window(&mut client.borrow_mut(), &surface_id);
+                    if let Some(window) = window {
+                        window.awaiting_retry_fired(expected);
+                    }
+                    TimeoutAction::Drop
+                },
+            )
+            .is_ok()
     }
 
     pub fn get_serial(&self, kind: SerialKind) -> Serial {
