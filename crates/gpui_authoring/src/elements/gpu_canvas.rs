@@ -6,10 +6,12 @@
 //! other layer.
 
 use crate::{
-    App, Bounds, Corners, Div, Element, ElementId, GlobalElementId, GpuRenderer,
-    ImportedTextureHandle, InteractiveElement, Interactivity, IntoElement, LayoutId, PaintSurface,
-    ParentElement, Pixels, StyleRefinement, Styled, SurfaceSource, Window, div,
+    App, Bounds, Corners, Div, Element, ElementId, GlobalElementId, GpuRenderer, HitboxBehavior,
+    HitboxFilter, ImportedTextureHandle, InteractiveElement, Interactivity, IntoElement, LayoutId,
+    PaintSurface, ParentElement, Pixels, Point, StyleRefinement, Styled, SurfaceSource, Window,
+    div,
 };
+use std::rc::Rc;
 
 /// Build a GPU canvas, an ordinary box whose content a paint-time callback supplies.
 ///
@@ -23,6 +25,7 @@ pub fn gpu_canvas(content: impl 'static + FnOnce(&mut GpuCanvasContext)) -> GpuC
     GpuCanvas {
         div: div(),
         content: Some(Box::new(content)),
+        covers: None,
     }
 }
 
@@ -132,6 +135,30 @@ impl<'a, 'b> GpuCanvasContext<'a, 'b> {
 pub struct GpuCanvas {
     div: Div,
     content: Option<Box<dyn FnOnce(&mut GpuCanvasContext)>>,
+    /// Where the surface's content is, so the canvas claims the pointer only there. `None` claims
+    /// nothing, which is what an ordinary box does.
+    covers: Option<Rc<dyn Fn(Point<f32>) -> bool>>,
+}
+
+impl GpuCanvas {
+    /// Claim the pointer only where the surface's content is, instead of its whole rectangle.
+    ///
+    /// `covers` is asked with the pointer in the canvas's own coordinates — `0..1` across its bounds,
+    /// origin top-left, the frame the composited surface is indexed by — and answers whether the
+    /// content is there. Where it is, the canvas holds the pointer the way
+    /// [`InteractiveElement::occlude`] does and nothing behind it is hovered; where it is not, the
+    /// canvas is an ordinary box and hit-testing carries on to whatever is drawn behind it.
+    ///
+    /// It is asked at the position of the event being hit-tested, not at the pointer's position when
+    /// a frame was drawn, so the answer neither lags an event nor depends on the window redrawing.
+    ///
+    /// The default — no `covers` — is the ordinary box: the canvas receives its own events, and so
+    /// does anything under it. A fully opaque surface wants [`InteractiveElement::occlude`], which
+    /// needs no callback.
+    pub fn occlude_where(mut self, covers: impl Fn(Point<f32>) -> bool + 'static) -> Self {
+        self.covers = Some(Rc::new(covers));
+        self
+    }
 }
 
 impl Styled for GpuCanvas {
@@ -205,6 +232,27 @@ impl Element for GpuCanvas {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        // Claim the pointer the way `occlude` does, but only where the content is: a blocking hitbox
+        // narrowed by a filter, so over the gaps hit-testing carries on to the layer behind. The
+        // predicate is asked at the *event's* position — a frame's hitboxes are built once, but a
+        // filter is not frozen with them — so the answer neither lags an event nor needs a redraw.
+        if let Some(covers) = self.covers.clone() {
+            let (origin, size) = (bounds.origin, bounds.size);
+            let (width, height) = (size.width.as_f32(), size.height.as_f32());
+            let interactivity = self.div.interactivity();
+            interactivity.hitbox_behavior = HitboxBehavior::BlockMouse;
+            interactivity.hitbox_filter = Some(HitboxFilter::new(move |position| {
+                if width <= 0.0 || height <= 0.0 {
+                    return false;
+                }
+                let uv = Point {
+                    x: (position.x - origin.x).as_f32() / width,
+                    y: (position.y - origin.y).as_f32() / height,
+                };
+                covers(uv)
+            }));
+        }
+
         self.div.prepaint(id, bounds, request_layout, window, cx)
     }
 
@@ -225,5 +273,120 @@ impl Element for GpuCanvas {
         if let Some(content) = self.content.take() {
             content(&mut GpuCanvasContext::new(window, cx, bounds));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AnyWindowHandle, AppContext as _, Context, InputEvent, Modifiers, MouseButton,
+        MouseDownEvent, MouseUpEvent, Render, StatefulInteractiveElement, TestAppContext, point,
+        px, size,
+    };
+    use std::{cell::Cell, rc::Rc};
+
+    struct OccludeWhereTestView {
+        clicks: Rc<Cell<usize>>,
+        painted: Rc<Cell<Option<Bounds<Pixels>>>>,
+    }
+
+    impl Render for OccludeWhereTestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let clicks = self.clicks.clone();
+            let painted = self.painted.clone();
+            div()
+                .relative()
+                .size_full()
+                // The control the canvas sits over: an ordinary GPUI button filling the window.
+                .child(
+                    div()
+                        .id("behind")
+                        .absolute()
+                        .size_full()
+                        .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
+                )
+                // The canvas over it, claiming the pointer only over its left half.
+                .child(
+                    gpu_canvas(move |gpu| painted.set(Some(gpu.bounds())))
+                        .absolute()
+                        .size_full()
+                        .occlude_where(|uv| uv.x < 0.5),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn occlude_where_claims_the_pointer_only_over_content(cx: &mut TestAppContext) {
+        let clicks = Rc::new(Cell::new(0));
+        let painted = Rc::new(Cell::new(None));
+        let window = cx.open_window(size(px(200.), px(200.)), {
+            let clicks = clicks.clone();
+            let painted = painted.clone();
+            move |_, _| OccludeWhereTestView { clicks, painted }
+        });
+        let window = AnyWindowHandle::from(window);
+
+        let draw = |cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+                .unwrap();
+        };
+        let click = |cx: &mut TestAppContext, position| {
+            cx.update_window(window, |_, window, cx| {
+                window.dispatch_event(
+                    MouseDownEvent {
+                        position,
+                        modifiers: Modifiers::default(),
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        first_mouse: false,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                window.dispatch_event(
+                    MouseUpEvent {
+                        position,
+                        modifiers: Modifiers::default(),
+                        button: MouseButton::Left,
+                        click_count: 1,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+            })
+            .unwrap();
+        };
+
+        // One frame, so the canvas has painted and its bounds are known: the predicate is asked in
+        // the canvas's own 0..1 frame, so the probe points are derived from those bounds rather than
+        // assumed.
+        draw(cx);
+        let painted = painted.get().expect("the canvas painted");
+        let over_content = point(
+            painted.origin.x + px(painted.size.width.as_f32() * 0.25),
+            painted.origin.y + px(painted.size.height.as_f32() * 0.5),
+        );
+        let over_nothing = point(
+            painted.origin.x + px(painted.size.width.as_f32() * 0.75),
+            painted.origin.y + px(painted.size.height.as_f32() * 0.5),
+        );
+
+        // No move and no redraw between that frame and these clicks: the filter is asked at each
+        // event's own position, so the frame drawn before is enough and the answer cannot lag a move.
+        // A control behind is reached only where the canvas declines.
+        click(cx, over_content);
+        assert_eq!(
+            clicks.get(),
+            0,
+            "a click over the canvas's content must not reach the control behind it"
+        );
+
+        click(cx, over_nothing);
+        assert_eq!(
+            clicks.get(),
+            1,
+            "a click over the empty half must pass through to the control behind it"
+        );
     }
 }

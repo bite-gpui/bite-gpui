@@ -2694,6 +2694,16 @@ impl App {
         self.active_drag.is_some()
     }
 
+    /// The value of the drag in flight, downcast to `T` — `None` when nothing is being dragged, or
+    /// the dragged value is another type. [`Self::has_active_drag`] answers only whether *a* drag is
+    /// in flight; this answers *which*, which is what a layer that carries its own gesture across a
+    /// redraw needs in order to tell its drag from one another element started.
+    pub fn active_drag_value<T: 'static>(&self) -> Option<&T> {
+        self.active_drag
+            .as_ref()
+            .and_then(|drag| drag.value.downcast_ref::<T>())
+    }
+
     /// Gets the cursor style of the currently active drag operation.
     pub fn active_drag_cursor_style(&self) -> Option<CursorStyle> {
         self.active_drag.as_ref().and_then(|drag| drag.cursor_style)
