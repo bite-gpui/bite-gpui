@@ -818,9 +818,10 @@ postage = { version = "0.5", default-features = false }
 pretty_assertions = { version = "1.3.0", features = ["unstable"] }
 proc-macro2 = "1.0.93"
 profiling = "1"
-# replace this with main when #635 is merged
 pollster = "0.4.0"
-proptest = { git = "https://github.com/proptest-rs/proptest", rev = "3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b", features = ["attr-macro"] }
+# `proptest_path` in the attr macro (proptest-rs/proptest#635) shipped in 1.12,
+# so the git revision that carried it is no longer pinned.
+proptest = { version = "1.12", features = ["attr-macro"] }
 proptest-derive = "0.8.0"
 prost = "0.14"
 prost-build = { version = "0.14", default-features = false }
