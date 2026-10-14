@@ -13,6 +13,7 @@ use futures::channel::oneshot;
 use gpui_engine::SceneRenderer;
 use gpui_types::{Bounds, Capslock, Modifiers, Pixels, Point, Size};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 use std::any::Any;
 use std::rc::Rc;
 
@@ -148,17 +149,6 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// Use this for renderer queries such as reading the sprite atlas or
     /// capturing an image; backends must not advance their frame loop here.
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer));
-    /// The graphics device this window's renderer draws on, if it has one to lend.
-    ///
-    /// A window is how an application reaches it: it holds no renderer of its own, and the
-    /// seam's other renderer access is [`with_renderer`](Self::with_renderer), which hands out
-    /// `&mut dyn SceneRenderer` and no device. See
-    /// [`PlatformRenderer::device_any`](crate::PlatformRenderer::device_any) for what the erased
-    /// payload is and why it is owned; a backend whose renderer has nothing to lend leaves this
-    /// at the default.
-    fn device_any(&self) -> Option<Rc<dyn Any>> {
-        None
-    }
     /// Submits a frame through this window's scene renderer.
     ///
     /// `f` encodes and submits the frame and returns whether it was presented.

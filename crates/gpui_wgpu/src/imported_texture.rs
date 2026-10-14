@@ -24,11 +24,11 @@ pub struct WgpuImportedTexture {
 pub trait ImportedTextureExt {
     /// Wrap this view as a handle.
     ///
-    /// Validates the colour-space invariant in `foreign-texture.md` §4 up front,
-    /// at the boundary, where the failure is a producer's mistake and the message
-    /// can name it. Sampling a non-sRGB view composites with a gamma error rather
-    /// than crashing, so it has to be rejected here; `TEXTURE_BINDING` is likewise
-    /// a property of the view and is what the renderer's bind group requires.
+    /// Validates the colour-space and binding invariants up front, at the boundary where the
+    /// failure is a producer's mistake and the message can name it. Sampling a non-sRGB view
+    /// composites with a gamma error rather than crashing, so it has to be rejected here;
+    /// `TEXTURE_BINDING` is likewise a property of the view and is what the renderer's bind group
+    /// requires.
     fn to_imported_handle(&self) -> anyhow::Result<ImportedTextureHandle>;
 }
 
