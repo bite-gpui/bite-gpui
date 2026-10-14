@@ -6,11 +6,12 @@
 //! the backend builds itself.
 //!
 //! macOS is the one platform left out. A window's renderer there must answer `MacSceneRenderer`,
-//! whose layer pointer a wgpu renderer has no answer for yet: the corner the macOS presentation
-//! probe measured but did not decide. The module therefore carries one `cfg` — not wasm, not
-//! macOS — instead of an item-by-item one.
+//! whose layer pointer a wgpu renderer cannot supply yet — the wgpu path does not present through a
+//! `CAMetalLayer` the window can install as its view's backing layer. The module therefore carries
+//! one `cfg` — not wasm, not macOS — instead of an item-by-item one.
 
 use anyhow::Result;
+use gpui_engine::GpuRenderer;
 use gpui_platform::{DevicePixels, GpuSpecs, PlatformRenderer, RendererTarget, Size};
 #[cfg(target_os = "windows")]
 use gpui_platform::{WinSceneRenderer, WindowBackgroundAppearance};
@@ -18,8 +19,6 @@ use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
     RawWindowHandle, WindowHandle,
 };
-use std::any::Any;
-use std::rc::Rc;
 
 use crate::WgpuRenderer;
 
@@ -34,14 +33,6 @@ impl PlatformRenderer for WgpuRenderer {
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         WgpuRenderer::gpu_specs(self)
-    }
-
-    /// The shared context slot, which is where a producer on this path reaches the device and the
-    /// queue: it is the same `Rc` every window in the process draws through, so reading them out
-    /// of it is the rendezvous it exists for. `None` for a renderer built offscreen, which holds
-    /// no context because it has no window to coordinate with.
-    fn device_any(&self) -> Option<Rc<dyn Any>> {
-        WgpuRenderer::gpu_context(self).map(|context| context as Rc<dyn Any>)
     }
 
     fn set_subpixel_layout(&mut self, is_bgr: bool) {
@@ -67,6 +58,21 @@ impl PlatformRenderer for WgpuRenderer {
     fn recover(&mut self, target: RendererTarget<'_>) -> Result<()> {
         let window = RawWindowHandles::from_target(&target)?;
         WgpuRenderer::recover(self, &window)
+    }
+}
+
+impl GpuRenderer for WgpuRenderer {
+    /// The shared context slot, which is where a producer on this path reaches the device and the
+    /// queue: it is the same `Rc` every window in the process draws through, so reading them out
+    /// of it is the rendezvous it exists for. `None` for a renderer built offscreen, which holds
+    /// no context because it has no window to coordinate with.
+    type Device = (std::sync::Arc<wgpu::Device>, std::sync::Arc<wgpu::Queue>);
+
+    fn device(&self) -> Option<Self::Device> {
+        let context = WgpuRenderer::gpu_context(self)?;
+        let context = context.borrow();
+        let context = context.as_ref()?;
+        Some((context.device.clone(), context.queue.clone()))
     }
 }
 

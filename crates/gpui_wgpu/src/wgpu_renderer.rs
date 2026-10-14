@@ -6,6 +6,11 @@ use gpui_engine::{
     AtlasTextureId, CustomRenderPrimitive, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene,
     SceneRenderer, get_gamma_correction_ratios,
 };
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+))]
+use gpui_engine::GpuRenderer;
 use gpui_platform::{Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size};
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
@@ -171,7 +176,7 @@ struct WgpuBindGroupLayouts {
 }
 
 /// Shared GPU context reference, used to coordinate device recovery across multiple windows.
-pub type GpuContext = Rc<RefCell<Option<WgpuContext>>>;
+pub type WgpuContextSlot = Rc<RefCell<Option<WgpuContext>>>;
 
 enum InstanceData {
     Storage(wgpu::Buffer),
@@ -202,7 +207,7 @@ struct WgpuResources {
     path_intermediate_view: Option<wgpu::TextureView>,
     path_msaa_texture: Option<wgpu::Texture>,
     path_msaa_view: Option<wgpu::TextureView>,
-    /// The imported dma-buf textures, kept across frames like the Metal arm's `CVMetalTextureCache`.
+    /// The imported dma-buf textures, kept across frames like the Metal renderer's `CVMetalTextureCache`.
     #[cfg(target_os = "linux")]
     dmabuf_textures: crate::DmaBufTextureCache,
 }
@@ -257,7 +262,7 @@ enum RendererState {
 pub struct WgpuRenderer {
     /// Shared GPU context for device recovery coordination (unused on WASM).
     #[allow(dead_code)]
-    context: Option<GpuContext>,
+    context: Option<WgpuContextSlot>,
     /// Compositor GPU hint for adapter selection (unused on WASM).
     #[allow(dead_code)]
     compositor_gpu: Option<CompositorGpuHint>,
@@ -301,7 +306,7 @@ impl WgpuRenderer {
     /// of the returned renderer.
     #[cfg(not(target_family = "wasm"))]
     pub fn new<W>(
-        gpu_context: GpuContext,
+        gpu_context: WgpuContextSlot,
         window: &W,
         config: WgpuSurfaceConfig,
         compositor_gpu: Option<CompositorGpuHint>,
@@ -383,7 +388,7 @@ impl WgpuRenderer {
     }
 
     fn new_internal(
-        gpu_context: Option<GpuContext>,
+        gpu_context: Option<WgpuContextSlot>,
         context: &WgpuContext,
         surface: wgpu::Surface<'static>,
         config: WgpuSurfaceConfig,
@@ -1157,7 +1162,7 @@ impl WgpuRenderer {
     /// A producer on this path renders its texture on *this* device -- that is the whole of the
     /// same-device rule -- so a renderer that can be built without a window is where an
     /// application that owns one reaches a device from. A window's is reached through
-    /// `Window::device_any`, which is the same device by another route.
+    /// `GpuRenderer::device`, which is the same device by another route.
     pub fn device(&self) -> &wgpu::Device {
         self.core().expect("renderer has no core").resources.device.as_ref()
     }
@@ -1169,7 +1174,7 @@ impl WgpuRenderer {
 
     /// The shared context slot this renderer draws through, if it has one.
     #[cfg(not(target_family = "wasm"))]
-    pub fn gpu_context(&self) -> Option<GpuContext> {
+    pub fn gpu_context(&self) -> Option<WgpuContextSlot> {
         self.context.clone()
     }
 
@@ -1965,7 +1970,7 @@ impl WgpuRendererCore {
                 continue;
             }
             // The cache owns the imported textures and hands back cheap clones of their handles — as
-            // the Metal arm's `CVMetalTextureCache` does. The mutable borrow ends before the rest of
+            // the Metal renderer's `CVMetalTextureCache` does. The mutable borrow ends before the rest of
             // the resources are read.
             let textures = {
                 let resources = self.resources_mut();
@@ -2817,6 +2822,19 @@ impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
         let image = self.read_image()?;
         let (width, height) = image.dimensions();
         gpui_engine::PixelBuffer::new(width, height, image.into_raw())
+    }
+}
+
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+))]
+impl GpuRenderer for WgpuHeadlessRenderer {
+    type Device = (Arc<wgpu::Device>, Arc<wgpu::Queue>);
+
+    /// The context this headless renderer built: offscreen, but a real device and queue.
+    fn device(&self) -> Option<Self::Device> {
+        Some((self.context.device.clone(), self.context.queue.clone()))
     }
 }
 
