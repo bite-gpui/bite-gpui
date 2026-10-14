@@ -7535,9 +7535,12 @@ name = "gpui"
 version = "0.2.2"
 dependencies = [
  "anyhow",
+ "ash",
  "backtrace",
  "bindgen",
  "collections",
+ "core-foundation 0.10.0",
+ "core-video",
  "criterion",
  "embed-resource",
  "env_logger 0.11.8",
