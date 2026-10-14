@@ -96,8 +96,8 @@ mod demo {
                 return bar(x, width);
             }
             if x < width / 2 {
-                if x % 2 == 0 { [255, 0, 0] } else { [0, 0, 255] }
-            } else if x % 2 == 0 {
+                if x.is_multiple_of(2) { [255, 0, 0] } else { [0, 0, 255] }
+            } else if x.is_multiple_of(2) {
                 [0, 0, 0]
             } else {
                 [255, 255, 255]
@@ -564,7 +564,7 @@ mod demo {
             let producer = slot.as_ref().expect("the producer was just built");
 
             match format {
-                0 | 1 | 2 | 3 => {
+                0..=3 => {
                     let (handle, surface_caption, canvas_caption) = match format {
                         0 => (
                             producer.bgra.clone(),

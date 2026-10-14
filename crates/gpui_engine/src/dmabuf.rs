@@ -357,7 +357,7 @@ mod tests {
         };
         // The same buffer at a different offset is a different plane.
         let elsewhere = DmaBufPlane {
-            fd: fd.clone(),
+            fd,
             offset: 4,
             stride: 4,
         };

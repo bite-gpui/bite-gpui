@@ -15,30 +15,6 @@ mod platform_entry;
 #[doc(hidden)]
 pub use gpui_authoring::private;
 
-/// Defines a Criterion benchmark group for benchmarks annotated with [`gpui::bench`].
-///
-/// This mirrors `criterion::criterion_group!` so GPUI benchmark files can keep the
-/// same shape as ordinary Criterion benchmarks.
-///
-/// [`gpui::bench`]: crate::bench
-#[macro_export]
-macro_rules! bench_group {
-    ($($tokens:tt)*) => {
-        criterion::criterion_group!($($tokens)*);
-    };
-}
-
-/// Defines the entry point for GPUI Criterion benchmark groups.
-///
-/// This mirrors `criterion::criterion_main!` so GPUI benchmark files can keep the
-/// same shape as ordinary Criterion benchmarks.
-#[macro_export]
-macro_rules! bench_main {
-    ($($tokens:tt)*) => {
-        criterion::criterion_main!($($tokens)*);
-    };
-}
-
 pub use gpui_authoring::prelude;
 pub use gpui_authoring::*;
 pub use gpui_runtime::*;

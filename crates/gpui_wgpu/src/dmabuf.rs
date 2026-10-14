@@ -95,7 +95,7 @@ pub(crate) fn import_dmabuf(
         };
         return Ok(vec![import_plane(
             device,
-            &*hal,
+            &hal,
             instance,
             physical,
             &handle.planes[0],
@@ -114,7 +114,7 @@ pub(crate) fn import_dmabuf(
         dimensions.subsampling() == Subsampling::C420 && dimensions.depth() == SampleDepth::Bits8,
         "unsupported YCbCr surface format: {format}",
     );
-    import_luma_chroma(device, &*hal, instance, physical, handle)
+    import_luma_chroma(device, &hal, instance, physical, handle)
 }
 
 /// Import an `Nv12` buffer's two planes as the **one** multi-planar image they describe, and view
