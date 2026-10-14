@@ -549,6 +549,7 @@ pub struct WaylandWindowStatePtr {
     frame_loop: Rc<Cell<FrameLoop>>,
     frame_ping: Ping,
     scheduled_frame_at: Rc<Cell<Option<Instant>>>,
+    fallback_token: FallbackToken,
 }
 
 impl WaylandWindowState {
@@ -765,16 +766,90 @@ mod presentation_state_tests {
     }
 }
 
+/// Whether to trace the Wayland render loop's transitions, for diagnosing a window whose loop
+/// stalls. Set `GPUI_FRAME_TRACE=1`.
+fn frame_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("GPUI_FRAME_TRACE").is_some())
+}
+
+/// Print a frame-loop transition under `GPUI_FRAME_TRACE`.
+fn frame_trace(args: std::fmt::Arguments<'_>) {
+    if frame_trace_enabled() {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let start = *START.get_or_init(std::time::Instant::now);
+        eprintln!(
+            "wl-frame [+{:>8.2}ms] {args}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrameLoop {
     Unconfigured,
     Ticking,
     RescheduleRequested,
     PresentationFailed,
+    /// Presented; waiting on the compositor's `wl_callback` for the next tick.
     AwaitingCallback,
+    /// As [`AwaitingCallback`](Self::AwaitingCallback), but a retry timer is racing the
+    /// callback so a compositor that stops repainting cannot strand the loop.
+    AwaitingCallbackWithRetry,
     Scheduled,
     RetryScheduled,
     Parked,
+}
+
+/// Decides whether a fallback frame tick is still the one to run.
+///
+/// After a present the loop waits on the compositor's `wl_callback`. If that never arrives —
+/// a surface the compositor stops repainting — the retry timer drives the frame instead.
+/// Whichever of the callback and the timer acts first claims the token, so the other observes
+/// a stale value and does nothing: the frame is driven exactly once, while the callback still
+/// wins when the compositor is healthy and keeps its pacing.
+#[derive(Clone, Default)]
+pub(crate) struct FallbackToken(Rc<Cell<u64>>);
+
+impl FallbackToken {
+    /// Claim the token for a newly armed fallback, returning the value its tick must still
+    /// observe to be current.
+    fn arm(&self) -> u64 {
+        let next = self.0.get().wrapping_add(1);
+        self.0.set(next);
+        next
+    }
+
+    /// Give up any armed fallback: the event it was racing has already arrived.
+    fn retire(&self) {
+        self.0.set(self.0.get().wrapping_add(1));
+    }
+
+    /// Whether a fallback that captured `token` is still the current one.
+    fn is_current(&self, token: u64) -> bool {
+        self.0.get() == token
+    }
+}
+
+#[cfg(test)]
+mod fallback_token_tests {
+    use super::FallbackToken;
+
+    #[test]
+    fn arming_claims_the_token_and_retiring_hands_it_on() {
+        let token = FallbackToken::default();
+        let armed = token.arm();
+        assert!(token.is_current(armed));
+
+        // The compositor callback won the race: the armed fallback is no longer current.
+        token.retire();
+        assert!(!token.is_current(armed));
+
+        // A later fallback arms a fresh value, which invalidates the previous one.
+        let rearmed = token.arm();
+        assert!(token.is_current(rearmed));
+        assert!(!token.is_current(armed));
+    }
 }
 
 pub(crate) struct WaylandWindow(pub WaylandWindowStatePtr);
@@ -896,6 +971,7 @@ impl WaylandWindow {
             frame_loop: Rc::new(Cell::new(FrameLoop::Unconfigured)),
             frame_ping,
             scheduled_frame_at: Rc::new(Cell::new(None)),
+            fallback_token: FallbackToken::default(),
         });
 
         // Kick things off
@@ -954,6 +1030,7 @@ impl WaylandWindowStatePtr {
     }
 
     pub fn frame(&self, signal_at: Option<Instant>, signal_source: FrameRequestSource) {
+        frame_trace(format_args!("tick from {:?}", self.frame_loop.get()));
         self.frame_loop.set(FrameLoop::Ticking);
         let mut state = self.state.borrow_mut();
         state.resize_throttle = false;
@@ -965,6 +1042,7 @@ impl WaylandWindowStatePtr {
 
         let mut callbacks = self.callbacks.borrow_mut();
         let Some(request_frame_callback) = callbacks.request_frame.as_mut() else {
+            frame_trace(format_args!("parked: no frame callback installed"));
             self.frame_loop.set(FrameLoop::Parked);
             return;
         };
@@ -978,13 +1056,17 @@ impl WaylandWindowStatePtr {
         drop(callbacks);
 
         self.complete_frame();
+        frame_trace(format_args!("settled {:?}", self.frame_loop.get()));
     }
 
     fn complete_frame(&self) {
         let mut state = self.state.borrow_mut();
 
         let frame_loop = self.frame_loop.get();
-        if frame_loop == FrameLoop::AwaitingCallback {
+        if matches!(
+            frame_loop,
+            FrameLoop::AwaitingCallback | FrameLoop::AwaitingCallbackWithRetry
+        ) {
             return;
         }
 
@@ -1025,15 +1107,29 @@ impl WaylandWindowStatePtr {
     }
 
     pub fn frame_callback_fired(&self, signal_at: Option<Instant>) {
+        frame_trace(format_args!(
+            "compositor callback, state {:?}",
+            self.frame_loop.get()
+        ));
         // Another wl_surface commit may have carried this callback while a retry
         // timer owned the render-loop wakeup.
         self.state.borrow_mut().pending_frame_callback = None;
-        if self.frame_loop.get() == FrameLoop::AwaitingCallback {
+        // This is the tick we were awaiting: retire any fallback armed for it, so it
+        // cannot drive a second frame.
+        self.fallback_token.retire();
+        if matches!(
+            self.frame_loop.get(),
+            FrameLoop::AwaitingCallback | FrameLoop::AwaitingCallbackWithRetry
+        ) {
             self.frame(signal_at, FrameRequestSource::NativeCallback);
         }
     }
 
     pub fn scheduled_frame_fired(&self) {
+        frame_trace(format_args!(
+            "scheduled tick, state {:?}",
+            self.frame_loop.get()
+        ));
         if self.frame_loop.get() == FrameLoop::Scheduled {
             self.frame(
                 self.scheduled_frame_at.take(),
@@ -1043,9 +1139,32 @@ impl WaylandWindowStatePtr {
     }
 
     pub fn retry_timer_fired(&self, signal_at: Instant) {
+        frame_trace(format_args!(
+            "retry tick, state {:?}",
+            self.frame_loop.get()
+        ));
         if self.frame_loop.get() == FrameLoop::RetryScheduled {
             self.frame(
                 PlatformFrameSignal::capture(|| signal_at),
+                FrameRequestSource::LocalSchedule,
+            );
+        }
+    }
+
+    /// The fallback tick for a window that presented and never received the compositor
+    /// callback it was waiting on. Drives the frame only while the loop is still awaiting
+    /// one and `token` is still current; if the callback — or a newer fallback — got there
+    /// first, this is the loser of the race and does nothing.
+    pub fn awaiting_retry_fired(&self, token: u64) {
+        frame_trace(format_args!(
+            "fallback tick token={token}, state {:?}",
+            self.frame_loop.get()
+        ));
+        if self.frame_loop.get() == FrameLoop::AwaitingCallbackWithRetry
+            && self.fallback_token.is_current(token)
+        {
+            self.frame(
+                PlatformFrameSignal::capture(Instant::now),
                 FrameRequestSource::LocalSchedule,
             );
         }
@@ -1056,6 +1175,10 @@ impl WaylandWindowStatePtr {
     }
 
     pub fn schedule_frame(&self) {
+        frame_trace(format_args!(
+            "wake requested, state {:?}",
+            self.frame_loop.get()
+        ));
         match self.frame_loop.get() {
             FrameLoop::Parked => {
                 self.frame_loop.set(FrameLoop::Scheduled);
@@ -1066,9 +1189,27 @@ impl WaylandWindowStatePtr {
             FrameLoop::Ticking => {
                 self.frame_loop.set(FrameLoop::RescheduleRequested);
             }
-            // A wake is already armed: a ping or retry timer is in flight, or a
-            // presented buffer guarantees a compositor frame callback.
-            _ => {}
+            FrameLoop::AwaitingCallback => {
+                // A presented buffer usually earns a compositor frame callback, but a
+                // surface the compositor stops repainting — occluded, or on no output —
+                // may never get one, and every later wake lands here too. With demand
+                // outstanding, arm the retry timer as a fallback so the wake cannot be
+                // lost; the callback still wins the race when it arrives.
+                let token = self.fallback_token.arm();
+                let state = self.state.borrow();
+                let armed = state
+                    .client
+                    .clone()
+                    .schedule_frame_fallback(&state.surface.id(), token);
+                drop(state);
+                if armed {
+                    self.frame_loop.set(FrameLoop::AwaitingCallbackWithRetry);
+                }
+            }
+            // A wake is already armed: a ping or retry timer is in flight, a fallback
+            // tick is racing the compositor callback, or a presented buffer's callback
+            // is on its way.
+            other => frame_trace(format_args!("wake already armed in {other:?}")),
         }
     }
 
