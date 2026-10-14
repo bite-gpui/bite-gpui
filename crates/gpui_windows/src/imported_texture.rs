@@ -33,12 +33,12 @@ unsafe impl Sync for DirectXImportedTexture {}
 
 /// Builds an [`ImportedTextureHandle`] from a Direct3D texture.
 ///
-/// This is the producer's half of Path A on Windows, and it is public because an application has
+/// This is the producer's half of the imported-texture path on Windows, and it is public because an application has
 /// to be able to call it: the device comes from the window's erased accessor, and the token from
 /// here.
 ///
 /// What the device does not settle is *which* device: a texture has to be made on the window's
-/// own renderer's, which is the same-device rule 0002 states, and a texture the renderer cannot
+/// own renderer's, which is the same-device rule, and a texture the renderer cannot
 /// view fails in `draw_custom` rather than composing the wrong memory.
 pub trait DirectXTextureExt {
     /// Wrap this texture as a handle.
