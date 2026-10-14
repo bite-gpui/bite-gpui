@@ -321,6 +321,16 @@ impl WgpuContext {
         }
 
         let color_atlas_texture_format = Self::select_color_texture_format(adapter)?;
+
+        // A `Nv12` surface is one multi-planar image, a native format the device must be allowed to
+        // create; without the feature the import is refused and the surface dropped, rather than
+        // falling back to a pair of single-plane images the modifier does not describe.
+        if adapter
+            .features()
+            .contains(wgpu::Features::TEXTURE_FORMAT_NV12)
+        {
+            required_features |= wgpu::Features::TEXTURE_FORMAT_NV12;
+        }
         #[cfg(target_family = "wasm")]
         let required_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
             wgpu::Limits::downlevel_webgl2_defaults()
@@ -336,17 +346,32 @@ impl WgpuContext {
             .using_resolution(adapter.limits())
             .using_alignment(adapter.limits());
 
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("gpui_device"),
-                required_features,
-                required_limits,
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::Off,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create wgpu device: {e}"))?;
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("gpui_device"),
+            required_features,
+            required_limits,
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        };
+
+        // A producer's surface can carry a DRM format modifier, and wgpu's own device never enables
+        // `VK_EXT_image_drm_format_modifier`, so the import is refused. Where the platform allows it
+        // the device is created through the HAL instead, with that one extension added, and wgpu
+        // adopts it unchanged; see `device_with_surface_import`. The returned device is wgpu's own
+        // either way, so nothing downstream changes.
+        #[cfg(target_os = "linux")]
+        let with_surface_import = Self::device_with_surface_import(adapter, &descriptor);
+        #[cfg(not(target_os = "linux"))]
+        let with_surface_import: Option<(wgpu::Device, wgpu::Queue)> = None;
+
+        let (device, queue) = match with_surface_import {
+            Some(created) => created,
+            None => adapter
+                .request_device(&descriptor)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create wgpu device: {e}"))?,
+        };
 
         Ok((
             device,
@@ -354,6 +379,63 @@ impl WgpuContext {
             dual_source_blending,
             color_atlas_texture_format,
         ))
+    }
+
+    /// Create the window's device through the HAL, enabling `VK_EXT_image_drm_format_modifier`.
+    ///
+    /// wgpu's `Adapter::request_device` never enables it, and its absence is what makes the importer
+    /// in `dmabuf.rs` refuse a tiled surface: a `DRM_FORMAT_MODIFIER_EXT` image cannot be created on a
+    /// device that does not have the extension. wgpu-hal exposes the two halves needed to create a
+    /// device that does — `Adapter::open_with_callback` mutates the extension list before
+    /// `vkCreateDevice`, and `wgpu::Adapter::create_device_from_hal` adopts the result back into a
+    /// `wgpu::Device` — so the extension is genuinely enabled, not assumed.
+    ///
+    /// `None` when the adapter is not Vulkan, when the driver does not support the extension, or when
+    /// either call refuses; the caller then creates the device the ordinary way and the import keeps
+    /// to linear buffers, as it did before.
+    #[cfg(target_os = "linux")]
+    fn device_with_surface_import(
+        adapter: &wgpu::Adapter,
+        descriptor: &wgpu::DeviceDescriptor<'_>,
+    ) -> Option<(wgpu::Device, wgpu::Queue)> {
+        use wgpu::hal::vulkan::Api;
+
+        // SAFETY: the HAL device is created from this adapter with the adapter's own features and
+        // limits (exactly what `descriptor` carries), and the callback adds only an extension the
+        // adapter reports it supports and never removes one. `create_device_from_hal` requires the
+        // HAL device to come from this adapter, which it does.
+        unsafe {
+            let hal = adapter.as_hal::<Api>()?;
+            if !hal
+                .physical_device_capabilities()
+                .supports_extension(ash::vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME)
+            {
+                return None;
+            }
+            let open = hal
+                .open_with_callback(
+                    descriptor.required_features,
+                    &descriptor.required_limits,
+                    &descriptor.memory_hints,
+                    Some(Box::new(|args| {
+                        args.extensions
+                            .push(ash::vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME);
+                    })),
+                )
+                .ok()?;
+            let (device, queue) = adapter
+                .create_device_from_hal::<Api>(open, descriptor)
+                .ok()?;
+            // The extension is the whole point of this path; if the device did not take it, fall back
+            // so the caller builds the ordinary device rather than leave the importer assuming a
+            // capability the device does not have.
+            let enabled = device.as_hal::<Api>().is_some_and(|device| {
+                device
+                    .enabled_device_extensions()
+                    .contains(&ash::vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME)
+            });
+            enabled.then_some((device, queue))
+        }
     }
 
     #[cfg(not(target_family = "wasm"))]
