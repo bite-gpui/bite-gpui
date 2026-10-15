@@ -11,8 +11,8 @@ use crate::{
     DEFAULT_WINDOW_SIZE,
     Decorations, DevicePixels, DispatchActionListener, DispatchEventResult, DispatchNodeId,
     DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, FontId,
-    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, ImportedTextureHandle, InputHandler,
-    InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
+    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, ImportedTextureHandle,
+    InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
     KeystrokeEvent, LayoutId, LineLayoutIndex, MeasureContext, MeasureHandles, Modifiers,
     ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
     Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
@@ -5037,7 +5037,7 @@ impl Window<'_> {
     /// It is an error to hand over a texture from another device: the renderer's binding will
     /// reject it.
     /// Part of the [authoring surface](crate::_authoring) for custom elements.
-    pub fn paint_imported_texture(
+    pub(crate) fn paint_imported_texture(
         &mut self,
         handle: ImportedTextureHandle,
         bounds: Bounds<Pixels>,
@@ -8432,7 +8432,8 @@ mod tests {
         ParentElement, Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
         StandardImmediatePipeline, StatefulInteractiveElement as _, Styled, TestAppContext,
         TouchDragEvent, TouchEvent, TouchId, TouchPhase, Underline, UnderlineStyle, Window,
-        WindowAppearance, WindowMetrics, WindowOptions, canvas, div, hsla, point, px, size,
+        WindowAppearance, WindowMetrics, WindowOptions, canvas, div, gpu_canvas, hsla, point, px,
+        size,
     };
 
     /// Visibility transitions reach observers exactly once each, with the new
@@ -10202,18 +10203,11 @@ mod tests {
                 let corner_radii = self.corner_radii;
                 let opacity = self.opacity;
                 let flip_v = self.flip_v;
-                canvas(
-                    |_, _, _| (),
-                    move |_, _, window, _| {
-                        window.paint_imported_texture(
-                            handle.clone(),
-                            bounds,
-                            corner_radii,
-                            opacity,
-                            flip_v,
-                        );
-                    },
-                )
+                gpu_canvas(move |ctx| {
+                    ctx.paint_texture(handle.clone(), corner_radii, opacity, flip_v);
+                })
+                .w(bounds.size.width)
+                .h(bounds.size.height)
             }
         }
 
