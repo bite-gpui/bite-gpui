@@ -44,7 +44,6 @@ test-support = [
 ]
 bench-support = [
     "gpui_authoring/bench-support",
-    "gpui_linux?/bench-support",
     "gpui_macos?/bench-support",
 ]
 # Preserve the published feature name while consumers migrate to `bench-support`.
