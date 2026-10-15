@@ -9,13 +9,18 @@ use crate::{
     App, Bounds, Div, Element, ElementId, GlobalElementId, InteractiveElement, Interactivity,
     IntoElement, LayoutId, ParentElement, Pixels, StyleRefinement, Styled, Window, div,
 };
+#[cfg(not(target_os = "windows"))]
+use crate::{Corners, ImportedTextureHandle};
 
-/// Build a GPU canvas. Supply the content with [`GpuCanvas::on_render_surface`].
+/// Build a GPU canvas. Supply the content with `on_render_surface` (a `SurfaceSource`, on macOS or
+/// Windows) or `on_render_texture` (a same-device texture handle, elsewhere).
 pub fn gpu_canvas() -> GpuCanvas {
     GpuCanvas {
         div: div(),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         on_render_surface: None,
+        #[cfg(not(target_os = "windows"))]
+        on_render_texture: None,
     }
 }
 
@@ -31,6 +36,10 @@ pub struct GpuCanvas {
         Box<
             dyn FnOnce(Bounds<Pixels>, &mut Window, &mut App) -> Option<gpui_engine::SurfaceSource>,
         >,
+    >,
+    #[cfg(not(target_os = "windows"))]
+    on_render_texture: Option<
+        Box<dyn FnOnce(Bounds<Pixels>, &mut Window, &mut App) -> Option<ImportedTextureHandle>>,
     >,
 }
 
@@ -52,6 +61,24 @@ impl GpuCanvas {
         ) -> Option<gpui_engine::SurfaceSource>,
     ) -> Self {
         self.on_render_surface = Some(Box::new(on_render));
+        self
+    }
+
+    /// Supply the content: a callback, run at paint time, that produces a same-device
+    /// [`ImportedTextureHandle`] — a `wgpu::TextureView` or an `id<MTLTexture>` — or `None` to
+    /// paint nothing this frame.
+    ///
+    /// This is the same-device path, which the surface enum does not cover on macOS and Linux: a
+    /// producer that renders on the window's own device hands its texture here rather than through
+    /// an `IOSurface` or a dma-buf. The callback is `FnOnce` and consumed once, matching
+    /// [`crate::Canvas`].
+    #[cfg(not(target_os = "windows"))]
+    pub fn on_render_texture(
+        mut self,
+        on_render: impl 'static
+        + FnOnce(Bounds<Pixels>, &mut Window, &mut App) -> Option<ImportedTextureHandle>,
+    ) -> Self {
+        self.on_render_texture = Some(Box::new(on_render));
         self
     }
 }
@@ -164,6 +191,23 @@ impl Element for GpuCanvas {
                 #[allow(unreachable_patterns)]
                 _ => {}
             }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        if let Some(handle) = self
+            .on_render_texture
+            .take()
+            .and_then(|on_render| on_render(bounds, window, cx))
+        {
+            window.paint_imported_texture(
+                handle,
+                bounds,
+                // No rounded corners, opaque, and no y flip: the producer and the renderer are
+                // the same device with the same UV convention.
+                Corners::default(),
+                1.0,
+                false,
+            );
         }
     }
 }
