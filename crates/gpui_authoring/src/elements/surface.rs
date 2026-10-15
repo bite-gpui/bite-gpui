@@ -52,7 +52,7 @@ pub struct Surface {
 /// inside a [`gpu_canvas`](crate::gpu_canvas) callback, where the window renderer's device is
 /// reachable through [`GpuCanvasContext::device`](crate::GpuCanvasContext::device); a source this
 /// element takes was made off the window's device and shared with it — a dma-buf, a CoreVideo
-/// buffer, a shared Direct3D view — the route `gpui_interop` takes.
+/// buffer, a shared Direct3D view — the route a cross-process bridge takes.
 ///
 /// ```rust
 /// use gpui::{div, surface};
@@ -233,7 +233,7 @@ fn directx_source_size(source: &DirectXSource) -> Option<crate::Size<crate::Devi
 mod tests {
     use super::*;
     use crate::{Context, Render, TestAppContext, Window};
-    use gpui_engine::{DmaBufFormat, DmaBufHandle, DmaBufPlane, SurfaceSource};
+    use gpui_engine::{DmaBufHandle, DmaBufPlane, SurfaceFormatKind, SurfaceSource};
     use std::os::fd::OwnedFd;
 
     struct SurfaceView {
@@ -260,7 +260,7 @@ mod tests {
         let handle = DmaBufHandle::new(
             4,
             4,
-            DmaBufFormat::Rgba8,
+            SurfaceFormatKind::rgba8(),
             DmaBufHandle::LINEAR,
             [DmaBufPlane::new(descriptor(), 0, 16)],
             None,
