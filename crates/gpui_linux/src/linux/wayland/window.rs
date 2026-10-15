@@ -560,7 +560,7 @@ impl WaylandWindowState {
         viewport: Option<wp_viewport::WpViewport>,
         client: WaylandClientStatePtr,
         globals: Globals,
-        gpu_context: gpui_wgpu::GpuContext,
+        gpu_context: gpui_wgpu::WgpuContextSlot,
         compositor_gpu: Option<CompositorGpuHint>,
         options: WindowParams,
         parent: Option<WaylandWindowStatePtr>,
@@ -849,7 +849,7 @@ impl WaylandWindow {
     pub fn new(
         handle: WindowId,
         globals: Globals,
-        gpu_context: gpui_wgpu::GpuContext,
+        gpu_context: gpui_wgpu::WgpuContextSlot,
         compositor_gpu: Option<CompositorGpuHint>,
         client: WaylandClientStatePtr,
         params: WindowParams,

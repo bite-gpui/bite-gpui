@@ -64,7 +64,7 @@ use gpui_platform::{
     PlatformInput, PlatformKeyboardLayout, PlatformWindow, Point, RequestFrameOptions, ScrollDelta,
     Size, TouchPhase, WindowButtonLayout, WindowId, WindowParams, WindowVisibility, point, px,
 };
-use gpui_wgpu::{CompositorGpuHint, GpuContext};
+use gpui_wgpu::{CompositorGpuHint, WgpuContextSlot};
 
 /// Value for DeviceId parameters which selects all devices.
 pub(crate) const XINPUT_ALL_DEVICES: xinput::DeviceId = 0;
@@ -194,7 +194,7 @@ pub struct X11ClientState {
     pub(crate) current_count: usize,
     pub(crate) pinch_scale: f32,
 
-    pub(crate) gpu_context: GpuContext,
+    pub(crate) gpu_context: WgpuContextSlot,
     pub(crate) compositor_gpu: Option<CompositorGpuHint>,
 
     pub(crate) scale_factor: f32,
