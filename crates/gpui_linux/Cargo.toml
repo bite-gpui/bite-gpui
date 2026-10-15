@@ -14,7 +14,10 @@ doctest = false
 
 [features]
 default = ["wayland", "x11"]
-test-support = ["gpui_platform/test-support"]
+# `bench-support`/`test-support` also enable the wgpu headless renderer, which
+# `gpui::current_headless_renderer` builds on this platform.
+bench-support = ["gpui_wgpu?/headless"]
+test-support = ["gpui_platform/test-support", "gpui_wgpu?/headless"]
 wayland = [
     "bitflags",
     "gpui_wgpu",
