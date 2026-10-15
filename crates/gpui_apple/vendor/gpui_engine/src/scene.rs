@@ -744,14 +744,44 @@ impl From<PolychromeSprite> for Primitive {
     }
 }
 
+/// A source of a surface's content: pixels GPUI did not draw, arriving on the renderer's own
+/// device or from another one.
+///
+/// The variant is a cfg-gated payload, exactly as the field it replaces was, so the engine names
+/// only the transport it is compiled against and stays free of every graphics API but that one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub enum SurfaceSource {
+    /// A CoreVideo image buffer, backed by an IOSurface.
+    #[cfg(target_os = "macos")]
+    CoreVideo(core_video::pixel_buffer::CVPixelBuffer),
+    /// A Direct3D 11 shader resource view, made on the window renderer's own device.
+    #[cfg(target_os = "windows")]
+    DirectX(windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView),
+}
+
+#[cfg(target_os = "macos")]
+impl From<core_video::pixel_buffer::CVPixelBuffer> for SurfaceSource {
+    fn from(image_buffer: core_video::pixel_buffer::CVPixelBuffer) -> Self {
+        SurfaceSource::CoreVideo(image_buffer)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView> for SurfaceSource {
+    fn from(view: windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView) -> Self {
+        SurfaceSource::DirectX(view)
+    }
+}
+
 #[derive(Clone, Debug)]
 #[allow(missing_docs)]
 pub struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
-    #[cfg(target_os = "macos")]
-    pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
+    /// The pixels to composite, and the transport they arrived on.
+    pub source: SurfaceSource,
 }
 
 impl From<PaintSurface> for Primitive {
