@@ -29,6 +29,10 @@ use crate::{
 };
 
 use crate::TouchEvent;
+
+/// Named only by the scene-reading accessors below, which exist for tests.
+#[cfg(any(test, feature = "test-support"))]
+use crate::PaintSurface;
 use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
 use anyhow::{Context as _, Result, anyhow};
 use arc_swap::ArcSwap;
@@ -68,14 +72,10 @@ use uuid::Uuid;
 
 pub(crate) mod a11y;
 mod frame_pipeline;
-#[cfg(target_os = "macos")]
-mod mac;
 mod prompts;
 
 pub use a11y::A11ySubtreeBuilder;
 pub use frame_pipeline::{FramePipeline, StandardImmediatePipeline};
-#[cfg(target_os = "macos")]
-pub use mac::*;
 
 use self::a11y::A11y;
 #[cfg(not(target_family = "wasm"))]
@@ -3021,6 +3021,14 @@ impl Window<'_> {
         self.frame_state.rendered_frame.scene.underlines.clone()
     }
 
+    /// Returns the surfaces in the most recently rendered frame's scene: the pixels an element
+    /// painted through [`surface`](crate::surface), before any renderer resolves the handle inside
+    /// them. Like [`painted_quads`](Self::painted_quads), this is the scene as painted.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn painted_surfaces(&self) -> Vec<PaintSurface> {
+        self.frame_state.rendered_frame.scene.surfaces.clone()
+    }
+
     /// Returns the custom-render primitives in the most recently rendered frame's scene: the
     /// textures an application produced elsewhere and painted into this window. Like
     /// [`painted_quads`](Self::painted_quads), this is the scene as painted, before any renderer
@@ -3446,7 +3454,7 @@ impl Window<'_> {
     }
 
     #[inline]
-    fn snap_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<ScaledPixels> {
+    pub(crate) fn snap_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<ScaledPixels> {
         let scale_factor = self.scale_factor();
         let left = round_to_device_pixel(bounds.left().0, scale_factor);
         let top = round_to_device_pixel(bounds.top().0, scale_factor);
@@ -3484,7 +3492,7 @@ impl Window<'_> {
     }
 
     #[inline]
-    fn snapped_content_mask(&self) -> ContentMask<ScaledPixels> {
+    pub(crate) fn snapped_content_mask(&self) -> ContentMask<ScaledPixels> {
         ContentMask {
             bounds: self.cover_bounds(self.content_mask().bounds),
         }
