@@ -1217,9 +1217,14 @@ impl MetalRenderer {
         );
 
         for (index, surface) in surfaces.iter().enumerate() {
+            // The Metal renderer draws the one transport it has: a CoreVideo buffer. The unified
+            // `SurfaceSource` is single-variant on macOS, so the fallback is unreachable here.
             let image_buffer = match &surface.source {
                 SurfaceSource::CoreVideo(image_buffer) => image_buffer,
+                #[allow(unreachable_patterns)]
+                _ => continue,
             };
+
             let texture_size = size(
                 DevicePixels::from(image_buffer.get_width() as i32),
                 DevicePixels::from(image_buffer.get_height() as i32),
