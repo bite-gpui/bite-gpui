@@ -780,10 +780,9 @@ mod lenient_font_attributes {
 
 #[cfg(test)]
 mod tests {
-    use crate::AppleTextSystem;
+    use crate::{AppleTextSystem, MacTextSystem};
     use gpui::font;
-    use gpui_engine::{FontFallbacks, FontFeatures, FontRun, GlyphId, PlatformTextSystem};
-    use gpui_engine::{FontRun, GlyphId, PlatformTextSystem};
+    use gpui_engine::{FontFallbacks, FontFeatures, FontRun, GlyphId, PlatformTextSystem, font};
     use gpui_platform::px;
     use std::sync::Arc;
 
