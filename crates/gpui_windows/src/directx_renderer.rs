@@ -2536,6 +2536,28 @@ mod tests {
         scene
     }
 
+    /// A scene whose only primitive is a surface covering the whole target.
+    fn surface_scene(source: SurfaceSource, viewport: Size<DevicePixels>) -> Scene {
+        let bounds = Bounds {
+            origin: Point {
+                x: 0.0.into(),
+                y: 0.0.into(),
+            },
+            size: Size {
+                width: (viewport.width.0 as f32).into(),
+                height: (viewport.height.0 as f32).into(),
+            },
+        };
+        let mut scene = Scene::default();
+        scene.surfaces.push(PaintSurface {
+            order: 0,
+            bounds,
+            content_mask: ContentMask { bounds },
+            source,
+        });
+        scene
+    }
+
     /// The colour row. A producer's bytes have to come back unchanged, and on this renderer they
     /// do so exactly rather than approximately: the sampler reads the texture's own non-sRGB view
     /// and the fragment writes that straight into the non-sRGB target, so there is no transfer
@@ -2567,6 +2589,44 @@ mod tests {
             [fixture[2], fixture[1], fixture[0], fixture[3]],
         )?;
         let scene = imported_texture_scene(texture.to_imported_handle()?, viewport);
+
+        let pixels = renderer.render_scene_to_image(&scene, viewport)?;
+        assert_eq!((pixels.width(), pixels.height()), (8, 8));
+        for (index, pixel) in pixels.data().chunks_exact(4).enumerate() {
+            assert_eq!(pixel, fixture, "pixel {index} did not round trip");
+        }
+        Ok(())
+    }
+
+    /// The surface row — the byte-for-byte round trip through `draw_surfaces` rather than
+    /// `draw_custom`. A surface carries its `ID3D11ShaderResourceView` already made, so the
+    /// producer's half is the same texture plus the view `create_imported_texture_view` builds;
+    /// the fragment samples it straight through, exactly as it samples an imported texture's.
+    #[test]
+    fn a_surface_round_trips_its_bytes() -> Result<()> {
+        let viewport = Size {
+            width: DevicePixels(8),
+            height: DevicePixels(8),
+        };
+        let Some(mut renderer) = test_renderer(viewport) else {
+            return Ok(());
+        };
+
+        // Distinct per channel, and far from either end, so a transfer function applied once in
+        // the wrong direction cannot round back to the same byte.
+        let fixture = [200u8, 100, 50, 255];
+        let device = renderer
+            .device_any()
+            .and_then(|device| device.downcast_ref::<ID3D11Device>().cloned())
+            .context("the renderer lends its device through the seam")?;
+        let texture = imported_texture(
+            &device,
+            1,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            [fixture[2], fixture[1], fixture[0], fixture[3]],
+        )?;
+        let view = create_imported_texture_view(&device, &texture)?;
+        let scene = surface_scene(SurfaceSource::DirectX(view), viewport);
 
         let pixels = renderer.render_scene_to_image(&scene, viewport)?;
         assert_eq!((pixels.width(), pixels.height()), (8, 8));
