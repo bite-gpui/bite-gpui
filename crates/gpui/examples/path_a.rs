@@ -47,6 +47,8 @@ mod demo {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
+    #[cfg(target_os = "windows")]
+    use gpui::gpu_canvas;
     use gpui::{
         App, Bounds, Context, Corners, IntoElement, Render, Window, WindowBounds, WindowOptions,
         canvas, div, prelude::*, px, rgb, size,
@@ -54,6 +56,13 @@ mod demo {
 
     /// The producer's texture, which the sampler stretches over the window.
     const TEXTURE: u32 = 256;
+
+    /// What a frame hands the window: a `SurfaceSource` on Windows, an imported-texture handle
+    /// elsewhere — the same-device wgpu/Metal case 0005 leaves on the old primitive.
+    #[cfg(target_os = "windows")]
+    type Frame = gpui::SurfaceSource;
+    #[cfg(not(target_os = "windows"))]
+    type Frame = gpui::ImportedTextureHandle;
 
     pub fn run() {
         gpui::application().run(|cx: &mut App| {
@@ -88,43 +97,10 @@ mod demo {
 
     impl Render for PathA {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            let producer = self.producer.clone();
-            let started = self.started;
-
             div()
                 .size_full()
                 .bg(rgb(0x101014))
-                .child(
-                    // The GPU content, filling the window. `canvas` is the low-level paint API
-                    // without a custom element; the token is pushed from `paint`, which is where a
-                    // `Window` capability can be reached.
-                    canvas(
-                        move |_bounds, _window, _cx| {},
-                        move |bounds, _, window, _cx| {
-                            let mut slot = producer.borrow_mut();
-                            // Built on the first frame rather than at construction: the window's
-                            // renderer — and so its device — exists by the time it paints.
-                            let producer = slot.get_or_insert_with(|| Producer::new(window));
-
-                            match producer.frame(started.elapsed()) {
-                                Ok(handle) => window.paint_imported_texture(
-                                    handle,
-                                    bounds,
-                                    // No rounded corners, opaque, and no y flip: the producer and
-                                    // the renderer are the same device with the same UV
-                                    // convention.
-                                    Corners::default(),
-                                    1.0,
-                                    false,
-                                ),
-                                Err(error) => log::error!("path_a: {error:#}"),
-                            }
-
-                            window.request_animation_frame();
-                        },
-                    )
-                    .size_full(),
-                )
+                .child(self.gpu_content())
                 .child(
                     // Ordinary GPUI elements over the top: a Path A texture is a primitive in the
                     // frame's own pass, not an overlay.
@@ -139,6 +115,70 @@ mod demo {
                         .text_color(rgb(0xffffff))
                         .child("A texture produced outside GPUI, composited into this window"),
                 )
+        }
+    }
+
+    impl PathA {
+        /// The GPU content, filling the window.
+        ///
+        /// On Windows this is the unified surface path: the producer fills a Direct3D texture each
+        /// frame and hands its shader resource view through `GpuCanvas` to `surface()`. On Linux
+        /// and macOS the producer's same-device texture has no `SurfaceSource` variant — the gap
+        /// 0005 leaves for the canvas — so the handle is pushed directly, as before the unification.
+        #[cfg(target_os = "windows")]
+        fn gpu_content(&self) -> impl IntoElement {
+            let producer = self.producer.clone();
+            let started = self.started;
+
+            gpu_canvas()
+                .size_full()
+                .on_render_surface(move |_bounds, window, _cx| {
+                    let mut slot = producer.borrow_mut();
+                    // Built on the first frame rather than at construction: the window's renderer —
+                    // and so its device — exists by the time it paints.
+                    let producer = slot.get_or_insert_with(|| Producer::new(window));
+
+                    let source = match producer.frame(started.elapsed()) {
+                        Ok(source) => Some(source),
+                        Err(error) => {
+                            log::error!("path_a: {error:#}");
+                            None
+                        }
+                    };
+
+                    window.request_animation_frame();
+                    source
+                })
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        fn gpu_content(&self) -> impl IntoElement {
+            let producer = self.producer.clone();
+            let started = self.started;
+
+            canvas(
+                move |_bounds, _window, _cx| {},
+                move |bounds, _, window, _cx| {
+                    let mut slot = producer.borrow_mut();
+                    let producer = slot.get_or_insert_with(|| Producer::new(window));
+
+                    match producer.frame(started.elapsed()) {
+                        Ok(handle) => window.paint_imported_texture(
+                            handle,
+                            bounds,
+                            // No rounded corners, opaque, and no y flip: the producer and
+                            // the renderer are the same device with the same UV convention.
+                            Corners::default(),
+                            1.0,
+                            false,
+                        ),
+                        Err(error) => log::error!("path_a: {error:#}"),
+                    }
+
+                    window.request_animation_frame();
+                },
+            )
+            .size_full()
         }
     }
 
@@ -172,8 +212,8 @@ mod demo {
             Ok(producer)
         }
 
-        /// Fills the texture for this frame and returns the token the renderer samples.
-        fn frame(&mut self, elapsed: Duration) -> anyhow::Result<gpui::ImportedTextureHandle> {
+        /// Fills the texture for this frame and returns what the renderer samples.
+        fn frame(&mut self, elapsed: Duration) -> anyhow::Result<Frame> {
             match self {
                 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
                 Self::Wgpu(producer) => producer.frame(elapsed),
@@ -375,10 +415,12 @@ mod demo {
 
         use super::{TEXTURE, content, phase};
         use anyhow::Context as _;
-        use gpui::{DirectXTextureExt as _, ImportedTextureHandle, Window};
+        use gpui::{SurfaceSource, Window};
         use windows::Win32::Graphics::Direct3D11::{
-            D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC,
-            D3D11_USAGE_DEFAULT, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+            D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_SHADER_RESOURCE_VIEW_DESC,
+            D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_SRV_DIMENSION_TEXTURE2D, D3D11_TEX2D_SRV,
+            D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11Device, ID3D11DeviceContext,
+            ID3D11ShaderResourceView, ID3D11Texture2D,
         };
         use windows::Win32::Graphics::Dxgi::Common::{
             DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
@@ -387,6 +429,7 @@ mod demo {
         pub struct DirectXProducer {
             context: ID3D11DeviceContext,
             texture: ID3D11Texture2D,
+            view: ID3D11ShaderResourceView,
         }
 
         impl DirectXProducer {
@@ -396,9 +439,9 @@ mod demo {
                     .and_then(|any| any.downcast::<ID3D11Device>().ok())
                     .context("the window's renderer lends an ID3D11Device")?;
 
-                // The format the token builder requires: the renderer's target is
-                // `B8G8R8A8_UNORM`, so a texture in anything else would composite with its channels
-                // reordered rather than failing.
+                // The format the sampler requires: the renderer's target is `B8G8R8A8_UNORM`, so
+                // a texture in anything else would composite with its channels reordered rather
+                // than failing.
                 let desc = D3D11_TEXTURE2D_DESC {
                     Width: TEXTURE,
                     Height: TEXTURE,
@@ -410,9 +453,6 @@ mod demo {
                         Quality: 0,
                     },
                     Usage: D3D11_USAGE_DEFAULT,
-                    // `SHADER_RESOURCE` is what the token builder checks; the render-target flag is
-                    // what a producer that draws into its texture needs, and carrying it costs
-                    // nothing.
                     BindFlags: (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE).0 as u32,
                     CPUAccessFlags: 0,
                     MiscFlags: 0,
@@ -421,16 +461,38 @@ mod demo {
                 unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
                 let texture = texture.context("CreateTexture2D returned no texture")?;
 
+                // The view the `surface()` element carries: a non-sRGB B8G8R8A8 view of the same
+                // texture, so the renderer samples the producer's bytes straight through.
+                let view = unsafe {
+                    let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        ViewDimension: D3D_SRV_DIMENSION_TEXTURE2D,
+                        Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                            Texture2D: D3D11_TEX2D_SRV {
+                                MostDetailedMip: 0,
+                                MipLevels: 1,
+                            },
+                        },
+                    };
+                    let mut view = None;
+                    device.CreateShaderResourceView(&texture, Some(&desc), Some(&mut view))?;
+                    view.context("CreateShaderResourceView returned no view")?
+                };
+
                 // An upload is recorded on the immediate context, so it is applied before the
                 // renderer draws the frame that samples this — nothing to submit and nothing to
                 // wait on, which is the same one-queue ordering Linux has.
                 let context = unsafe { device.GetImmediateContext() }
                     .context("the device has no immediate context")?;
 
-                Ok(Self { context, texture })
+                Ok(Self {
+                    context,
+                    texture,
+                    view,
+                })
             }
 
-            pub fn frame(&mut self, elapsed: Duration) -> anyhow::Result<ImportedTextureHandle> {
+            pub fn frame(&mut self, elapsed: Duration) -> anyhow::Result<SurfaceSource> {
                 let pixels = content(TEXTURE, phase(elapsed));
                 unsafe {
                     self.context.UpdateSubresource(
@@ -443,7 +505,7 @@ mod demo {
                     );
                 }
 
-                self.texture.to_imported_handle()
+                Ok(self.view.clone().into())
             }
         }
     }
