@@ -3,7 +3,7 @@ use anyhow::{Context as _, Result};
 use block2::RcBlock;
 use cocoa::{base::{NO, YES}, foundation::{NSSize, NSUInteger}, quartzcore::AutoresizingMask};
 use core_graphics::{geometry::CGSize};
-use gpui_engine::{AtlasTextureId, CustomRenderPrimitive, MetalTexture, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer, SurfaceSource};
+use gpui_engine::{AtlasTextureId, CustomRenderPrimitive, GpuRenderer, MetalTexture, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer, SurfaceSource};
 use gpui_platform::{
     Background, Bounds, ContentMask, DevicePixels, GpuSpecs, MacSceneRenderer, PlatformRenderer,
     Point, ScaledPixels, Size, point, size,
@@ -1864,6 +1864,16 @@ impl PlatformRenderer for MetalRenderer {
     }
 }
 
+impl GpuRenderer for MetalRenderer {
+    type Device = metal::Device;
+
+    /// The device this renderer draws on. It created it, so it is the only holder: a producer
+    /// that wants to make a texture on it has to be handed this, and nothing else on macOS can.
+    fn device(&self) -> Option<metal::Device> {
+        Some(self.device.clone())
+    }
+}
+
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 pub struct MetalHeadlessRenderer {
     renderer: MetalRenderer,
@@ -1972,7 +1982,7 @@ mod tests {
             order: 0,
             bounds,
             content_mask: ContentMask { bounds },
-            image_buffer: image_buffer.clone(),
+            source: SurfaceSource::CoreVideo(image_buffer.clone()),
         });
         drop(image_buffer);
         scene.finish();
@@ -1987,5 +1997,13 @@ mod tests {
             assert!(blue.abs_diff(128) <= 2);
             assert_eq!(*alpha, 255);
         }
+    }
+}
+
+#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+impl GpuRenderer for MetalHeadlessRenderer {
+    type Device = metal::Device;
+    fn device(&self) -> Option<metal::Device> {
+        Some(self.renderer.device.clone())
     }
 }
