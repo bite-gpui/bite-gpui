@@ -3,8 +3,7 @@ use anyhow::{Context as _, Result};
 use block2::RcBlock;
 use cocoa::{base::{NO, YES}, foundation::{NSSize, NSUInteger}, quartzcore::AutoresizingMask};
 use core_graphics::{geometry::CGSize};
-use gpui_engine::{AtlasTextureId, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer};
-use gpui_engine::{AtlasTextureId, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer};
+use gpui_engine::{AtlasTextureId, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer, SurfaceSource};
 use gpui_platform::{
     Background, Bounds, ContentMask, DevicePixels, Point, ScaledPixels, Size, point, size,
 };
@@ -1212,23 +1211,46 @@ impl MetalRenderer {
         );
 
         for (index, surface) in surfaces.iter().enumerate() {
-            let image_buffer = &surface.image_buffer;
+            let image_buffer = match &surface.source {
+                SurfaceSource::CoreVideo(image_buffer) => image_buffer,
+            };
             let texture_size = size(
                 DevicePixels::from(CVPixelBufferGetWidth(image_buffer) as i32),
                 DevicePixels::from(CVPixelBufferGetHeight(image_buffer) as i32),
+||||||| .merge_file_fcD9yS
+                DevicePixels::from(surface.image_buffer.get_width() as i32),
+                DevicePixels::from(surface.image_buffer.get_height() as i32),
             );
 
             assert_eq!(
                 CVPixelBufferGetPixelFormatType(image_buffer),
+||||||| .merge_file_fcD9yS
+                surface.image_buffer.get_pixel_format(),
                 kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
             );
 
             let plane_texture = |plane, format| unsafe {
                 let mut texture = ptr::null_mut();
                 let status = CVMetalTextureCache::create_texture_from_image(
+||||||| .merge_file_fcD9yS
+            let y_texture = self
+                .core_video_texture_cache
+                .create_texture_from_image(
+                    surface.image_buffer.as_concrete_TypeRef(),
                     None,
                     &self.core_video_texture_cache,
                     image_buffer,
+||||||| .merge_file_fcD9yS
+                    MTLPixelFormat::R8Unorm,
+                    surface.image_buffer.get_width_of_plane(0),
+                    surface.image_buffer.get_height_of_plane(0),
+                    0,
+                )
+                .unwrap();
+            let cb_cr_texture = self
+                .core_video_texture_cache
+                .create_texture_from_image(
+                    surface.image_buffer.as_concrete_TypeRef(),
                     None,
                     format,
                     CVPixelBufferGetWidthOfPlane(image_buffer, plane),
@@ -1242,6 +1264,11 @@ impl MetalRenderer {
                 );
                 CFRetained::<CVMetalTexture>::from_raw(
                     ptr::NonNull::new(texture).expect("CoreVideo returned a null texture"),
+||||||| .merge_file_fcD9yS
+                    MTLPixelFormat::RG8Unorm,
+                    surface.image_buffer.get_width_of_plane(1),
+                    surface.image_buffer.get_height_of_plane(1),
+                    1,
                 )
             };
             let y_texture = plane_texture(0, objc2_metal::MTLPixelFormat::R8Unorm);

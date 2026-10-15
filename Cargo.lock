@@ -7364,12 +7364,16 @@ name = "gpui"
 version = "0.2.2"
 dependencies = [
  "anyhow",
+ "ash",
  "backtrace",
+ "bench_metrics",
  "bindgen",
  "collections",
+ "core-foundation 0.10.0",
  "criterion",
  "embed-resource",
  "env_logger 0.11.8",
+ "foreign-types 0.5.0",
  "gpui_authoring",
  "gpui_linux",
  "gpui_macos",
@@ -7378,10 +7382,13 @@ dependencies = [
  "gpui_runtime",
  "gpui_util",
  "gpui_web",
+ "gpui_wgpu",
  "gpui_windows",
  "http_client",
  "log",
  "lyon",
+ "metal",
+ "pollster 0.4.0",
  "proptest",
  "rand 0.9.4",
  "reqwest_client",
@@ -7392,6 +7399,8 @@ dependencies = [
  "unicode-segmentation",
  "wasm-bindgen",
  "web-sys",
+ "wgpu",
+ "windows 0.62.2",
  "zed-font-kit",
  "zed-scap",
 ]
@@ -7526,6 +7535,8 @@ dependencies = [
  "gpui_shared_string",
  "gpui_types",
  "log",
+ "objc2-core-foundation",
+ "objc2-core-video",
  "parking_lot",
  "profiling",
  "rand 0.9.4",
@@ -7534,6 +7545,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
+ "windows 0.62.2",
 ]
 
 [[package]]

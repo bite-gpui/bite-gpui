@@ -130,8 +130,14 @@ impl Scene {
                 self.polychrome_sprites.push(*sprite);
             }
             Primitive::Surface(surface) => {
-                surface.order = order;
-                self.surfaces.push(surface.clone());
+                // On a platform with no surface backend yet, `SurfaceSource` — and so `PaintSurface` —
+                // is uninhabited and this arm is unreachable. It stays for the platforms that do
+                // carry a source (macOS and Windows today, Linux once the dma-buf backend lands).
+                #[allow(unreachable_code)]
+                {
+                    surface.order = order;
+                    self.surfaces.push(surface.clone());
+                }
             }
             Primitive::Custom(custom) => {
                 *custom.order_mut() = order;
@@ -779,14 +785,162 @@ impl From<PolychromeSprite> for Primitive {
     }
 }
 
+/// Where a Windows surface's pixels come from. Every variant ends at the same
+/// `ID3D11ShaderResourceView` in the renderer; the difference is who makes it, and on which device.
+///
+/// The texture variant is the ergonomic default for a producer that already renders on the window
+/// renderer's own device: it holds the resource and hands it here, and the renderer — which owns the
+/// device — makes the view. The view variant is the escape for a producer that is the authority on
+/// its own format, plane and mip interpretation and would rather make the view itself. Both are
+/// device-bound, so they must be made on the window renderer's device; the shared variant is the
+/// device-independent one — an NT handle the renderer opens on its own device and views — the
+/// Direct3D counterpart of a dma-buf or an IOSurface, and the one a `surface()` element can carry,
+/// because it can be built before the window's device exists.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub enum DirectXSource {
+    /// A texture on the window renderer's own device — the renderer makes the view.
+    Texture(windows::Win32::Graphics::Direct3D11::ID3D11Texture2D),
+    /// A view the producer already made — it is the authority on the interpretation.
+    View(windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView),
+    /// A texture shared across devices: the renderer opens the handle on its own device and views it.
+    Shared(SharedDirectXSurface),
+}
+
+/// A Direct3D texture a producer made on *its own* device and shared, plus the fence that orders its
+/// writes before the renderer samples it.
+///
+/// This is the device-independent Direct3D payload: the handle names a resource the renderer opens
+/// with `OpenSharedResource1` and views on the device it draws with, so the producer never needs the
+/// window's device — which is what lets `surface()` carry a Direct3D surface, where the device-bound
+/// [`Texture`](DirectXSource::Texture) and [`View`](DirectXSource::View) cannot.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedDirectXSurface {
+    /// The texture's NT handle, as `CreateSharedHandle` produced it.
+    pub texture: windows::Win32::Foundation::HANDLE,
+    /// The fence that orders the producer's writes before the draw, when it signals one; `None` for a
+    /// producer that has already flushed.
+    pub fence: Option<SharedDirectXFence>,
+    /// The texture's width in pixels, for the element's object-fit.
+    pub width: u32,
+    /// The texture's height in pixels, for the element's object-fit.
+    pub height: u32,
+}
+
+/// A producer's shared fence, and the value the renderer waits for before sampling the texture.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedDirectXFence {
+    /// The fence's NT handle, opened on the renderer's device with `OpenSharedFence`.
+    pub handle: windows::Win32::Foundation::HANDLE,
+    /// The value the renderer waits for on the device's context before it samples the texture.
+    pub value: u64,
+}
+
+/// A source of a surface's content: pixels GPUI did not draw, arriving on the renderer's own
+/// device or from another one.
+///
+/// The variant is a cfg-gated payload, exactly as the field it replaces was, so the engine names
+/// only the transport it is compiled against and stays free of every graphics API but that one. A
+/// same-device texture and a cross-process handle are the same value here: both reach the renderer
+/// as a view it samples, and the renderer cannot tell how the view was made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub enum SurfaceSource {
+    /// A CoreVideo image buffer, backed by an IOSurface.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    CoreVideo(objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>),
+    /// The pixels of a Direct3D 11 surface, as either a texture the renderer views or a view a
+    /// producer already made. [`DirectXSource`] carries both and explains why both are offered.
+    #[cfg(target_os = "windows")]
+    DirectX(DirectXSource),
+    /// A dma-buf: an fd plus a DRM fourcc, modifier, stride and offset.
+    #[cfg(target_os = "linux")]
+    DmaBuf(crate::dmabuf::DmaBufHandle),
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+impl From<objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>> for SurfaceSource {
+    fn from(image_buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>) -> Self {
+        SurfaceSource::CoreVideo(image_buffer)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView> for DirectXSource {
+    fn from(view: windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView) -> Self {
+        DirectXSource::View(view)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D> for DirectXSource {
+    fn from(texture: windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Self {
+        DirectXSource::Texture(texture)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView> for SurfaceSource {
+    fn from(view: windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView) -> Self {
+        SurfaceSource::DirectX(view.into())
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D> for SurfaceSource {
+    fn from(texture: windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Self {
+        SurfaceSource::DirectX(texture.into())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl From<crate::dmabuf::DmaBufHandle> for SurfaceSource {
+    fn from(handle: crate::dmabuf::DmaBufHandle) -> Self {
+        SurfaceSource::DmaBuf(handle)
+    }
+}
+
 #[derive(Clone, Debug)]
 #[allow(missing_docs)]
 pub struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    pub image_buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>,
+    /// The pixels to composite, and the transport they arrived on.
+    pub source: SurfaceSource,
+}
+
+impl PaintSurface {
+    /// Encode this surface into the quad instance record the backends' shaders read.
+    ///
+    /// The geometry and the content-mask clip are the quad path's rather than a second
+    /// implementation of them, which is the whole reason the surface rides `PaintSurface` and not
+    /// a primitive of its own. The surface carries no opacity, y-flip or corner radii yet: the
+    /// element sets no rounded corners, and the payload is sampled straight through, so the record
+    /// is the plain one a quad with no styling would build.
+    pub fn to_quad_record(&self) -> Quad {
+        let mut background = Background::default();
+        background.solid = Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 1.0,
+        };
+
+        Quad {
+            order: self.order,
+            border_style: BorderStyle::Solid,
+            bounds: self.bounds,
+            content_mask: self.content_mask,
+            background,
+            border_color: Hsla::default(),
+            corner_radii: Corners::default(),
+            border_widths: Edges::default(),
+        }
+    }
 }
 
 impl From<PaintSurface> for Primitive {
