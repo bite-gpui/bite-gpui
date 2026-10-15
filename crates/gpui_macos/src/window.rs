@@ -26,12 +26,13 @@ use dispatch2::DispatchQueue;
 use gpui_engine::SceneRenderer;
 use gpui_platform::{
     BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalDragPayload, ExternalPaths,
-    FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformDisplay,
-    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel,
+    FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, MacSceneRenderer, Modifiers,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    NavigationDirection, Pixels, PlatformDisplay, PlatformInput, PlatformInputHandler,
+    PlatformRenderer, PlatformWindow, Point, PromptButton, PromptLevel, RendererTarget,
     RequestFrameOptions, SharedString, Size, SystemWindowTab, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowId, WindowKind, WindowParams,
-    WindowVisibility, point, px, size,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowId, WindowKind,
+    WindowParams, WindowVisibility, point, px, size,
 };
 
 use core_foundation::base::{CFRelease, CFTypeRef};
@@ -3669,8 +3670,8 @@ fn synthetic_drag_button_is_pressed(button: Option<MouseButton>, pressed: NSUInt
         Some(MouseButton::Left) => 0,
         Some(MouseButton::Right) => 1,
         Some(MouseButton::Middle) => 2,
-        Some(MouseButton::Navigate(gpui::NavigationDirection::Back)) => 3,
-        Some(MouseButton::Navigate(gpui::NavigationDirection::Forward)) => 4,
+        Some(MouseButton::Navigate(NavigationDirection::Back)) => 3,
+        Some(MouseButton::Navigate(NavigationDirection::Forward)) => 4,
         None => return false,
     };
     pressed & (1 << bit) != 0
