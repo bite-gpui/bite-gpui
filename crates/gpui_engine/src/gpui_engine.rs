@@ -12,6 +12,8 @@
 mod atlas;
 mod bounds_tree;
 mod custom_render;
+#[cfg(target_os = "linux")]
+mod dmabuf;
 mod font_fallbacks;
 mod font_features;
 mod frame_session;
@@ -21,11 +23,14 @@ mod render;
 mod renderer;
 mod scene;
 mod style;
+mod surface_format;
 mod text;
 mod text_system;
 
 pub use atlas::*;
 pub use custom_render::*;
+#[cfg(target_os = "linux")]
+pub use dmabuf::*;
 pub use font_fallbacks::*;
 pub use font_features::*;
 pub use frame_session::*;
@@ -35,5 +40,6 @@ pub use render::*;
 pub use renderer::*;
 pub use scene::*;
 pub use style::*;
+pub use surface_format::*;
 pub use text::*;
 pub use text_system::*;

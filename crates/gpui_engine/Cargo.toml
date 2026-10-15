@@ -36,5 +36,8 @@ smallvec.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 core-video.workspace = true
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows.workspace = true
+
 [dev-dependencies]
 rand.workspace = true
