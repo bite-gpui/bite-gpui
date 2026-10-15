@@ -32,7 +32,6 @@ use gpui_util::{ResultExt as _, new_std_command};
 use xkbcommon::xkb::{self, Keycode, Keysym, State};
 
 use crate::{linux::{Backend, DisplayConnection, HeadlessConnection, LinuxDispatcher, PriorityQueueCalloopReceiver, select_backend}};
-use gpui_backend::PlatformTextSystem;
 use gpui_engine::PlatformTextSystem;
 use gpui_platform::{
     ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,

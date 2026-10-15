@@ -68,7 +68,7 @@ use uuid::Uuid;
 
 pub(crate) mod a11y;
 mod frame_pipeline;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod mac;
 mod prompts;
 
