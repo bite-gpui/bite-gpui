@@ -26,8 +26,8 @@ use dispatch2::DispatchQueue;
 use gpui_engine::SceneRenderer;
 use gpui_platform::{
     BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalDragPayload, ExternalPaths,
-    FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, MacSceneRenderer, Modifiers,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, MacSceneRenderer,
+    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     NavigationDirection, Pixels, PlatformDisplay, PlatformInput, PlatformInputHandler,
     PlatformRenderer, PlatformWindow, Point, PromptButton, PromptLevel, RendererTarget,
     RequestFrameOptions, SharedString, Size, SystemWindowTab, WindowAppearance,

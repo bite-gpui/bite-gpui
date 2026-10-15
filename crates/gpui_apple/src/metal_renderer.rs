@@ -7,8 +7,8 @@ use cocoa::{
     quartzcore::AutoresizingMask,
 };
 use gpui_engine::{
-    AtlasTextureId, CustomRenderPrimitive, MetalTexture, PaintSurface, Path, PlatformAtlas,
-    PrimitiveBatch, Scene, SceneRenderer,
+    AtlasTextureId, CustomRenderPrimitive, GpuRenderer, MetalTexture, PaintSurface, Path,
+    PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer, SurfaceSource,
 };
 use gpui_platform::{
     Background, Bounds, ContentMask, DevicePixels, GpuSpecs, MacSceneRenderer, PlatformRenderer,
@@ -1780,6 +1780,16 @@ impl PlatformRenderer for MetalRenderer {
     }
 }
 
+impl GpuRenderer for MetalRenderer {
+    type Device = metal::Device;
+
+    /// The device this renderer draws on. It created it, so it is the only holder: a producer
+    /// that wants to make a texture on it has to be handed this, and nothing else on macOS can.
+    fn device(&self) -> Option<metal::Device> {
+        Some(self.device.clone())
+    }
+}
+
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 pub struct MetalHeadlessRenderer {
     renderer: MetalRenderer,
@@ -1827,5 +1837,13 @@ impl SceneRenderer for MetalHeadlessRenderer {
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.renderer.sprite_atlas().clone()
+    }
+}
+
+#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+impl GpuRenderer for MetalHeadlessRenderer {
+    type Device = metal::Device;
+    fn device(&self) -> Option<metal::Device> {
+        Some(self.renderer.device.clone())
     }
 }
