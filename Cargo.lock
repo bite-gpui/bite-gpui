@@ -7944,6 +7944,7 @@ name = "gpui_wgpu"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ash",
  "bytemuck",
  "collections",
  "cosmic-text",
@@ -7954,6 +7955,7 @@ dependencies = [
  "gpui_platform",
  "gpui_util",
  "itertools 0.14.0",
+ "libc",
  "log",
  "naga",
  "parking_lot",

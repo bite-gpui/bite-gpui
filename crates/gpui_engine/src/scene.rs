@@ -801,6 +801,9 @@ pub enum SurfaceSource {
     /// A Direct3D 11 shader resource view, made on the window renderer's own device.
     #[cfg(target_os = "windows")]
     DirectX(windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView),
+    /// A dma-buf: an fd plus a DRM fourcc, modifier, stride and offset.
+    #[cfg(target_os = "linux")]
+    DmaBuf(crate::dmabuf::DmaBufHandle),
 }
 
 #[cfg(target_os = "macos")]
@@ -814,6 +817,13 @@ impl From<core_video::pixel_buffer::CVPixelBuffer> for SurfaceSource {
 impl From<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView> for SurfaceSource {
     fn from(view: windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView) -> Self {
         SurfaceSource::DirectX(view)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl From<crate::dmabuf::DmaBufHandle> for SurfaceSource {
+    fn from(handle: crate::dmabuf::DmaBufHandle) -> Self {
+        SurfaceSource::DmaBuf(handle)
     }
 }
 
