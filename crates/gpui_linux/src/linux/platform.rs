@@ -35,7 +35,7 @@ use crate::{linux::{Backend, DisplayConnection, HeadlessConnection, LinuxDispatc
 use gpui_engine::PlatformTextSystem;
 use gpui_platform::{
     ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, DisplayId, ForegroundExecutor,
-    GpuPreference, GraphicalEnvironment, MenuCommandId, PathPromptOptions, Platform,
+    GpuAdapterInfo, GpuPreference, GraphicalEnvironment, MenuCommandId, PathPromptOptions, Platform,
     PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem,
     PlatformWindow, RunnableVariant, Task, ThermalState, WindowAppearance, WindowButtonLayout,
     WindowId, WindowParams, WindowingModes, WindowingRequest,
@@ -536,6 +536,29 @@ impl Drop for LinuxPlatform {
     }
 }
 
+/// The adapters the renderer could choose between.
+///
+/// The context's own instance is used once one exists, so the list is the one the renderer can
+/// actually pick from. Before that a fresh instance enumerates; it creates no device, which is the
+/// cost this accessor exists to avoid. `try_borrow` because this can be asked during the window
+/// construction that is holding the slot mutably — returning nothing is better than panicking.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(crate) fn enumerate_gpus(gpu_context: &gpui_wgpu::WgpuContextSlot) -> Vec<GpuAdapterInfo> {
+    if let Ok(context) = gpu_context.try_borrow()
+        && let Some(context) = context.as_ref()
+    {
+        return gpui_wgpu::enumerate_adapters_from(&context.instance);
+    }
+    gpui_wgpu::enumerate_adapters()
+}
+
+/// The adapter the shared context renders on, once it has one.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(crate) fn active_gpu(gpu_context: &gpui_wgpu::WgpuContextSlot) -> Option<GpuAdapterInfo> {
+    let context = gpu_context.try_borrow().ok()?;
+    context.as_ref().map(|context| context.adapter_info())
+}
+
 impl Platform for LinuxPlatform {
     fn background_executor(&self) -> BackgroundExecutor {
         self.with_common(|common| common.background_executor.clone())
@@ -550,8 +573,15 @@ impl Platform for LinuxPlatform {
     }
 
     fn set_gpu_preference(&self, preference: GpuPreference) {
-        self.inner
-            .with_common(|common| common.gpu_preference = preference);
+        self.common.borrow_mut().gpu_preference = preference;
+    }
+
+    fn enumerate_gpus(&self) -> Vec<GpuAdapterInfo> {
+        self.connection.borrow().enumerate_gpus()
+    }
+
+    fn active_gpu(&self) -> Option<GpuAdapterInfo> {
+        self.connection.borrow().active_gpu()
     }
 
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout> {
