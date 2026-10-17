@@ -1646,6 +1646,7 @@ impl LinuxClient for X11Client {
         let scale_factor = state.scale_factor;
         let appearance = state.common.appearance;
         let compositor_gpu = state.compositor_gpu.take();
+        let gpu_preference = state.common.gpu_preference;
         let supports_xinput_gestures = state.supports_xinput_gestures;
         let is_bgr = state
             .resource_database
@@ -1657,6 +1658,7 @@ impl LinuxClient for X11Client {
             state.common.foreground_executor.clone(),
             state.gpu_context.clone(),
             compositor_gpu,
+            gpu_preference,
             params,
             &xcb_connection,
             client_side_decorations_supported,
