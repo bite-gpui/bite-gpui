@@ -22,19 +22,30 @@
 //! The importer validates the handle and refuses one it cannot honour, rather than compositing a
 //! wrong image. A producer must therefore:
 //!
-//! - **Declare the buffer's tiling.** A single-plane-per-layer buffer is sampled as-is: the
-//!   importer creates the plane's image with the handle's [`modifier`](gpui_engine::DmaBufHandle::modifier),
-//!   so a producer may export a vendor-tiled buffer
-//!   ([`DRM_FORMAT_MOD_LINEAR`](gpui_engine::DmaBufHandle::LINEAR) is the portable choice, and a tiled
-//!   modifier is sampled only where the device enabled `VK_EXT_image_drm_format_modifier` — see
-//!   `WgpuContext::device_with_surface_import` — and otherwise refused by `vkCreateImage`).
+//! - **Declare a layout the device itself produces.** For a linear buffer the importer builds a plain,
+//!   unbound `LINEAR` image of the handle's format and extent and requires the handle's plane offsets
+//!   and row pitches to equal the ones the driver gives *it*. A driver samples only a layout it laid
+//!   out itself, and an image created with the handle's layouts *echoes* them back, so this is the only
+//!   comparison that decides anything: the NVIDIA 930M accepts a linear `NV12` declaring chroma at
+//!   4096, reports 4096 back, and then hangs the command processor when the image is sampled, where
+//!   its own layout puts chroma at 65536. A producer reads the layout to declare from `gpui_interop`'s
+//!   device report. A tiled buffer keeps the explicit `VkImageDrmFormatModifierExplicitCreateInfoEXT`
+//!   path — it needs `VK_EXT_image_drm_format_modifier` on the device, and `WgpuContext` enables it.
 //! - **Carry one plane per format.** [`SurfaceFormatKind::plane_count`](gpui_engine::SurfaceFormatKind::plane_count)
 //!   says how many a format needs — one for packed RGB, two for semi-planar YCbCr, three for planar;
 //!   a handle whose plane count does not match its format is refused.
 //!
+//! - **Hold enough memory to back the declared layout.** A driver may accept the declared plane
+//!   layouts and still size the image for its own padded layout: an NVIDIA linear `NV12` reports the
+//!   declared chroma offset and then asks for 128 KiB, its own 64 KiB-padded layout, where a canonical
+//!   buffer holds 6 KiB. The buffer's own size is checked against the image's requirement, and a
+//!   buffer too small to back it is refused (the shortfall named) rather than bound and sampled past
+//!   its end — which faults on the GPU rather than compositing wrongly.
+//!
 //! See [`DmaBufHandle`](gpui_engine::DmaBufHandle) for the descriptor itself and the full set of
 //! invariants a dma-buf import requires.
 
+use std::io::{Seek as _, SeekFrom};
 use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Duration;
@@ -117,6 +128,136 @@ pub(crate) fn import_dmabuf(
     import_luma_chroma(device, &hal, instance, physical, handle)
 }
 
+/// Whether `hal` carries `VK_EXT_image_drm_format_modifier`, which an explicit plane layout needs.
+///
+/// A capability check, not a convenience: `VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT` is invalid to use
+/// without the extension, so the importer has to ask rather than learn it from a failing
+/// `vkCreateImage`. `WgpuContext::device_with_surface_import` enables the extension where the adapter
+/// supports it and reports whether the device took it.
+fn honours_plane_layouts(hal: &wgpu::hal::vulkan::Device) -> bool {
+    hal.enabled_device_extensions()
+        .contains(&vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME)
+}
+
+/// Refuse a handle whose declared plane layout is not one the driver itself produces.
+///
+/// A driver samples only a layout it laid out itself, so this is the comparison that decides whether an
+/// imported image can be sampled at all — and it must be made against a **plain** image: an image
+/// created with the handle's layouts echoes them back through `vkGetImageSubresourceLayout`, so
+/// comparing that can never disagree. Measured: an NVIDIA 930M accepts a linear `NV12` declaring chroma
+/// at 4096, reports 4096 back, and then hangs the command processor when the image is sampled, where
+/// its own layout puts chroma at 65536.
+///
+/// The comparison is on the **plane offsets**, not the row pitches. An offset is the hazard: the part's
+/// texturing hardware maps planes on fixed page boundaries, so a chroma plane at 4096 where the driver
+/// wants 65536 wedges it. A pitch is not: the producer's memory is laid out at whatever pitch it
+/// declares, and the driver produces two of them for one format depending on how the image is made —
+/// measured on the same 930M, a plain `LINEAR` `NV12` gets a pitch of 64 while an *exportable* one (the
+/// image a `SharedBuffer` exports) gets 128, both at the same offsets. Checking pitches would refuse
+/// the exportable one, which is a buffer the driver laid out and samples itself.
+///
+/// The probe costs nothing — `vkCreateImage` allocates no memory until memory is bound, so a plain
+/// `LINEAR` image of the same format and extent is created, asked, and destroyed with no submission.
+/// `aspects` names the planes `declared` describes, in order, as a plain linear image names them
+/// (`PLANE_0`/`PLANE_1`, or `COLOR` for a single-plane format).
+fn ensure_native_layout(
+    raw: &ash::Device,
+    format: vk::Format,
+    width: u32,
+    height: u32,
+    aspects: &[vk::ImageAspectFlags],
+    declared: &[vk::SubresourceLayout],
+) -> Result<()> {
+    let probe = create_plain_linear_image(raw, format, width, height)?;
+    for (index, (aspect, declared)) in aspects.iter().zip(declared).enumerate() {
+        let subresource = vk::ImageSubresource {
+            aspect_mask: *aspect,
+            mip_level: 0,
+            array_layer: 0,
+        };
+        // SAFETY: `probe` is live and bound to no memory; the call only reads its layout.
+        let native = unsafe { raw.get_image_subresource_layout(probe, subresource) };
+        if native.offset != declared.offset {
+            // SAFETY: the probe was created above and has never been bound or used.
+            unsafe { raw.destroy_image(probe, None) };
+            anyhow::bail!(
+                "the renderer's device lays a {format:?} {width}×{height} linear image's plane {index} \
+                 out at offset {}, and the handle declares offset {}. This device cannot sample a \
+                 layout it did not choose — export the layout it reports for a plain linear image, or \
+                 a tiled modifier it lists",
+                native.offset,
+                declared.offset,
+            );
+        }
+    }
+    // SAFETY: the probe was created above and has never been bound or used.
+    unsafe { raw.destroy_image(probe, None) };
+    Ok(())
+}
+
+/// A plain, unbound `LINEAR` image of `format` — the layout the driver chooses for itself. It costs no
+/// memory (`vkCreateImage` allocates nothing until memory is bound), and the caller destroys it.
+fn create_plain_linear_image(
+    raw: &ash::Device,
+    format: vk::Format,
+    width: u32,
+    height: u32,
+) -> Result<vk::Image> {
+    let info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(format)
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::LINEAR)
+        .usage(vk::ImageUsageFlags::SAMPLED)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    // SAFETY: `info` chains nothing, and the image is owned by the caller.
+    unsafe { raw.create_image(&info, None) }.context("create a plain linear layout probe")
+}
+
+/// Refuse an image the buffer cannot back, naming the shortfall so a producer can size its export.
+///
+/// A driver may accept the handle's declared plane layouts and still require more memory than those
+/// layouts span: an NVIDIA linear `NV12` reports the declared chroma offset and then asks for 128 KiB,
+/// its own 64 KiB-padded layout, where the canonical layout the producer exported holds 6 KiB (measured
+/// on a 930M). Binding the smaller buffer and sampling it reads past the end of the dma-buf, which
+/// faults on the GPU instead of compositing wrongly. The descriptor's own size is therefore the ground
+/// truth: an image needing more than the buffer holds is destroyed and the surface refused, and the
+/// numbers are named so the producer can export a buffer this device can back.
+fn ensure_buffer_backs_image(
+    raw: &ash::Device,
+    image: vk::Image,
+    requirements: vk::MemoryRequirements,
+    bind_offset: u64,
+    fd: &OwnedFd,
+) -> Result<()> {
+    let available = buffer_size(fd)?;
+    let needed = bind_offset + requirements.size;
+    if needed > available {
+        // SAFETY: the image was created above and is neither bound to memory nor used.
+        unsafe { raw.destroy_image(image, None) };
+        anyhow::bail!(
+            "the renderer's device needs {needed} bytes for an image bound at offset {bind_offset}, \
+             but the dma-buf holds {available}: this device cannot back the declared layout. Export a \
+             buffer of at least {needed} bytes, or one whose plane layout it backs with what it has",
+        );
+    }
+    Ok(())
+}
+
+/// How many bytes a dma-buf holds — `lseek(SEEK_END)`, the one size the descriptor itself carries.
+fn buffer_size(fd: &OwnedFd) -> Result<u64> {
+    let mut file = std::fs::File::from(fd.try_clone().context("duplicate the descriptor")?);
+    file.seek(SeekFrom::End(0)).context("measure the dma-buf")
+}
+
 /// Import an `Nv12` buffer's two planes as the **one** multi-planar image they describe, and view
 /// each plane.
 ///
@@ -135,6 +276,12 @@ fn import_luma_chroma(
     let luma = &handle.planes[0];
     let chroma = &handle.planes[1];
     let tiled = handle.modifier != DmaBufHandle::LINEAR;
+    let explicit = honours_plane_layouts(hal);
+    anyhow::ensure!(
+        explicit || !tiled,
+        "a tiled Nv12 dma-buf needs VK_EXT_image_drm_format_modifier on the renderer's device, and \
+         this one does not have it",
+    );
 
     // The image binds at the object's base (`luma.offset`), so each plane's layout is its offset
     // from that base; its row pitch is the plane's stride. The driver validates both.
@@ -146,6 +293,22 @@ fn import_luma_chroma(
             .offset(chroma.offset.saturating_sub(luma.offset))
             .row_pitch(u64::from(chroma.stride)),
     ];
+    // Only a *linear* handle is checked against the device's own layout: a tiled buffer's layout is the
+    // modifier's, and there is no plain image to compare it with. Tiled is already gated on the device
+    // taking `VK_EXT_image_drm_format_modifier` above.
+    if !tiled {
+        ensure_native_layout(
+            raw,
+            vk::Format::G8_B8R8_2PLANE_420_UNORM,
+            handle.width,
+            handle.height,
+            &[
+                vk::ImageAspectFlags::PLANE_0,
+                vk::ImageAspectFlags::PLANE_1,
+            ],
+            &plane_layouts,
+        )?;
+    }
     let mut modifier_layout = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
         .drm_format_modifier(handle.modifier)
         .plane_layouts(&plane_layouts);
@@ -160,7 +323,10 @@ fn import_luma_chroma(
         .mip_levels(1)
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
-        .tiling(if tiled {
+        // `DRM_FORMAT_MODIFIER_EXT` carries an explicit layout for `DRM_FORMAT_MOD_LINEAR` as well as
+        // for a vendor modifier, and is the only way to make the driver read the planes where the
+        // handle says they are rather than where the driver would put them.
+        .tiling(if explicit {
             vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT
         } else {
             vk::ImageTiling::LINEAR
@@ -168,7 +334,7 @@ fn import_luma_chroma(
         .usage(vk::ImageUsageFlags::SAMPLED)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
-    let image_info = if tiled {
+    let image_info = if explicit {
         image_info.push_next(&mut modifier_layout)
     } else {
         image_info
@@ -176,6 +342,7 @@ fn import_luma_chroma(
     let image =
         unsafe { raw.create_image(&image_info, None) }.context("create the imported image")?;
     let requirements = unsafe { raw.get_image_memory_requirements(image) };
+    ensure_buffer_backs_image(raw, image, requirements, luma.offset, &luma.fd)?;
 
     let fd = luma
         .fd
@@ -347,11 +514,30 @@ fn import_plane(
 ) -> Result<PlaneTexture> {
     let raw = hal.raw_device();
     let tiled = modifier != DmaBufHandle::LINEAR;
+    let explicit = honours_plane_layouts(hal);
+    anyhow::ensure!(
+        explicit || !tiled,
+        "a tiled dma-buf needs VK_EXT_image_drm_format_modifier on the renderer's device, and this \
+         one does not have it",
+    );
     // The image binds at the plane's offset within the object, so the plane's own layout starts at
     // zero; its row pitch is the buffer's. The driver validates both against the modifier.
     let plane_layout = vk::SubresourceLayout::default()
         .offset(0)
         .row_pitch(u64::from(plane.stride));
+    // Only a *linear* handle is checked against the device's own layout: a tiled buffer's layout is the
+    // modifier's, and there is no plain image to compare it with. Tiled is already gated on the device
+    // taking `VK_EXT_image_drm_format_modifier` above.
+    if !tiled {
+        ensure_native_layout(
+            raw,
+            vk_format,
+            width,
+            height,
+            &[vk::ImageAspectFlags::COLOR],
+            &[plane_layout],
+        )?;
+    }
     let mut modifier_layout = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
         .drm_format_modifier(modifier)
         .plane_layouts(std::slice::from_ref(&plane_layout));
@@ -366,7 +552,10 @@ fn import_plane(
         .mip_levels(1)
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
-        .tiling(if tiled {
+        // `DRM_FORMAT_MODIFIER_EXT` carries an explicit layout for `DRM_FORMAT_MOD_LINEAR` as well as
+        // for a vendor modifier, and is the only way to make the driver read the plane where the
+        // handle says it is rather than where the driver would put it.
+        .tiling(if explicit {
             vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT
         } else {
             vk::ImageTiling::LINEAR
@@ -374,7 +563,7 @@ fn import_plane(
         .usage(vk::ImageUsageFlags::SAMPLED)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
-    let image_info = if tiled {
+    let image_info = if explicit {
         image_info.push_next(&mut modifier_layout)
     } else {
         image_info
@@ -382,6 +571,7 @@ fn import_plane(
     let image =
         unsafe { raw.create_image(&image_info, None) }.context("create the imported image")?;
     let requirements = unsafe { raw.get_image_memory_requirements(image) };
+    ensure_buffer_backs_image(raw, image, requirements, plane.offset, &plane.fd)?;
 
     // The descriptor is consumed by the import, so hand over a duplicate and let the driver own it.
     let fd = plane
