@@ -35,10 +35,10 @@ use crate::{linux::{Backend, DisplayConnection, HeadlessConnection, LinuxDispatc
 use gpui_engine::PlatformTextSystem;
 use gpui_platform::{
     ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, DisplayId, ForegroundExecutor,
-    GpuAdapterInfo, GpuPreference, GraphicalEnvironment, MenuCommandId, PathPromptOptions, Platform,
-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem,
-    PlatformWindow, RunnableVariant, Task, ThermalState, WindowAppearance, WindowButtonLayout,
-    WindowId, WindowParams, WindowingModes, WindowingRequest,
+    GpuAdapterInfo, GpuId, GpuPreference, GraphicalEnvironment, MenuCommandId, PathPromptOptions,
+    Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu,
+    PlatformMenuItem, PlatformWindow, RunnableVariant, Task, ThermalState, WindowAppearance,
+    WindowButtonLayout, WindowId, WindowParams, WindowingModes, WindowingRequest,
 };
 #[cfg(any(feature = "wayland", feature = "x11"))]
 use gpui_types::{Pixels, Point, px};
@@ -82,6 +82,31 @@ pub(crate) struct PlatformHandlers {
 pub(crate) enum SystemPowerEvent {
     Sleep,
     Wake,
+}
+
+/// The debug override, lowered to a [`GpuPreference::Device`].
+///
+/// It lives here, not in the renderer or the shared platform crate, because a debug variable is an
+/// OS-integration detail: the one path the renderer sees is `set_gpu_preference`, which an
+/// application's stated preference also takes. A malformed value is logged and ignored rather than
+/// silently falling through to a different GPU.
+pub(crate) fn gpu_preference_from_env() -> Option<GpuPreference> {
+    match std::env::var("ZED_DEVICE_ID") {
+        Ok(value) => match GpuId::parse_pci_id(&value) {
+            Some(device_id) => Some(GpuPreference::Device(GpuId::by_device(device_id))),
+            None => {
+                log::error!(
+                    "ZED_DEVICE_ID: expected a four-digit hexadecimal PCI id, got {value:?}"
+                );
+                None
+            }
+        },
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => {
+            log::error!("ZED_DEVICE_ID: could not be read: {error}");
+            None
+        }
+    }
 }
 
 pub(crate) struct LinuxCommon {
@@ -140,7 +165,7 @@ impl LinuxCommon {
             appearance: WindowAppearance::Light,
             auto_hide_scrollbars: false,
             button_layout: WindowButtonLayout::linux_default(),
-            gpu_preference: GpuPreference::from_env().unwrap_or_default(),
+            gpu_preference: gpu_preference_from_env().unwrap_or_default(),
             callbacks,
             signal,
             app_name: None,

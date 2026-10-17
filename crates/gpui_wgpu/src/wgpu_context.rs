@@ -230,11 +230,19 @@ impl WgpuContext {
         ))
     }
 
+    /// The headless context, selecting the adapter by `gpu_preference`.
+    ///
+    /// The context is cached process-wide, so only the first caller's preference takes effect: a
+    /// later call gets the device that already exists. Headless has no platform to state a
+    /// preference through `set_gpu_preference`, so a caller that must pin a GPU — the dma-buf tests
+    /// pinning one card of a hybrid laptop — passes it here.
     #[cfg(all(
         not(target_family = "wasm"),
         any(test, feature = "bench-support", feature = "test-support", feature = "headless")
     ))]
-    pub(crate) fn new_headless() -> anyhow::Result<(Self, wgpu::TextureFormat)> {
+    pub(crate) fn new_headless_with(
+        gpu_preference: GpuPreference,
+    ) -> anyhow::Result<(Self, wgpu::TextureFormat)> {
         // Creating a device takes tens of milliseconds, and benchmarks create a headless
         // renderer for every window they open, so the process shares one device until it
         // is lost. A static rather than a thread-local: the cached device is never dropped,
@@ -247,7 +255,7 @@ impl WgpuContext {
         {
             return Ok((context.clone(), *format));
         }
-        let created = Self::create_headless()?;
+        let created = Self::create_headless(gpu_preference)?;
         *headless = Some(created.clone());
         Ok(created)
     }
@@ -256,11 +264,10 @@ impl WgpuContext {
         not(target_family = "wasm"),
         any(test, feature = "bench-support", feature = "test-support", feature = "headless")
     ))]
-    fn create_headless() -> anyhow::Result<(Self, wgpu::TextureFormat)> {
+    fn create_headless(
+        gpu_preference: GpuPreference,
+    ) -> anyhow::Result<(Self, wgpu::TextureFormat)> {
         let instance = Self::instance(None);
-        // Headless has no platform to state a preference, so `ZED_DEVICE_ID` is the only override.
-        // Without it, keep `Auto`'s ranking — what the tests and benchmarks expect.
-        let gpu_preference = GpuPreference::from_env().unwrap_or(GpuPreference::Auto);
         let (adapter, device, queue, dual_source_blending, color_texture_format, target_format) =
             pollster::block_on(async {
                 let mut adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;

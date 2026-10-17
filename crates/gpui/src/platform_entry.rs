@@ -118,6 +118,21 @@ pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
 /// Returns a new [`crate::SceneRenderer`] for the current platform, if available.
 #[cfg(any(feature = "bench-support", feature = "test-support"))]
 pub fn current_headless_renderer() -> anyhow::Result<Option<Box<dyn crate::SceneRenderer>>> {
+    current_headless_renderer_with(crate::GpuPreference::Auto)
+}
+
+/// As [`current_headless_renderer`], selecting the adapter by `gpu_preference` where the headless
+/// renderer is `wgpu`.
+///
+/// Metal's headless renderer takes no preference, and a platform with no headless renderer returns
+/// `Ok(None)`; the argument is ignored in both cases. The wgpu context is cached process-wide, so
+/// only the first renderer's preference takes effect.
+#[cfg(any(feature = "bench-support", feature = "test-support"))]
+pub fn current_headless_renderer_with(
+    gpu_preference: crate::GpuPreference,
+) -> anyhow::Result<Option<Box<dyn crate::SceneRenderer>>> {
+    let _ = &gpu_preference;
+
     #[cfg(target_os = "macos")]
     {
         Ok(Some(Box::new(
@@ -125,14 +140,11 @@ pub fn current_headless_renderer() -> anyhow::Result<Option<Box<dyn crate::Scene
         )))
     }
 
-    #[cfg(all(
-        feature = "platform",
-        any(target_os = "linux", target_os = "freebsd")
-    ))]
+    #[cfg(all(feature = "platform", any(target_os = "linux", target_os = "freebsd")))]
     {
         // The Linux platform owns no renderer of its own: wgpu is the renderer a window uses here,
         // so a headless context renders through the same code a window drives.
-        gpui_linux::WgpuHeadlessRenderer::new()
+        gpui_linux::WgpuHeadlessRenderer::with_gpu_preference(gpu_preference)
             .map(|renderer| Some(Box::new(renderer) as Box<dyn crate::SceneRenderer>))
     }
 
