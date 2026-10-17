@@ -108,7 +108,20 @@ pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
 /// Returns a new [`crate::SceneRenderer`] for the current platform, if available.
 #[cfg(any(feature = "bench-support", feature = "test-support"))]
 pub fn current_headless_renderer() -> anyhow::Result<Option<Box<dyn crate::SceneRenderer>>> {
-    current_headless_renderer_with(crate::GpuPreference::Auto)
+    #[cfg(all(feature = "platform", any(target_os = "linux", target_os = "freebsd")))]
+    {
+        // Headless has no platform instance to ask, so the platform crate supplies its debug
+        // preference directly: the same `ZED_DEVICE_ID` lowering a windowed run gets through
+        // `set_gpu_preference`.
+        current_headless_renderer_with(
+            gpui_linux::gpu_preference_from_env().unwrap_or(crate::GpuPreference::Auto),
+        )
+    }
+
+    #[cfg(not(all(feature = "platform", any(target_os = "linux", target_os = "freebsd"))))]
+    {
+        current_headless_renderer_with(crate::GpuPreference::Auto)
+    }
 }
 
 /// As [`current_headless_renderer`], selecting the adapter by `gpu_preference` where the headless

@@ -17,6 +17,8 @@ pub use dispatcher::*;
 pub(crate) use headless::*;
 pub(crate) use keyboard::*;
 pub(crate) use platform::*;
+/// The debug GPU override, for the headless entry point that has no platform instance.
+pub use platform::gpu_preference_from_env;
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(crate) use text_system::*;
 #[cfg(feature = "wayland")]
