@@ -48,11 +48,12 @@ use crate::{
     AnyWindowHandle, AppContext, Arena, ArenaBox, Asset, AssetSource, BackgroundExecutor, Bounds,
     ClipboardItem, ClipboardReadError, CursorStyle, DefaultTextSystem, DispatchPhase,
     DisplayChanges, DisplayEvent, DisplayId, EventEmitter, ExternalDragPayload, FocusHandle,
-    FocusMap, ForegroundExecutor, FramePipeline, Global, KeyBinding, KeyContext, Keymap, Keystroke,
-    LayoutEngine, LayoutId, Menu, MenuCommandId, MenuItem, MissingGlyph, OwnedMenu, OwnedMenuItem,
-    PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
-    PlatformKeyboardMapper, Point, Priority, PromptBuilder, PromptButton, PromptHandle, PromptLevel,
-    Render, RenderImage, RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString,
+    FocusMap, ForegroundExecutor, FramePipeline, Global, GpuAdapterInfo, KeyBinding, KeyContext,
+    Keymap, Keystroke, LayoutEngine, LayoutId, Menu, MenuCommandId, MenuItem, MissingGlyph,
+    OwnedMenu, OwnedMenuItem, PathPromptOptions, Pixels, Platform, PlatformDisplay,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, Point, Priority, PromptBuilder, PromptButton,
+    PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle, Reservation,
+    ScreenCaptureSource, SharedString,
     StandardImmediatePipeline, SubscriberSet, Subscription, SvgRenderer, SystemNotification,
     SystemNotificationResponse, SystemWindowTab, Task, TextRenderingMode, TextSystem, ThermalState,
     Window, WindowAppearance, WindowButtonLayout, WindowHandle, WindowHost, WindowId,
@@ -2291,6 +2292,24 @@ impl App {
     /// Accessor for the text system.
     pub fn text_system(&self) -> &Arc<dyn TextSystem> {
         &self.text_system
+    }
+
+    /// The adapters this process could render on.
+    ///
+    /// No device is created to answer this, so it is safe to call before the first window — but the
+    /// renderer chooses its adapter when the first window is created, so this and
+    /// [`active_gpu`](Self::active_gpu) can disagree until then. A platform that cannot enumerate
+    /// returns an empty list.
+    pub fn enumerate_gpus(&self) -> Vec<GpuAdapterInfo> {
+        self.platform.enumerate_gpus()
+    }
+
+    /// The adapter the renderer actually chose, or `None` before the first window has made one.
+    ///
+    /// Once a device exists the choice is process-wide, so this is the GPU every window draws
+    /// through. A platform that cannot report it returns `None`.
+    pub fn active_gpu(&self) -> Option<GpuAdapterInfo> {
+        self.platform.active_gpu()
     }
 
     /// Invokes a callback with grapheme clusters that exhausted font fallback.

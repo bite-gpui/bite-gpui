@@ -359,6 +359,16 @@ impl Drop for X11Connection {
 }
 
 impl X11Connection {
+    /// The adapters the renderer could choose between.
+    pub(crate) fn enumerate_gpus(&self) -> Vec<gpui_platform::GpuAdapterInfo> {
+        self.0.enumerate_gpus()
+    }
+
+    /// The adapter the shared context renders on, once it has one.
+    pub(crate) fn active_gpu(&self) -> Option<gpui_platform::GpuAdapterInfo> {
+        self.0.active_gpu()
+    }
+
     /// Connects to the X server `environment` names and registers its event sources on
     /// `handle`.
     ///
@@ -1667,6 +1677,14 @@ impl X11Client {
         .map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
     }
 
+    fn enumerate_gpus(&self) -> Vec<gpui_platform::GpuAdapterInfo> {
+        crate::linux::platform::enumerate_gpus(&self.0.borrow().gpu_context)
+    }
+
+    fn active_gpu(&self) -> Option<gpui_platform::GpuAdapterInfo> {
+        crate::linux::platform::active_gpu(&self.0.borrow().gpu_context)
+    }
+
     #[cfg(feature = "screen-capture")]
     pub(crate) fn is_screen_capture_supported(&self) -> bool {
         true
@@ -1703,7 +1721,7 @@ impl X11Client {
         let scale_factor = state.scale_factor;
         let appearance = state.common.borrow().appearance;
         let compositor_gpu = state.compositor_gpu.take();
-        let gpu_preference = state.common.gpu_preference;
+        let gpu_preference = state.common.borrow().gpu_preference.clone();
         let supports_xinput_gestures = state.supports_xinput_gestures;
         let is_bgr = state
             .resource_database

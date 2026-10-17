@@ -1296,6 +1296,14 @@ impl WaylandConnection {
         true
     }
 
+    pub(crate) fn enumerate_gpus(&self) -> Vec<gpui_platform::GpuAdapterInfo> {
+        crate::linux::platform::enumerate_gpus(&self.0.borrow().gpu_context)
+    }
+
+    pub(crate) fn active_gpu(&self) -> Option<gpui_platform::GpuAdapterInfo> {
+        crate::linux::platform::active_gpu(&self.0.borrow().gpu_context)
+    }
+
     #[cfg(feature = "screen-capture")]
     pub(crate) fn screen_capture_sources(
         &self,
@@ -1357,7 +1365,7 @@ impl WaylandConnection {
 
         let appearance = state.common.borrow().appearance;
         let compositor_gpu = state.compositor_gpu.take();
-        let gpu_preference = state.common.gpu_preference;
+        let gpu_preference = state.common.borrow().gpu_preference.clone();
 
         let (window, surface_id) = WaylandWindow::new(
             handle,

@@ -126,6 +126,14 @@ impl DisplayConnection {
         dispatch!(self, connection => connection.displays(), headless(connection) => connection.displays())
     }
 
+    pub(crate) fn enumerate_gpus(&self) -> Vec<gpui_platform::GpuAdapterInfo> {
+        dispatch!(self, connection => connection.enumerate_gpus(), headless => Vec::new())
+    }
+
+    pub(crate) fn active_gpu(&self) -> Option<gpui_platform::GpuAdapterInfo> {
+        dispatch!(self, connection => connection.active_gpu(), headless => None)
+    }
+
     pub(crate) fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
         dispatch!(
             self,

@@ -410,7 +410,7 @@ impl WgpuRenderer {
                 instance,
                 &surface,
                 compositor_gpu,
-                gpu_preference,
+                gpu_preference.clone(),
             )?),
         };
 
@@ -2666,7 +2666,7 @@ impl WgpuRenderer {
                 instance,
                 &surface,
                 self.compositor_gpu,
-                self.gpu_preference,
+                self.gpu_preference.clone(),
             )?;
             *gpu_context.borrow_mut() = Some(new_context);
             surface
@@ -2698,7 +2698,7 @@ impl WgpuRenderer {
             surface,
             config,
             self.compositor_gpu,
-            self.gpu_preference,
+            self.gpu_preference.clone(),
             self.atlas.clone(),
         )?;
         self.set_subpixel_layout(is_bgr);

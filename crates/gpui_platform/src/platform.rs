@@ -6,11 +6,11 @@
 
 use crate::{
     ActivityGuard, AppLifecyclePhase, BackgroundExecutor, ClipboardItem, ClipboardReadError,
-    CursorStyle, ForegroundExecutor, GpuPreference, MenuCommandId, PathPromptOptions, PlatformDisplay,
-    PlatformGestures, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu,
-    PlatformMenuItem, PlatformWindow, ScreenCaptureSource, SystemNotification,
-    SystemNotificationResponse, Task, ThermalState, WindowAppearance, WindowButtonLayout, WindowId,
-    WindowParams,
+    CursorStyle, ForegroundExecutor, GpuAdapterInfo, GpuPreference, MenuCommandId,
+    PathPromptOptions, PlatformDisplay, PlatformGestures, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformWindow, ScreenCaptureSource,
+    SystemNotification, SystemNotificationResponse, Task, ThermalState, WindowAppearance,
+    WindowButtonLayout, WindowId, WindowParams,
 };
 use anyhow::Result;
 use futures::channel::oneshot;
@@ -275,6 +275,27 @@ pub trait Platform: 'static {
     /// the application runs. A backend that cannot choose ignores it. See decision `0008` in the
     /// project record, `decisions/0008-gpu-preference-and-enumeration.md`.
     fn set_gpu_preference(&self, _preference: GpuPreference) {}
+
+    /// The adapters the application could render on.
+    ///
+    /// Enumeration happens without creating a device, so this is safe to call before
+    /// [`run`](Self::run) and is what a preferences panel reads; it is also the list a
+    /// [`GpuPreference::Custom`] selector chooses from. The order is the platform's; a caller that
+    /// wants a particular one states a preference rather than indexing into this list. A backend
+    /// that cannot enumerate — a headless platform, or one whose renderer is not wgpu — returns an
+    /// empty list.
+    fn enumerate_gpus(&self) -> Vec<GpuAdapterInfo> {
+        Vec::new()
+    }
+
+    /// The adapter the renderer actually chose, once it has chosen one.
+    ///
+    /// The device is process-wide and selected before the first window, so the answer is `None`
+    /// until a window has created one; after that it is the adapter every window draws through. A
+    /// platform that cannot report it returns `None`.
+    fn active_gpu(&self) -> Option<GpuAdapterInfo> {
+        None
+    }
 
     /// Returns the window button layout configuration when supported.
     fn button_layout(&self) -> Option<WindowButtonLayout> {
