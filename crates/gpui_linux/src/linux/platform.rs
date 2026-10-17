@@ -88,9 +88,10 @@ pub(crate) enum SystemPowerEvent {
 ///
 /// It lives here, not in the renderer or the shared platform crate, because a debug variable is an
 /// OS-integration detail: the one path the renderer sees is `set_gpu_preference`, which an
-/// application's stated preference also takes. A malformed value is logged and ignored rather than
-/// silently falling through to a different GPU.
-pub(crate) fn gpu_preference_from_env() -> Option<GpuPreference> {
+/// application's stated preference also takes. The headless entry point has no platform instance to
+/// ask, so it calls this directly. A malformed value is logged and ignored rather than silently
+/// falling through to a different GPU.
+pub fn gpu_preference_from_env() -> Option<GpuPreference> {
     match std::env::var("ZED_DEVICE_ID") {
         Ok(value) => match GpuId::parse_pci_id(&value) {
             Some(device_id) => Some(GpuPreference::Device(GpuId::by_device(device_id))),
