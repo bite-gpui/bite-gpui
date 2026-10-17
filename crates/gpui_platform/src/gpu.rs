@@ -41,10 +41,10 @@ impl GpuId {
         self.device_id == device_id && self.vendor_id.is_none_or(|vendor| vendor == vendor_id)
     }
 
-    /// Parse the four-hex-digit PCI device id `ZED_DEVICE_ID` carries.
+    /// Parse a four-hex-digit PCI device id, such as a debug override carries.
     ///
-    /// The variable is documented as hexadecimal; a decimal-looking value such as `6422` parses as
-    /// the hex `0x6422`, matches nothing, and silently falls through to the default adapter.
+    /// The id is hexadecimal; a decimal-looking value such as `6422` parses as the hex `0x6422`,
+    /// matches nothing, and silently falls through to the default adapter.
     pub fn parse_pci_id(value: &str) -> Option<u32> {
         let id = value.trim();
         let id = id
@@ -117,32 +117,6 @@ impl std::fmt::Debug for GpuPreference {
             Self::HighPerformance => f.write_str("HighPerformance"),
             Self::Device(id) => f.debug_tuple("Device").field(id).finish(),
             Self::Custom(_) => f.write_str("Custom(..)"),
-        }
-    }
-}
-
-impl GpuPreference {
-    /// The preference `ZED_DEVICE_ID` names, lowered to [`Device`](Self::Device).
-    ///
-    /// This is the debug override. It is read by the platform, so an application's stated preference
-    /// overrides it rather than silently losing to an environment variable. Headless paths, which
-    /// have no platform to state one, read it too.
-    pub fn from_env() -> Option<Self> {
-        match std::env::var("ZED_DEVICE_ID") {
-            Ok(value) => match GpuId::parse_pci_id(&value) {
-                Some(device_id) => Some(Self::Device(GpuId::by_device(device_id))),
-                None => {
-                    log::error!(
-                        "ZED_DEVICE_ID: expected a four-digit hexadecimal PCI id, got {value:?}"
-                    );
-                    None
-                }
-            },
-            Err(std::env::VarError::NotPresent) => None,
-            Err(error) => {
-                log::error!("ZED_DEVICE_ID: could not be read: {error}");
-                None
-            }
         }
     }
 }
