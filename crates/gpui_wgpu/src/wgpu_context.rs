@@ -1,5 +1,5 @@
 #[cfg(not(target_family = "wasm"))]
-use gpui_platform::GpuPreference;
+use gpui_platform::{GpuAdapterInfo, GpuBackend, GpuDeviceType, GpuPreference};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -124,7 +124,63 @@ pub struct CompositorGpuHint {
     pub device_id: u32,
 }
 
+/// Describe one adapter in the terms `gpui_platform` publishes.
+///
+/// `wgpu`'s vocabulary stops at this crate's boundary: `gpui_platform` is compiled for backends
+/// that have no `wgpu`, and an application choosing a GPU should not have to depend on the one the
+/// Linux renderer happens to use.
+#[cfg(not(target_family = "wasm"))]
+pub fn adapter_info(info: &wgpu::AdapterInfo) -> GpuAdapterInfo {
+    GpuAdapterInfo {
+        name: info.name.clone(),
+        device_type: match info.device_type {
+            wgpu::DeviceType::DiscreteGpu => GpuDeviceType::Discrete,
+            wgpu::DeviceType::IntegratedGpu => GpuDeviceType::Integrated,
+            wgpu::DeviceType::VirtualGpu => GpuDeviceType::Virtual,
+            wgpu::DeviceType::Cpu => GpuDeviceType::Cpu,
+            wgpu::DeviceType::Other => GpuDeviceType::Other,
+        },
+        vendor_id: info.vendor,
+        device_id: info.device,
+        backend: match info.backend {
+            wgpu::Backend::Vulkan => GpuBackend::Vulkan,
+            wgpu::Backend::Metal => GpuBackend::Metal,
+            wgpu::Backend::Dx12 => GpuBackend::Dx12,
+            wgpu::Backend::Gl => GpuBackend::Gl,
+            wgpu::Backend::BrowserWebGpu => GpuBackend::BrowserWebGpu,
+            wgpu::Backend::Noop => GpuBackend::Other,
+        },
+        is_software: info.device_type == wgpu::DeviceType::Cpu,
+    }
+}
+
+/// Every adapter this process could render on.
+///
+/// It creates an instance and enumerates, but no device: that is the cost enumeration exists to
+/// avoid, and the reason the answer carries identity and class only. A caller that already has a
+/// context should use [`enumerate_adapters_from`] with its instance, so the list is the one that
+/// context could actually have chosen from.
+#[cfg(not(target_family = "wasm"))]
+pub fn enumerate_adapters() -> Vec<GpuAdapterInfo> {
+    enumerate_adapters_from(&WgpuContext::instance(None))
+}
+
+/// Every adapter `instance` reports, in the backend's order.
+#[cfg(not(target_family = "wasm"))]
+pub fn enumerate_adapters_from(instance: &wgpu::Instance) -> Vec<GpuAdapterInfo> {
+    pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()))
+        .iter()
+        .map(|adapter| adapter_info(&adapter.get_info()))
+        .collect()
+}
+
 impl WgpuContext {
+    /// Describe the adapter this context renders on, in the terms `gpui_platform` publishes.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn adapter_info(&self) -> GpuAdapterInfo {
+        adapter_info(&self.adapter.get_info())
+    }
+
     #[cfg(not(target_family = "wasm"))]
     pub fn new(
         instance: wgpu::Instance,
@@ -208,7 +264,7 @@ impl WgpuContext {
         let (adapter, device, queue, dual_source_blending, color_texture_format, target_format) =
             pollster::block_on(async {
                 let mut adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
-                Self::sort_adapters(&mut adapters, &gpu_preference, None);
+                Self::order_adapters(&mut adapters, &gpu_preference, None)?;
 
                 for adapter in adapters {
                     let adapter_info = adapter.get_info();
@@ -605,6 +661,12 @@ impl WgpuContext {
             anyhow::bail!("No GPU adapters found");
         }
 
+        // `Custom` names one adapter rather than ordering them, so it is resolved before the
+        // ranking: the chosen adapter goes first and the rest stay as fallbacks in `Auto`'s order.
+        // Resolving it here means the surface test below still gets a chance to reject the choice and
+        // try the next, while the application can read back what it actually got.
+        Self::order_adapters(&mut adapters, gpu_preference, compositor_gpu)?;
+
         if let GpuPreference::Device(gpu_id) = gpu_preference {
             log::info!("GPU preference: device {:#06x}", gpu_id.device_id);
         }
@@ -669,6 +731,35 @@ impl WgpuContext {
         anyhow::bail!("No GPU adapter found that can configure the display surface")
     }
 
+    /// Order `adapters` for `preference`, resolving a custom choice first.
+    ///
+    /// A custom preference names one adapter, so it is not part of the ranking: the chosen adapter is
+    /// moved to the front and the rest keep `Auto`'s order as fallbacks. Everything else goes through
+    /// [`sort_adapters`].
+    #[cfg(not(target_family = "wasm"))]
+    fn order_adapters(
+        adapters: &mut Vec<wgpu::Adapter>,
+        preference: &GpuPreference,
+        compositor_gpu: Option<&CompositorGpuHint>,
+    ) -> anyhow::Result<()> {
+        let GpuPreference::Custom(selector) = preference else {
+            Self::sort_adapters(adapters, preference, compositor_gpu);
+            return Ok(());
+        };
+
+        let info: Vec<GpuAdapterInfo> = adapters
+            .iter()
+            .map(|adapter| adapter_info(&adapter.get_info()))
+            .collect();
+        let chosen = custom_choice(&info, selector.as_ref())?;
+        let adapter = adapters.remove(chosen);
+        // The tail is a fallback, not a ranked preference, so it keeps the historical order: if the
+        // display cannot be configured on the chosen adapter, the next best one is tried.
+        Self::sort_adapters(adapters, &GpuPreference::Auto, compositor_gpu);
+        adapters.insert(0, adapter);
+        Ok(())
+    }
+
     /// Sort adapters into the order `preference` asks for.
     ///
     /// The slot meanings are in [`adapter_key`]. Under `Auto` the tiers are the historical ones: the
@@ -681,9 +772,9 @@ impl WgpuContext {
         gpu_preference: &GpuPreference,
         compositor_gpu: Option<&CompositorGpuHint>,
     ) {
-        adapters.sort_by_key(|adapter| {
+        adapters.sort_by_cached_key(|adapter| {
             adapter_key(
-                &AdapterFacts::from(&adapter.get_info()),
+                &adapter_info(&adapter.get_info()),
                 gpu_preference,
                 compositor_gpu,
             )
@@ -801,25 +892,25 @@ impl WgpuContext {
     }
 }
 
-/// The adapter facts the ranking reads, so the ranking is testable without a `wgpu::Adapter`.
+/// Resolve a custom preference against the adapters that were enumerated.
+///
+/// The selector chooses one adapter out of the whole list — it does not rank them. `None`, or an
+/// index outside the list, is an error rather than a fallback: the application and this code saw the
+/// same enumeration, so a disagreement is a bug worth naming instead of silently drawing on a GPU
+/// the application did not choose.
 #[cfg(not(target_family = "wasm"))]
-#[derive(Clone, Copy, Debug)]
-struct AdapterFacts {
-    vendor: u32,
-    device: u32,
-    device_type: wgpu::DeviceType,
-    backend: wgpu::Backend,
-}
-
-#[cfg(not(target_family = "wasm"))]
-impl From<&wgpu::AdapterInfo> for AdapterFacts {
-    fn from(info: &wgpu::AdapterInfo) -> Self {
-        Self {
-            vendor: info.vendor,
-            device: info.device,
-            device_type: info.device_type,
-            backend: info.backend,
-        }
+fn custom_choice(
+    adapters: &[GpuAdapterInfo],
+    selector: &dyn Fn(&[GpuAdapterInfo]) -> Option<usize>,
+) -> anyhow::Result<usize> {
+    match selector(adapters) {
+        Some(index) if index < adapters.len() => Ok(index),
+        Some(index) => anyhow::bail!(
+            "The application's custom GPU preference chose adapter {index}, but only {} adapter(s) \
+             were enumerated",
+            adapters.len()
+        ),
+        None => anyhow::bail!("The application's custom GPU preference chose no adapter"),
     }
 }
 
@@ -832,40 +923,46 @@ impl From<&wgpu::AdapterInfo> for AdapterFacts {
 /// | `Auto` | 0 | compositor match | device type (discrete first) | backend |
 /// | `Device` | named match | compositor match | device type (discrete first) | backend |
 /// | `LowPower` / `HighPerformance` | 0 | device type (by preference) | compositor match | backend |
+///
+/// `Custom` never reaches this function: it names one adapter, which
+/// [`order_adapters`](WgpuContext::order_adapters) resolves before sorting. The arm below keeps the
+/// match exhaustive and ranks such an adapter as `Auto` would.
 #[cfg(not(target_family = "wasm"))]
 fn adapter_key(
-    facts: &AdapterFacts,
+    info: &GpuAdapterInfo,
     preference: &GpuPreference,
     compositor_gpu: Option<&CompositorGpuHint>,
 ) -> (u8, u8, u8, u8) {
     // Backends like OpenGL report device=0 for all adapters, so device-based matching is only
     // meaningful when non-zero.
-    let device_known = facts.device != 0;
+    let device_known = info.device_id != 0;
     let compositor_match: u8 = match compositor_gpu {
         Some(hint)
             if device_known
-                && facts.vendor == hint.vendor_id
-                && facts.device == hint.device_id =>
+                && info.vendor_id == hint.vendor_id
+                && info.device_id == hint.device_id =>
         {
             0
         }
         _ => 1,
     };
-    let auto_type: u8 = match facts.device_type {
-        wgpu::DeviceType::DiscreteGpu => 0,
-        wgpu::DeviceType::IntegratedGpu => 1,
-        wgpu::DeviceType::Other => 2,
-        wgpu::DeviceType::VirtualGpu => 3,
-        wgpu::DeviceType::Cpu => 4,
+    let auto_type: u8 = match info.device_type {
+        GpuDeviceType::Discrete => 0,
+        GpuDeviceType::Integrated => 1,
+        GpuDeviceType::Other => 2,
+        GpuDeviceType::Virtual => 3,
+        GpuDeviceType::Cpu => 4,
     };
-    let backend_priority: u8 = match facts.backend {
-        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => 0,
+    let backend_priority: u8 = match info.backend {
+        GpuBackend::Vulkan | GpuBackend::Metal | GpuBackend::Dx12 => 0,
         _ => 1,
     };
     match preference {
-        GpuPreference::Auto => (0, compositor_match, auto_type, backend_priority),
+        GpuPreference::Auto | GpuPreference::Custom(_) => {
+            (0, compositor_match, auto_type, backend_priority)
+        }
         GpuPreference::Device(gpu_id) => {
-            let named: u8 = if device_known && gpu_id.matches(facts.vendor, facts.device) {
+            let named: u8 = if device_known && gpu_id.matches(info.vendor_id, info.device_id) {
                 0
             } else {
                 1
@@ -874,13 +971,13 @@ fn adapter_key(
         }
         GpuPreference::LowPower => (
             0,
-            type_priority(facts.device_type, true),
+            type_priority(info.device_type, true),
             compositor_match,
             backend_priority,
         ),
         GpuPreference::HighPerformance => (
             0,
-            type_priority(facts.device_type, false),
+            type_priority(info.device_type, false),
             compositor_match,
             backend_priority,
         ),
@@ -890,15 +987,15 @@ fn adapter_key(
 /// The device-type order under an explicit power preference. A CPU adapter ranks last in both: it is
 /// a fallback, not a low-power device.
 #[cfg(not(target_family = "wasm"))]
-fn type_priority(device_type: wgpu::DeviceType, low_power: bool) -> u8 {
+fn type_priority(device_type: GpuDeviceType, low_power: bool) -> u8 {
     match (device_type, low_power) {
-        (wgpu::DeviceType::IntegratedGpu, true) => 0,
-        (wgpu::DeviceType::DiscreteGpu, false) => 0,
-        (wgpu::DeviceType::Other, _) => 1,
-        (wgpu::DeviceType::IntegratedGpu, false) => 2,
-        (wgpu::DeviceType::DiscreteGpu, true) => 2,
-        (wgpu::DeviceType::VirtualGpu, _) => 3,
-        (wgpu::DeviceType::Cpu, _) => 4,
+        (GpuDeviceType::Integrated, true) => 0,
+        (GpuDeviceType::Discrete, false) => 0,
+        (GpuDeviceType::Other, _) => 1,
+        (GpuDeviceType::Integrated, false) => 2,
+        (GpuDeviceType::Discrete, true) => 2,
+        (GpuDeviceType::Virtual, _) => 3,
+        (GpuDeviceType::Cpu, _) => 4,
     }
 }
 
@@ -1000,12 +1097,19 @@ mod tests {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn facts(device_type: wgpu::DeviceType, vendor: u32, device: u32) -> super::AdapterFacts {
-        super::AdapterFacts {
-            vendor,
-            device,
+    fn facts(
+        name: &str,
+        device_type: gpui_platform::GpuDeviceType,
+        vendor: u32,
+        device: u32,
+    ) -> gpui_platform::GpuAdapterInfo {
+        gpui_platform::GpuAdapterInfo {
+            name: name.into(),
             device_type,
-            backend: wgpu::Backend::Vulkan,
+            vendor_id: vendor,
+            device_id: device,
+            backend: gpui_platform::GpuBackend::Vulkan,
+            is_software: false,
         }
     }
 
@@ -1013,10 +1117,10 @@ mod tests {
     #[test]
     fn the_preference_orders_the_adapters_it_names() {
         use super::{CompositorGpuHint, adapter_key};
-        use gpui_platform::GpuPreference;
+        use gpui_platform::{GpuDeviceType, GpuPreference};
 
-        let integrated = facts(wgpu::DeviceType::IntegratedGpu, 0x8086, 0x1916);
-        let discrete = facts(wgpu::DeviceType::DiscreteGpu, 0x10de, 0x1346);
+        let integrated = facts("integrated", GpuDeviceType::Integrated, 0x8086, 0x1916);
+        let discrete = facts("discrete", GpuDeviceType::Discrete, 0x10de, 0x1346);
         let on_the_discrete = CompositorGpuHint {
             vendor_id: 0x10de,
             device_id: 0x1346,
@@ -1061,10 +1165,10 @@ mod tests {
     #[test]
     fn a_named_device_ranks_first_and_an_absent_one_falls_back() {
         use super::adapter_key;
-        use gpui_platform::{GpuId, GpuPreference};
+        use gpui_platform::{GpuDeviceType, GpuId, GpuPreference};
 
-        let integrated = facts(wgpu::DeviceType::IntegratedGpu, 0x8086, 0x1916);
-        let discrete = facts(wgpu::DeviceType::DiscreteGpu, 0x10de, 0x1346);
+        let integrated = facts("integrated", GpuDeviceType::Integrated, 0x8086, 0x1916);
+        let discrete = facts("discrete", GpuDeviceType::Discrete, 0x10de, 0x1346);
 
         let named = GpuPreference::Device(GpuId {
             vendor_id: Some(0x8086),
@@ -1076,6 +1180,36 @@ mod tests {
         assert!(
             adapter_key(&discrete, &absent, None) < adapter_key(&integrated, &absent, None),
             "an absent device falls back to Auto's discrete-first order",
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_custom_preference_chooses_one_adapter() {
+        use super::custom_choice;
+        use gpui_platform::{GpuAdapterInfo, GpuDeviceType};
+
+        let adapters = [
+            facts("integrated", GpuDeviceType::Integrated, 0x8086, 0x1916),
+            facts("discrete", GpuDeviceType::Discrete, 0x10de, 0x1346),
+        ];
+
+        let choose_discrete =
+            |gpus: &[GpuAdapterInfo]| gpus.iter().position(|gpu| gpu.device_id == 0x1346);
+        assert_eq!(custom_choice(&adapters, &choose_discrete).unwrap(), 1);
+
+        let chose_nothing = |_: &[GpuAdapterInfo]| None;
+        assert!(
+            custom_choice(&adapters, &chose_nothing).is_err(),
+            "choosing no adapter is an error, not a silent fallback",
+        );
+
+        let out_of_range = |_: &[GpuAdapterInfo]| Some(2);
+        let error =
+            custom_choice(&adapters, &out_of_range).expect_err("an index past the list is refused");
+        assert!(
+            error.to_string().contains("only 2 adapter(s)"),
+            "the refusal names the shortfall: {error}",
         );
     }
 }

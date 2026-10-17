@@ -34,9 +34,10 @@ use crate::linux::{LinuxDispatcher, PriorityQueueCalloopReceiver};
 use gpui_engine::PlatformTextSystem;
 use gpui_platform::{
     ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, DisplayId, ForegroundExecutor,
-    GpuPreference, MenuCommandId, PathPromptOptions, Platform, PlatformDisplay, PlatformKeyboardLayout,
-    PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformWindow, RunnableVariant, Task,
-    ThermalState, WindowAppearance, WindowButtonLayout, WindowId, WindowParams,
+    GpuAdapterInfo, GpuPreference, MenuCommandId, PathPromptOptions, Platform, PlatformDisplay,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformWindow,
+    RunnableVariant, Task, ThermalState, WindowAppearance, WindowButtonLayout, WindowId,
+    WindowParams,
 };
 #[cfg(any(feature = "wayland", feature = "x11"))]
 use gpui_types::{Pixels, Point, px};
@@ -102,6 +103,17 @@ pub(crate) trait LinuxClient {
     fn active_window(&self) -> Option<WindowId>;
     fn window_stack(&self) -> Option<Vec<WindowId>>;
     fn run(&self);
+
+    /// The adapters this client's renderer could draw on. The default is for a backend that cannot
+    /// enumerate, such as headless mode.
+    fn enumerate_gpus(&self) -> Vec<GpuAdapterInfo> {
+        Vec::new()
+    }
+
+    /// The adapter the shared renderer context chose, once a window has created it.
+    fn active_gpu(&self) -> Option<GpuAdapterInfo> {
+        None
+    }
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
     fn window_identifier(
@@ -260,6 +272,29 @@ pub(crate) struct LinuxPlatform<P> {
     pub(crate) inner: P,
 }
 
+/// The adapters the renderer could choose between.
+///
+/// The context's own instance is used once one exists, so the list is the one the renderer can
+/// actually pick from. Before that a fresh instance enumerates; it creates no device, which is the
+/// cost this accessor exists to avoid. `try_borrow` because this can be asked during the window
+/// construction that is holding the slot mutably — returning nothing is better than panicking.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(crate) fn enumerate_gpus(gpu_context: &gpui_wgpu::WgpuContextSlot) -> Vec<GpuAdapterInfo> {
+    if let Ok(context) = gpu_context.try_borrow()
+        && let Some(context) = context.as_ref()
+    {
+        return gpui_wgpu::enumerate_adapters_from(&context.instance);
+    }
+    gpui_wgpu::enumerate_adapters()
+}
+
+/// The adapter the shared context renders on, once it has one.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(crate) fn active_gpu(gpu_context: &gpui_wgpu::WgpuContextSlot) -> Option<GpuAdapterInfo> {
+    let context = gpu_context.try_borrow().ok()?;
+    context.as_ref().map(|context| context.adapter_info())
+}
+
 impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
     fn background_executor(&self) -> BackgroundExecutor {
         self.inner
@@ -278,6 +313,14 @@ impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
     fn set_gpu_preference(&self, preference: GpuPreference) {
         self.inner
             .with_common(|common| common.gpu_preference = preference);
+    }
+
+    fn enumerate_gpus(&self) -> Vec<GpuAdapterInfo> {
+        self.inner.enumerate_gpus()
+    }
+
+    fn active_gpu(&self) -> Option<GpuAdapterInfo> {
+        self.inner.active_gpu()
     }
 
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout> {

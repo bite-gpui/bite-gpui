@@ -65,7 +65,7 @@ impl GpuId {
 /// stated on the application rather than per window. The default is [`LowPower`](Self::LowPower): on
 /// a hybrid laptop the panel is wired to the integrated GPU, so rendering on the discrete one keeps
 /// it powered for the window's lifetime and crosses PCIe on every frame.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub enum GpuPreference {
     /// Today's ranking: the compositor's hint, then device type (discrete, integrated, other,
     /// virtual, CPU), then backend.
@@ -77,6 +77,48 @@ pub enum GpuPreference {
     HighPerformance,
     /// A named adapter, matched by PCI identity. One that is not present falls back to [`Auto`].
     Device(GpuId),
+    /// A predicate that picks **one** adapter from the enumerated list.
+    ///
+    /// The closure receives every adapter the platform reports and returns the index of the one it
+    /// wants, or `None` when none will do. It chooses a GPU; it does not rank them.
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use gpui_platform::{GpuAdapterInfo, GpuDeviceType, GpuPreference};
+    ///
+    /// let preference = GpuPreference::Custom(Arc::new(|gpus: &[GpuAdapterInfo]| {
+    ///     // A producer that must share a dma-buf with the renderer names its GPU first, and
+    ///     // otherwise takes the integrated one — where the panel is wired on a hybrid laptop.
+    ///     gpus.iter()
+    ///         .position(|gpu| gpu.device_id == 0x1346)
+    ///         .or_else(|| {
+    ///             gpus.iter()
+    ///                 .position(|gpu| gpu.device_type == GpuDeviceType::Integrated)
+    ///         })
+    /// }));
+    /// ```
+    ///
+    /// The adapter named is tried first. If the display cannot be configured on it, the remaining
+    /// adapters follow in [`Auto`](Self::Auto)'s order — this is a preference, not a pin. An
+    /// application that must know what it got reads [`GpuAdapterInfo`] back through the app's
+    /// active-GPU accessor.
+    ///
+    /// `None`, or an index outside the list, fails the window with an error naming the shortfall: the
+    /// application saw the same list, so the two disagreeing is a bug worth surfacing rather than
+    /// silently drawing on a GPU the application did not choose.
+    Custom(std::sync::Arc<dyn Fn(&[GpuAdapterInfo]) -> Option<usize> + Send + Sync>),
+}
+
+impl std::fmt::Debug for GpuPreference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("Auto"),
+            Self::LowPower => f.write_str("LowPower"),
+            Self::HighPerformance => f.write_str("HighPerformance"),
+            Self::Device(id) => f.debug_tuple("Device").field(id).finish(),
+            Self::Custom(_) => f.write_str("Custom(..)"),
+        }
+    }
 }
 
 impl GpuPreference {
@@ -192,6 +234,14 @@ mod tests {
 
     #[test]
     fn the_default_preference_is_low_power() {
-        assert_eq!(GpuPreference::default(), GpuPreference::LowPower);
+        assert!(matches!(GpuPreference::default(), GpuPreference::LowPower));
+    }
+
+    #[test]
+    fn a_custom_preference_is_named_in_debug() {
+        use std::sync::Arc;
+
+        let preference = GpuPreference::Custom(Arc::new(|_| Some(0)));
+        assert_eq!(format!("{preference:?}"), "Custom(..)");
     }
 }

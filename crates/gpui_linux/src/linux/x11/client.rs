@@ -1595,6 +1595,14 @@ impl LinuxClient for X11Client {
         .map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
     }
 
+    fn enumerate_gpus(&self) -> Vec<gpui_platform::GpuAdapterInfo> {
+        crate::linux::platform::enumerate_gpus(&self.0.borrow().gpu_context)
+    }
+
+    fn active_gpu(&self) -> Option<gpui_platform::GpuAdapterInfo> {
+        crate::linux::platform::active_gpu(&self.0.borrow().gpu_context)
+    }
+
     fn display(&self, id: DisplayId) -> Option<Rc<dyn PlatformDisplay>> {
         let state = self.0.borrow();
 
@@ -1646,7 +1654,7 @@ impl LinuxClient for X11Client {
         let scale_factor = state.scale_factor;
         let appearance = state.common.appearance;
         let compositor_gpu = state.compositor_gpu.take();
-        let gpu_preference = state.common.gpu_preference;
+        let gpu_preference = state.common.gpu_preference.clone();
         let supports_xinput_gestures = state.supports_xinput_gestures;
         let is_bgr = state
             .resource_database
