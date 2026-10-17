@@ -44,6 +44,7 @@ use gpui_platform::{
     popup::PopupOptions,
     px, size,
 };
+use gpui_platform::GpuPreference;
 use gpui_wgpu::{CompositorGpuHint, WgpuRenderer, WgpuSurfaceConfig, wgpu};
 
 #[derive(Default)]
@@ -563,6 +564,7 @@ impl WaylandWindowState {
         globals: Globals,
         gpu_context: gpui_wgpu::WgpuContextSlot,
         compositor_gpu: Option<CompositorGpuHint>,
+        gpu_preference: GpuPreference,
         options: WindowParams,
         parent: Option<WaylandWindowStatePtr>,
     ) -> anyhow::Result<Self> {
@@ -602,6 +604,7 @@ impl WaylandWindowState {
                     &raw_window,
                     config,
                     compositor_gpu,
+                    gpu_preference,
                 )?),
             }
         };
@@ -926,6 +929,7 @@ impl WaylandWindow {
         globals: Globals,
         gpu_context: gpui_wgpu::WgpuContextSlot,
         compositor_gpu: Option<CompositorGpuHint>,
+        gpu_preference: GpuPreference,
         client: WaylandClientStatePtr,
         params: WindowParams,
         appearance: WindowAppearance,
@@ -964,6 +968,7 @@ impl WaylandWindow {
                 globals,
                 gpu_context,
                 compositor_gpu,
+                gpu_preference,
                 params,
                 parent,
             )?)),

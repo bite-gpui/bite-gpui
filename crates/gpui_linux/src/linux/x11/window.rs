@@ -11,6 +11,7 @@ use gpui_platform::{
     WindowDecorations, WindowId, WindowKind, WindowParams, WindowVisibility,
     popup::PopupNotSupportedError, px,
 };
+use gpui_platform::GpuPreference;
 use gpui_wgpu::{CompositorGpuHint, WgpuRenderer, WgpuSurfaceConfig};
 
 use collections::FxHashSet;
@@ -459,6 +460,7 @@ impl X11WindowState {
         executor: ForegroundExecutor,
         gpu_context: gpui_wgpu::WgpuContextSlot,
         compositor_gpu: Option<CompositorGpuHint>,
+        gpu_preference: GpuPreference,
         params: WindowParams,
         xcb: &Rc<XCBConnection>,
         client_side_decorations_supported: bool,
@@ -793,6 +795,7 @@ impl X11WindowState {
                         &raw_window,
                         config,
                         compositor_gpu,
+                        gpu_preference,
                     )?),
                 }
             };
@@ -942,6 +945,7 @@ impl X11Window {
         executor: ForegroundExecutor,
         gpu_context: gpui_wgpu::WgpuContextSlot,
         compositor_gpu: Option<CompositorGpuHint>,
+        gpu_preference: GpuPreference,
         params: WindowParams,
         xcb: &Rc<XCBConnection>,
         client_side_decorations_supported: bool,
@@ -961,6 +965,7 @@ impl X11Window {
                 executor,
                 gpu_context,
                 compositor_gpu,
+                gpu_preference,
                 params,
                 xcb,
                 client_side_decorations_supported,

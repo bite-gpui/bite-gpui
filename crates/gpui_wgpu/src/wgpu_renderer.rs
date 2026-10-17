@@ -11,7 +11,7 @@ use gpui_engine::{
     any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 use gpui_engine::GpuRenderer;
-use gpui_platform::{Background, Bounds, DevicePixels, GpuSpecs, Point, ScaledPixels, Size};
+use gpui_platform::{Background, Bounds, DevicePixels, GpuPreference, GpuSpecs, Point, ScaledPixels, Size};
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -321,6 +321,8 @@ pub struct WgpuRenderer {
     /// Compositor GPU hint for adapter selection (unused on WASM).
     #[allow(dead_code)]
     compositor_gpu: Option<CompositorGpuHint>,
+    /// Which GPU the application asked for, kept so device recovery re-selects the same one.
+    gpu_preference: GpuPreference,
     state: RendererState,
     surface_config: wgpu::SurfaceConfiguration,
     atlas: Arc<WgpuAtlas>,
@@ -365,6 +367,7 @@ impl WgpuRenderer {
         window: &W,
         config: WgpuSurfaceConfig,
         compositor_gpu: Option<CompositorGpuHint>,
+        gpu_preference: GpuPreference,
     ) -> anyhow::Result<Self>
     where
         W: HasWindowHandle + HasDisplayHandle + std::fmt::Debug + Send + Sync + Clone + 'static,
@@ -403,7 +406,12 @@ impl WgpuRenderer {
                 context.check_compatible_with_surface(&surface)?;
                 context
             }
-            None => ctx_ref.insert(WgpuContext::new(instance, &surface, compositor_gpu)?),
+            None => ctx_ref.insert(WgpuContext::new(
+                instance,
+                &surface,
+                compositor_gpu,
+                gpu_preference,
+            )?),
         };
 
         let atlas = Arc::new(WgpuAtlas::from_context(context));
@@ -414,6 +422,7 @@ impl WgpuRenderer {
             surface,
             config,
             compositor_gpu,
+            gpu_preference,
             atlas,
         )
     }
@@ -439,7 +448,15 @@ impl WgpuRenderer {
         config: WgpuSurfaceConfig,
     ) -> anyhow::Result<Self> {
         let atlas = Arc::new(WgpuAtlas::from_context(context));
-        Self::new_internal(None, context, surface, config, None, atlas)
+        Self::new_internal(
+            None,
+            context,
+            surface,
+            config,
+            None,
+            GpuPreference::Auto,
+            atlas,
+        )
     }
 
     fn new_internal(
@@ -448,6 +465,7 @@ impl WgpuRenderer {
         surface: wgpu::Surface<'static>,
         config: WgpuSurfaceConfig,
         compositor_gpu: Option<CompositorGpuHint>,
+        gpu_preference: GpuPreference,
         atlas: Arc<WgpuAtlas>,
     ) -> anyhow::Result<Self> {
         let surface_caps = surface.get_capabilities(&context.adapter);
@@ -544,6 +562,7 @@ impl WgpuRenderer {
         Ok(Self {
             context: gpu_context,
             compositor_gpu,
+            gpu_preference,
             state: RendererState::Ready { surface, core },
             surface_config,
             atlas,
@@ -2643,8 +2662,12 @@ impl WgpuRenderer {
 
             let instance = WgpuContext::instance(Some(Box::new(window.clone())));
             let surface = create_surface(&instance, window_handle.as_raw())?;
-            let new_context =
-                WgpuContext::new_rejecting_software(instance, &surface, self.compositor_gpu)?;
+            let new_context = WgpuContext::new_rejecting_software(
+                instance,
+                &surface,
+                self.compositor_gpu,
+                self.gpu_preference,
+            )?;
             *gpu_context.borrow_mut() = Some(new_context);
             surface
         } else {
@@ -2675,6 +2698,7 @@ impl WgpuRenderer {
             surface,
             config,
             self.compositor_gpu,
+            self.gpu_preference,
             self.atlas.clone(),
         )?;
         self.set_subpixel_layout(is_bgr);

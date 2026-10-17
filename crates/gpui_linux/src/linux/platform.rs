@@ -34,11 +34,11 @@ use xkbcommon::xkb::{self, Keycode, Keysym, State};
 use crate::{linux::{Backend, DisplayConnection, HeadlessConnection, LinuxDispatcher, PriorityQueueCalloopReceiver, select_backend}};
 use gpui_engine::PlatformTextSystem;
 use gpui_platform::{
-    ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
-    GraphicalEnvironment, MenuCommandId, PathPromptOptions, Platform, PlatformDisplay,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem,
-    PlatformWindow, RunnableVariant, Task, ThermalState, WindowAppearance,
-    WindowButtonLayout, WindowId, WindowParams, WindowingModes, WindowingRequest,
+    ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, DisplayId, ForegroundExecutor,
+    GpuPreference, GraphicalEnvironment, MenuCommandId, PathPromptOptions, Platform,
+    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem,
+    PlatformWindow, RunnableVariant, Task, ThermalState, WindowAppearance, WindowButtonLayout,
+    WindowId, WindowParams, WindowingModes, WindowingRequest,
 };
 #[cfg(any(feature = "wayland", feature = "x11"))]
 use gpui_types::{Pixels, Point, px};
@@ -91,6 +91,9 @@ pub(crate) struct LinuxCommon {
     pub(crate) appearance: WindowAppearance,
     pub(crate) auto_hide_scrollbars: bool,
     pub(crate) button_layout: WindowButtonLayout,
+    /// Which GPU the renderer should choose. Set on the application before it runs; the choice is
+    /// process-wide.
+    pub(crate) gpu_preference: GpuPreference,
     pub(crate) callbacks: PlatformHandlers,
     pub(crate) signal: LoopSignal,
     app_name: Option<String>,
@@ -137,6 +140,7 @@ impl LinuxCommon {
             appearance: WindowAppearance::Light,
             auto_hide_scrollbars: false,
             button_layout: WindowButtonLayout::linux_default(),
+            gpu_preference: GpuPreference::from_env().unwrap_or_default(),
             callbacks,
             signal,
             app_name: None,
@@ -554,6 +558,11 @@ impl Platform for LinuxPlatform {
 
     fn text_system(&self) -> Arc<dyn PlatformTextSystem> {
         self.with_common(|common| common.text_system.clone())
+    }
+
+    fn set_gpu_preference(&self, preference: GpuPreference) {
+        self.inner
+            .with_common(|common| common.gpu_preference = preference);
     }
 
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout> {

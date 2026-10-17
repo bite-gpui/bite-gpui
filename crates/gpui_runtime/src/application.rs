@@ -4,7 +4,8 @@
 use anyhow::Result;
 use gpui_authoring::{
     App, AppCell, AssetSource, AsyncApp, BackgroundExecutor, ForegroundExecutor, FramePipeline,
-    LayoutEngine, Platform, QuitMode, TextSystem, WindowId, WindowingRequest, http_client::HttpClient,
+    GpuPreference, LayoutEngine, Platform, QuitMode, TextSystem, WindowId, WindowingRequest,
+    http_client::HttpClient,
 };
 use std::{ffi::OsString, path::PathBuf, rc::Rc, sync::Arc};
 
@@ -93,6 +94,16 @@ impl Application {
     /// other platforms.
     pub fn with_windowing(self, request: WindowingRequest) -> Self {
         self.0.borrow_mut().set_initial_windowing(request);
+        self
+    }
+
+    /// States which GPU the renderer should run on.
+    ///
+    /// The device is process-wide and chosen before the first window, so set this before
+    /// [`run`](Self::run). The default is [`GpuPreference::LowPower`]. See decision `0008` in the
+    /// project record, `decisions/0008-gpu-preference-and-enumeration.md`.
+    pub fn with_gpu_preference(self, preference: GpuPreference) -> Self {
+        self.0.borrow().platform().set_gpu_preference(preference);
         self
     }
 

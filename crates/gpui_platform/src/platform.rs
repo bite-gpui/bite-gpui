@@ -6,7 +6,7 @@
 
 use crate::{
     ActivityGuard, AppLifecyclePhase, BackgroundExecutor, ClipboardItem, ClipboardReadError,
-    CursorStyle, ForegroundExecutor, MenuCommandId, PathPromptOptions, PlatformDisplay,
+    CursorStyle, ForegroundExecutor, GpuPreference, MenuCommandId, PathPromptOptions, PlatformDisplay,
     PlatformGestures, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu,
     PlatformMenuItem, PlatformWindow, ScreenCaptureSource, SystemNotification,
     SystemNotificationResponse, Task, ThermalState, WindowAppearance, WindowButtonLayout, WindowId,
@@ -268,6 +268,13 @@ pub trait Platform: 'static {
     /// a dark app theme even when the system is in light mode (or vice versa). A no-op on
     /// other platforms.
     fn set_window_appearance(&self, _appearance: Option<WindowAppearance>) {}
+
+    /// States which GPU the application prefers the renderer to run on.
+    ///
+    /// The device is process-wide and chosen before the first window, so this has to be set before
+    /// the application runs. A backend that cannot choose ignores it. See decision `0008` in the
+    /// project record, `decisions/0008-gpu-preference-and-enumeration.md`.
+    fn set_gpu_preference(&self, _preference: GpuPreference) {}
 
     /// Returns the window button layout configuration when supported.
     fn button_layout(&self) -> Option<WindowButtonLayout> {

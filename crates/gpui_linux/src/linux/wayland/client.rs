@@ -1357,12 +1357,14 @@ impl WaylandConnection {
 
         let appearance = state.common.borrow().appearance;
         let compositor_gpu = state.compositor_gpu.take();
+        let gpu_preference = state.common.gpu_preference;
 
         let (window, surface_id) = WaylandWindow::new(
             handle,
             state.globals.clone(),
             state.gpu_context.clone(),
             compositor_gpu,
+            gpu_preference,
             WaylandClientStatePtr(Rc::downgrade(&self.0)),
             params,
             appearance,

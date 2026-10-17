@@ -1,7 +1,5 @@
 #[cfg(not(target_family = "wasm"))]
-use anyhow::Context as _;
-#[cfg(not(target_family = "wasm"))]
-use gpui_util::ResultExt;
+use gpui_platform::GpuPreference;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -132,8 +130,9 @@ impl WgpuContext {
         instance: wgpu::Instance,
         surface: &wgpu::Surface<'_>,
         compositor_gpu: Option<CompositorGpuHint>,
+        gpu_preference: GpuPreference,
     ) -> anyhow::Result<Self> {
-        Self::new_with_options(instance, surface, compositor_gpu, false)
+        Self::new_with_options(instance, surface, compositor_gpu, gpu_preference, false)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -141,8 +140,9 @@ impl WgpuContext {
         instance: wgpu::Instance,
         surface: &wgpu::Surface<'_>,
         compositor_gpu: Option<CompositorGpuHint>,
+        gpu_preference: GpuPreference,
     ) -> anyhow::Result<Self> {
-        Self::new_with_options(instance, surface, compositor_gpu, true)
+        Self::new_with_options(instance, surface, compositor_gpu, gpu_preference, true)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -150,16 +150,15 @@ impl WgpuContext {
         instance: wgpu::Instance,
         surface: &wgpu::Surface<'_>,
         compositor_gpu: Option<CompositorGpuHint>,
+        gpu_preference: GpuPreference,
         reject_software: bool,
     ) -> anyhow::Result<Self> {
-        let device_id_filter = Self::device_id_filter();
-
         // Select an adapter by actually testing surface configuration with the real device.
         // This is the only reliable way to determine compatibility on hybrid GPU systems.
         let (adapter, device, queue, dual_source_blending, color_texture_format) =
             pollster::block_on(Self::select_adapter_and_device(
                 &instance,
-                device_id_filter,
+                &gpu_preference,
                 surface,
                 compositor_gpu.as_ref(),
                 reject_software,
@@ -203,11 +202,13 @@ impl WgpuContext {
     ))]
     fn create_headless() -> anyhow::Result<(Self, wgpu::TextureFormat)> {
         let instance = Self::instance(None);
-        let device_id_filter = Self::device_id_filter();
+        // Headless has no platform to state a preference, so `ZED_DEVICE_ID` is the only override.
+        // Without it, keep `Auto`'s ranking — what the tests and benchmarks expect.
+        let gpu_preference = GpuPreference::from_env().unwrap_or(GpuPreference::Auto);
         let (adapter, device, queue, dual_source_blending, color_texture_format, target_format) =
             pollster::block_on(async {
                 let mut adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
-                Self::sort_adapters(&mut adapters, device_id_filter, None);
+                Self::sort_adapters(&mut adapters, &gpu_preference, None);
 
                 for adapter in adapters {
                     let adapter_info = adapter.get_info();
@@ -313,22 +314,6 @@ impl WgpuContext {
             dual_source_blending,
             color_texture_format,
             errors,
-        }
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    fn device_id_filter() -> Option<u32> {
-        match std::env::var("ZED_DEVICE_ID") {
-            Ok(value) => parse_pci_id(&value)
-                .context("Failed to parse device ID from `ZED_DEVICE_ID` environment variable")
-                .log_err(),
-            Err(std::env::VarError::NotPresent) => None,
-            error => {
-                error
-                    .context("Failed to read value of `ZED_DEVICE_ID` environment variable")
-                    .log_err();
-                None
-            }
         }
     }
 
@@ -605,7 +590,7 @@ impl WgpuContext {
     #[cfg(not(target_family = "wasm"))]
     async fn select_adapter_and_device(
         instance: &wgpu::Instance,
-        device_id_filter: Option<u32>,
+        gpu_preference: &GpuPreference,
         surface: &wgpu::Surface<'_>,
         compositor_gpu: Option<&CompositorGpuHint>,
         reject_software: bool,
@@ -622,11 +607,11 @@ impl WgpuContext {
             anyhow::bail!("No GPU adapters found");
         }
 
-        if let Some(device_id) = device_id_filter {
-            log::info!("ZED_DEVICE_ID filter: {:#06x}", device_id);
+        if let GpuPreference::Device(gpu_id) = gpu_preference {
+            log::info!("GPU preference: device {:#06x}", gpu_id.device_id);
         }
 
-        Self::sort_adapters(&mut adapters, device_id_filter, compositor_gpu);
+        Self::sort_adapters(&mut adapters, gpu_preference, compositor_gpu);
 
         // Log all available adapters (in sorted order)
         log::info!("Found {} GPU adapter(s):", adapters.len());
@@ -686,55 +671,23 @@ impl WgpuContext {
         anyhow::bail!("No GPU adapter found that can configure the display surface")
     }
 
-    /// Sort adapters into a single priority order. Tiers (from highest to lowest):
+    /// Sort adapters into the order `preference` asks for.
     ///
-    /// 1. ZED_DEVICE_ID match — explicit user override
-    /// 2. Compositor GPU match — the GPU the display server is rendering on
-    /// 3. Device type (Discrete > Integrated > Other > Virtual > Cpu).
-    ///    "Other" ranks above "Virtual" because OpenGL seems to count as "Other".
-    /// 4. Backend — prefer Vulkan/Metal/Dx12 over GL/etc.
+    /// The slot meanings are in [`adapter_key`]. Under `Auto` the tiers are the historical ones: the
+    /// compositor's hint, then device type (discrete > integrated > other > virtual > CPU), then
+    /// backend. `LowPower` and `HighPerformance` replace the type order and keep the hint as a
+    /// tie-break; `Device` ranks the named adapter first and otherwise falls back to `Auto`.
     #[cfg(not(target_family = "wasm"))]
     fn sort_adapters(
         adapters: &mut [wgpu::Adapter],
-        device_id_filter: Option<u32>,
+        gpu_preference: &GpuPreference,
         compositor_gpu: Option<&CompositorGpuHint>,
     ) {
         adapters.sort_by_key(|adapter| {
-            let info = adapter.get_info();
-            // Backends like OpenGL report device=0 for all adapters, so
-            // device-based matching is only meaningful when non-zero.
-            let device_known = info.device != 0;
-            let user_override: u8 = match device_id_filter {
-                Some(id) if device_known && info.device == id => 0,
-                _ => 1,
-            };
-            let compositor_match: u8 = match compositor_gpu {
-                Some(hint)
-                    if device_known
-                        && info.vendor == hint.vendor_id
-                        && info.device == hint.device_id =>
-                {
-                    0
-                }
-                _ => 1,
-            };
-            let type_priority: u8 = match info.device_type {
-                wgpu::DeviceType::DiscreteGpu => 0,
-                wgpu::DeviceType::IntegratedGpu => 1,
-                wgpu::DeviceType::Other => 2,
-                wgpu::DeviceType::VirtualGpu => 3,
-                wgpu::DeviceType::Cpu => 4,
-            };
-            let backend_priority: u8 = match info.backend {
-                wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => 0,
-                _ => 1,
-            };
-
-            (
-                user_override,
-                compositor_match,
-                type_priority,
-                backend_priority,
+            adapter_key(
+                &AdapterFacts::from(&adapter.get_info()),
+                gpu_preference,
+                compositor_gpu,
             )
         });
     }
@@ -851,26 +804,110 @@ impl WgpuContext {
     }
 }
 
+/// The adapter facts the ranking reads, so the ranking is testable without a `wgpu::Adapter`.
 #[cfg(not(target_family = "wasm"))]
-fn parse_pci_id(id: &str) -> anyhow::Result<u32> {
-    let mut id = id.trim();
+#[derive(Clone, Copy, Debug)]
+struct AdapterFacts {
+    vendor: u32,
+    device: u32,
+    device_type: wgpu::DeviceType,
+    backend: wgpu::Backend,
+}
 
-    if id.starts_with("0x") || id.starts_with("0X") {
-        id = &id[2..];
+#[cfg(not(target_family = "wasm"))]
+impl From<&wgpu::AdapterInfo> for AdapterFacts {
+    fn from(info: &wgpu::AdapterInfo) -> Self {
+        Self {
+            vendor: info.vendor,
+            device: info.device,
+            device_type: info.device_type,
+            backend: info.backend,
+        }
     }
-    let is_hex_string = id.chars().all(|c| c.is_ascii_hexdigit());
-    let is_4_chars = id.len() == 4;
-    anyhow::ensure!(
-        is_4_chars && is_hex_string,
-        "Expected a 4 digit PCI ID in hexadecimal format"
-    );
+}
 
-    u32::from_str_radix(id, 16).context("parsing PCI ID as hex")
+/// The sort key for one adapter under `preference`.
+///
+/// Slots are compared in order, and what they hold depends on the preference:
+///
+/// | preference | slot 0 | slot 1 | slot 2 | slot 3 |
+/// | --- | --- | --- | --- | --- |
+/// | `Auto` | 0 | compositor match | device type (discrete first) | backend |
+/// | `Device` | named match | compositor match | device type (discrete first) | backend |
+/// | `LowPower` / `HighPerformance` | 0 | device type (by preference) | compositor match | backend |
+#[cfg(not(target_family = "wasm"))]
+fn adapter_key(
+    facts: &AdapterFacts,
+    preference: &GpuPreference,
+    compositor_gpu: Option<&CompositorGpuHint>,
+) -> (u8, u8, u8, u8) {
+    // Backends like OpenGL report device=0 for all adapters, so device-based matching is only
+    // meaningful when non-zero.
+    let device_known = facts.device != 0;
+    let compositor_match: u8 = match compositor_gpu {
+        Some(hint)
+            if device_known
+                && facts.vendor == hint.vendor_id
+                && facts.device == hint.device_id =>
+        {
+            0
+        }
+        _ => 1,
+    };
+    let auto_type: u8 = match facts.device_type {
+        wgpu::DeviceType::DiscreteGpu => 0,
+        wgpu::DeviceType::IntegratedGpu => 1,
+        wgpu::DeviceType::Other => 2,
+        wgpu::DeviceType::VirtualGpu => 3,
+        wgpu::DeviceType::Cpu => 4,
+    };
+    let backend_priority: u8 = match facts.backend {
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => 0,
+        _ => 1,
+    };
+    match preference {
+        GpuPreference::Auto => (0, compositor_match, auto_type, backend_priority),
+        GpuPreference::Device(gpu_id) => {
+            let named: u8 = if device_known && gpu_id.matches(facts.vendor, facts.device) {
+                0
+            } else {
+                1
+            };
+            (named, compositor_match, auto_type, backend_priority)
+        }
+        GpuPreference::LowPower => (
+            0,
+            type_priority(facts.device_type, true),
+            compositor_match,
+            backend_priority,
+        ),
+        GpuPreference::HighPerformance => (
+            0,
+            type_priority(facts.device_type, false),
+            compositor_match,
+            backend_priority,
+        ),
+    }
+}
+
+/// The device-type order under an explicit power preference. A CPU adapter ranks last in both: it is
+/// a fallback, not a low-power device.
+#[cfg(not(target_family = "wasm"))]
+fn type_priority(device_type: wgpu::DeviceType, low_power: bool) -> u8 {
+    match (device_type, low_power) {
+        (wgpu::DeviceType::IntegratedGpu, true) => 0,
+        (wgpu::DeviceType::DiscreteGpu, false) => 0,
+        (wgpu::DeviceType::Other, _) => 1,
+        (wgpu::DeviceType::IntegratedGpu, false) => 2,
+        (wgpu::DeviceType::DiscreteGpu, true) => 2,
+        (wgpu::DeviceType::VirtualGpu, _) => 3,
+        (wgpu::DeviceType::Cpu, _) => 4,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceErrorState, parse_pci_id};
+    use super::DeviceErrorState;
 
     /// The escape hatch that the whole tiled-surface path rests on: a device created through the HAL
     /// with `VK_EXT_image_drm_format_modifier` added must come back with the extension enabled.
@@ -965,21 +1002,83 @@ mod tests {
         assert_eq!(replacement.observe_error(&mut generation), None);
     }
 
-    #[test]
-    fn test_parse_device_id() {
-        assert!(parse_pci_id("0xABCD").is_ok());
-        assert!(parse_pci_id("ABCD").is_ok());
-        assert!(parse_pci_id("abcd").is_ok());
-        assert!(parse_pci_id("1234").is_ok());
-        assert!(parse_pci_id("123").is_err());
-        assert_eq!(
-            parse_pci_id(&format!("{:x}", 0x1234)).unwrap(),
-            parse_pci_id(&format!("{:X}", 0x1234)).unwrap(),
-        );
+    #[cfg(not(target_family = "wasm"))]
+    fn facts(device_type: wgpu::DeviceType, vendor: u32, device: u32) -> super::AdapterFacts {
+        super::AdapterFacts {
+            vendor,
+            device,
+            device_type,
+            backend: wgpu::Backend::Vulkan,
+        }
+    }
 
-        assert_eq!(
-            parse_pci_id(&format!("{:#x}", 0x1234)).unwrap(),
-            parse_pci_id(&format!("{:#X}", 0x1234)).unwrap(),
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_preference_orders_the_adapters_it_names() {
+        use super::{CompositorGpuHint, adapter_key};
+        use gpui_platform::GpuPreference;
+
+        let integrated = facts(wgpu::DeviceType::IntegratedGpu, 0x8086, 0x1916);
+        let discrete = facts(wgpu::DeviceType::DiscreteGpu, 0x10de, 0x1346);
+        let on_the_discrete = CompositorGpuHint {
+            vendor_id: 0x10de,
+            device_id: 0x1346,
+        };
+
+        assert!(
+            adapter_key(&integrated, &GpuPreference::LowPower, Some(&on_the_discrete))
+                < adapter_key(&discrete, &GpuPreference::LowPower, Some(&on_the_discrete)),
+            "LowPower takes the integrated adapter even when the compositor is on the discrete one",
+        );
+        assert!(
+            adapter_key(&discrete, &GpuPreference::HighPerformance, Some(&on_the_discrete))
+                < adapter_key(&integrated, &GpuPreference::HighPerformance, Some(&on_the_discrete)),
+            "HighPerformance takes the discrete adapter",
+        );
+        assert!(
+            adapter_key(&discrete, &GpuPreference::Auto, None)
+                < adapter_key(&integrated, &GpuPreference::Auto, None),
+            "Auto keeps the historical discrete-first order",
+        );
+        assert!(
+            adapter_key(
+                &integrated,
+                &GpuPreference::Auto,
+                Some(&CompositorGpuHint {
+                    vendor_id: 0x8086,
+                    device_id: 0x1916,
+                }),
+            ) < adapter_key(
+                &discrete,
+                &GpuPreference::Auto,
+                Some(&CompositorGpuHint {
+                    vendor_id: 0x8086,
+                    device_id: 0x1916,
+                }),
+            ),
+            "Auto still follows the compositor's hint",
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_named_device_ranks_first_and_an_absent_one_falls_back() {
+        use super::adapter_key;
+        use gpui_platform::{GpuId, GpuPreference};
+
+        let integrated = facts(wgpu::DeviceType::IntegratedGpu, 0x8086, 0x1916);
+        let discrete = facts(wgpu::DeviceType::DiscreteGpu, 0x10de, 0x1346);
+
+        let named = GpuPreference::Device(GpuId {
+            vendor_id: Some(0x8086),
+            device_id: 0x1916,
+        });
+        assert!(adapter_key(&integrated, &named, None) < adapter_key(&discrete, &named, None));
+
+        let absent = GpuPreference::Device(GpuId::by_device(0x9999));
+        assert!(
+            adapter_key(&discrete, &absent, None) < adapter_key(&integrated, &absent, None),
+            "an absent device falls back to Auto's discrete-first order",
         );
     }
 }
