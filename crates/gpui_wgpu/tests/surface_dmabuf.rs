@@ -20,8 +20,9 @@
 //! A userspace fault *while GPU work is in flight* can wedge that GPU: an earlier revision dropped
 //! the Vulkan loader before the device it had made, and its crash produced `NVRM: Xid 13` followed by
 //! repeated `Xid 158` (`NV_UFLUSH_FB_FLUSH` timeout) on an NVIDIA 930M, hanging the machine until
-//! reboot. This test keeps the loader alive and both the renderer and the producer on the integrated
-//! GPU, but you can pin the adapter explicitly too:
+//! reboot. This test keeps the loader alive, and the producer opens its device on the same GPU the
+//! renderer chose (it honours `ZED_DEVICE_ID` too), so export and import stay on one device; you can
+//! pin the adapter explicitly:
 //!
 //! ```text
 //! ZED_DEVICE_ID=1916 cargo test -p gpui_wgpu --features test-support --test surface_dmabuf
@@ -54,28 +55,48 @@ const COLOUR: [u8; 4] = [128, 128, 0, 255];
 /// `COLOUR` in the byte order a `Bgra8` buffer stores: blue, green, red, alpha.
 const BGRA_COLOUR: [u8; 4] = [COLOUR[2], COLOUR[1], COLOUR[0], COLOUR[3]];
 
+/// The first memory type carrying `flags`.
+fn memory_type(
+    properties: &vk::PhysicalDeviceMemoryProperties,
+    flags: vk::MemoryPropertyFlags,
+) -> Option<u32> {
+    properties
+        .memory_types
+        .iter()
+        .enumerate()
+        .find(|(_, memory_type)| memory_type.property_flags.contains(flags))
+        .map(|(index, _)| index as u32)
+}
+
 /// Keeps the exported dma-buf alive: the loader must outlive the device it made, and the device the
 /// memory it exported.
 struct Producer {
     _entry: ash::Entry,
     instance: ash::Instance,
     device: ash::Device,
-    _memory: vk::DeviceMemory,
+    physical_device: vk::PhysicalDevice,
+    queue: vk::Queue,
+    command_pool: vk::CommandPool,
+    /// The buffers and memories exported through so far, freed when the device goes.
+    exports: Vec<(vk::Buffer, vk::DeviceMemory)>,
 }
 
 impl Drop for Producer {
     fn drop(&mut self) {
         unsafe {
+            self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);
         }
     }
 }
 
-/// Allocate a linear dma-buf holding `content`, preferring the integrated GPU, and export its fd.
-/// `None` when there is no Vulkan device to allocate on.
-fn produce_dmabuf(content: &[u8]) -> Option<(Producer, OwnedFd)> {
-    fn inner(content: &[u8]) -> anyhow::Result<(Producer, OwnedFd)> {
+/// Open a producer device on the GPU `ZED_DEVICE_ID` names when it is set, else the integrated one,
+/// else the first available. Honouring the pin keeps the producer on the renderer's GPU: a dma-buf
+/// exported on one device and imported on another is a different configuration, and not the one this
+/// fixture means to exercise.
+fn open_producer() -> Option<Producer> {
+    fn inner() -> anyhow::Result<Producer> {
         let entry = unsafe { ash::Entry::load() }
             .map_err(|error| anyhow::anyhow!("load vulkan: {error}"))?;
         let app_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 1, 0));
@@ -86,27 +107,37 @@ fn produce_dmabuf(content: &[u8]) -> Option<(Producer, OwnedFd)> {
             )
         }?;
         let devices = unsafe { instance.enumerate_physical_devices() }?;
+        let wanted = std::env::var("ZED_DEVICE_ID")
+            .ok()
+            .and_then(|value| u32::from_str_radix(value.trim_start_matches("0x"), 16).ok());
+        let properties = |device: vk::PhysicalDevice| unsafe {
+            instance.get_physical_device_properties(device)
+        };
         let physical = devices
             .iter()
             .copied()
-            .find(|device| {
-                let properties = unsafe { instance.get_physical_device_properties(*device) };
-                properties.device_type == vk::PhysicalDeviceType::INTEGRATED_GPU
+            .find(|device| wanted.is_some_and(|id| properties(*device).device_id == id))
+            .or_else(|| {
+                devices.iter().copied().find(|device| {
+                    properties(*device).device_type == vk::PhysicalDeviceType::INTEGRATED_GPU
+                })
             })
             .or_else(|| devices.first().copied())
             .ok_or_else(|| anyhow::anyhow!("no Vulkan device for the producer"))?;
-        let properties = unsafe { instance.get_physical_device_memory_properties(physical) };
-        let memory_type_index = properties
-            .memory_types
+        let families = unsafe { instance.get_physical_device_queue_family_properties(physical) };
+        let family = families
             .iter()
-            .enumerate()
-            .find(|(_, memory_type)| {
-                memory_type.property_flags.contains(
-                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            .position(|properties| {
+                properties.queue_flags.intersects(
+                    vk::QueueFlags::TRANSFER | vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE,
                 )
             })
-            .map(|(index, _)| index as u32)
-            .ok_or_else(|| anyhow::anyhow!("no host-visible memory for the producer"))?;
+            .ok_or_else(|| anyhow::anyhow!("no queue family for the producer"))?
+            as u32;
+        let priorities = [1.0f32];
+        let queue_info = vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(family)
+            .queue_priorities(&priorities);
         let extensions = [
             vk::KHR_EXTERNAL_MEMORY_FD_NAME.as_ptr(),
             vk::EXT_EXTERNAL_MEMORY_DMA_BUF_NAME.as_ptr(),
@@ -114,48 +145,203 @@ fn produce_dmabuf(content: &[u8]) -> Option<(Producer, OwnedFd)> {
         let device = unsafe {
             instance.create_device(
                 physical,
-                &vk::DeviceCreateInfo::default().enabled_extension_names(&extensions),
+                &vk::DeviceCreateInfo::default()
+                    .queue_create_infos(std::slice::from_ref(&queue_info))
+                    .enabled_extension_names(&extensions),
                 None,
             )
         }?;
-        let external_memory_fd = ash::khr::external_memory_fd::Device::new(&instance, &device);
+        let queue = unsafe { device.get_device_queue(family, 0) };
+        let command_pool = unsafe {
+            device.create_command_pool(
+                &vk::CommandPoolCreateInfo::default()
+                    .queue_family_index(family)
+                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                None,
+            )
+        }?;
+        Ok(Producer {
+            _entry: entry,
+            instance,
+            device,
+            physical_device: physical,
+            queue,
+            command_pool,
+            exports: Vec::new(),
+        })
+    }
+    inner().ok()
+}
 
+impl Producer {
+    /// The plane layout and memory requirement the device gives a plain `LINEAR` `WIDTH`×`HEIGHT`
+    /// `NV12` image — the layout a producer must declare for the renderer's importer to accept the
+    /// buffer, and how much the buffer must hold. `None` where the device will not make one.
+    fn native_nv12(&self) -> Option<([(u64, u32); 2], u64)> {
+        let info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
+            .extent(vk::Extent3D {
+                width: WIDTH,
+                height: HEIGHT,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::LINEAR)
+            .usage(vk::ImageUsageFlags::SAMPLED)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let image = unsafe { self.device.create_image(&info, None) }.ok()?;
+        let plane = |aspect_mask| unsafe {
+            self.device.get_image_subresource_layout(
+                image,
+                vk::ImageSubresource {
+                    aspect_mask,
+                    mip_level: 0,
+                    array_layer: 0,
+                },
+            )
+        };
+        let luma = plane(vk::ImageAspectFlags::PLANE_0);
+        let chroma = plane(vk::ImageAspectFlags::PLANE_1);
+        // SAFETY: the image is live and bound to no memory yet.
+        let required = unsafe { self.device.get_image_memory_requirements(image) }.size;
+        unsafe { self.device.destroy_image(image, None) };
+        Some((
+            [
+                (luma.offset, luma.row_pitch as u32),
+                (chroma.offset, chroma.row_pitch as u32),
+            ],
+            required,
+        ))
+    }
+
+    /// Allocate a linear dma-buf holding `content` and export its fd.
+    ///
+    /// The memory is device-local and filled by a staging copy on the GPU: the NVIDIA driver faults
+    /// when a `HOST_VISIBLE` allocation is exported, so the bytes cannot be mapped into the buffer that
+    /// becomes the dma-buf. This is the shape `gpui_interop`'s `SharedBuffer` uses, for that reason.
+    fn export(&mut self, content: &[u8]) -> Option<OwnedFd> {
         let size = content.len() as u64;
+        let properties = unsafe {
+            self.instance
+                .get_physical_device_memory_properties(self.physical_device)
+        };
+        let device_local = memory_type(&properties, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
+        let host_visible = memory_type(
+            &properties,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+
+        // The exported buffer, in memory the driver hands out as a dma-buf.
+        let exported = unsafe {
+            self.device.create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(size)
+                    .usage(vk::BufferUsageFlags::TRANSFER_DST)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                None,
+            )
+        }
+        .ok()?;
+        let requirements = unsafe { self.device.get_buffer_memory_requirements(exported) };
         let mut export_info = vk::ExportMemoryAllocateInfo::default()
             .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-        let memory = unsafe {
-            device.allocate_memory(
+        let exported_memory = unsafe {
+            self.device.allocate_memory(
                 &vk::MemoryAllocateInfo::default()
-                    .allocation_size(size)
-                    .memory_type_index(memory_type_index)
+                    .allocation_size(requirements.size)
+                    .memory_type_index(device_local)
                     .push_next(&mut export_info),
                 None,
             )
-        }?;
-        unsafe {
-            let mapped = device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty())? as *mut u8;
-            std::ptr::copy_nonoverlapping(content.as_ptr(), mapped, content.len());
-            device.unmap_memory(memory);
         }
+        .ok()?;
+        unsafe { self.device.bind_buffer_memory(exported, exported_memory, 0) }.ok()?;
+
+        // The host-visible staging buffer the bytes go through.
+        let staging = unsafe {
+            self.device.create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(size)
+                    .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                None,
+            )
+        }
+        .ok()?;
+        let staging_requirements = unsafe { self.device.get_buffer_memory_requirements(staging) };
+        let staging_memory = unsafe {
+            self.device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(staging_requirements.size)
+                    .memory_type_index(host_visible),
+                None,
+            )
+        }
+        .ok()?;
+        unsafe { self.device.bind_buffer_memory(staging, staging_memory, 0) }.ok()?;
+        unsafe {
+            let mapped = self
+                .device
+                .map_memory(staging_memory, 0, size, vk::MemoryMapFlags::empty())
+                .ok()? as *mut u8;
+            std::ptr::copy_nonoverlapping(content.as_ptr(), mapped, content.len());
+            self.device.unmap_memory(staging_memory);
+        }
+
+        // Copy it in on the GPU and wait, so the buffer is ready when this returns.
+        unsafe {
+            let allocate = vk::CommandBufferAllocateInfo::default()
+                .command_pool(self.command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1);
+            let commands = self.device.allocate_command_buffers(&allocate).ok()?;
+            let command = commands[0];
+            self.device
+                .begin_command_buffer(command, &vk::CommandBufferBeginInfo::default())
+                .ok()?;
+            self.device.cmd_copy_buffer(
+                command,
+                staging,
+                exported,
+                &[vk::BufferCopy::default().size(size)],
+            );
+            self.device.end_command_buffer(command).ok()?;
+            let submit = vk::SubmitInfo::default().command_buffers(&commands);
+            let fence = self
+                .device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+                .ok()?;
+            self.device.queue_submit(self.queue, &[submit], fence).ok()?;
+            self.device.wait_for_fences(&[fence], true, u64::MAX).ok()?;
+            self.device.destroy_fence(fence, None);
+            self.device.free_command_buffers(self.command_pool, &commands);
+        }
+
+        let external_memory_fd =
+            ash::khr::external_memory_fd::Device::new(&self.instance, &self.device);
         let fd = unsafe {
             external_memory_fd.get_memory_fd(
                 &vk::MemoryGetFdInfoKHR::default()
-                    .memory(memory)
+                    .memory(exported_memory)
                     .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT),
             )
-        }?;
-        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-        Ok((
-            Producer {
-                _entry: entry,
-                instance,
-                device,
-                _memory: memory,
-            },
-            owned,
-        ))
+        }
+        .ok()?;
+        self.exports.push((exported, exported_memory));
+        self.exports.push((staging, staging_memory));
+        Some(unsafe { OwnedFd::from_raw_fd(fd) })
     }
-    inner(content).ok()
+}
+
+/// Allocate a linear dma-buf holding `content` on the producer device, and export its fd.
+/// `None` when there is no Vulkan device to allocate on.
+fn produce_dmabuf(content: &[u8]) -> Option<(Producer, OwnedFd)> {
+    let mut producer = open_producer()?;
+    let fd = producer.export(content)?;
+    Some((producer, fd))
 }
 
 struct SurfaceView {
@@ -179,6 +365,50 @@ fn composite(handle: DmaBufHandle) -> anyhow::Result<[u8; 4]> {
 
     let window = cx.open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |_window, cx| {
         cx.new(|_| SurfaceView { handle })
+    })?;
+    let window: AnyWindowHandle = window.into();
+
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        let _ = window.draw(cx);
+    })?;
+
+    let image = cx.capture_screenshot(window)?;
+    Ok(image.get_pixel(WIDTH / 2, HEIGHT / 2).0)
+}
+
+/// Lay a row pattern into `content` at `plane` (`offset`, `stride`), honouring the stride — the
+/// whole-object layout a dma-buf handle declares, where a row may be padded past the pixels in it.
+fn fill_plane(content: &mut [u8], plane: (u64, u32), width: usize, rows: usize, pattern: &[u8]) {
+    let base = plane.0 as usize;
+    let stride = plane.1 as usize;
+    for row in 0..rows {
+        let start = base + row * stride;
+        for (column, byte) in content[start..start + width].iter_mut().enumerate() {
+            *byte = pattern[column % pattern.len()];
+        }
+    }
+}
+
+/// A view that paints nothing — the window an empty surface leaves behind.
+struct EmptyView;
+
+impl Render for EmptyView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full()
+    }
+}
+
+/// The centre pixel of a window with nothing painted in it — what a *dropped* surface leaves behind,
+/// and the reference a refusal is checked against: a composited tile would never match it.
+fn empty_window_pixel() -> anyhow::Result<[u8; 4]> {
+    let text_system = std::sync::Arc::new(CosmicTextSystem::new("fallback"));
+    let mut cx = HeadlessAppContext::with_platform(text_system, std::sync::Arc::new(()), || {
+        gpui::current_headless_renderer()
+    });
+
+    let window = cx.open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |_window, cx| {
+        cx.new(|_| EmptyView)
     })?;
     let window: AnyWindowHandle = window.into();
 
@@ -444,23 +674,40 @@ fn a_surface_with_a_signalled_acquire_fence_is_waited_on() {
     assert_eq!(pixel, COLOUR);
 }
 
+/// The shader's BT.601 conversion, on a buffer laid out the way this device lays a linear `NV12` out.
+///
+/// The layout is the device's, not a fixed canonical one: a producer that asserts the canonical DRM
+/// layout is refused on a device that pads it (an NVIDIA 930M puts chroma at 65536), so the fixture
+/// asks the device and follows the answer — which is what a real producer must do too.
 #[test]
 fn an_nv12_surface_converts_through_the_shader() {
     if !gpu_available() {
         eprintln!("skipping: no Vulkan adapter for the headless renderer");
         return;
     }
-    let luma_size = (WIDTH * HEIGHT) as usize;
-    let chroma_size = (WIDTH / 2 * HEIGHT / 2 * 2) as usize;
+    let Some(mut producer) = open_producer() else {
+        eprintln!("skipping: no Vulkan device for the producer");
+        return;
+    };
+    let Some((planes, required)) = producer.native_nv12() else {
+        eprintln!("skipping: the producer's device will not make a plain linear NV12 image");
+        return;
+    };
+    let [luma, chroma] = planes;
     // The shared colour in the two-plane form: full-resolution luma, then half-resolution
-    // interleaved chroma, carrying the bytes the BT.601 conversion maps back to olive.
+    // interleaved chroma, carrying the bytes the BT.601 conversion maps back to olive, placed where
+    // the device's layout says.
     let (y, cb, cr) = nv12_from_rgb(COLOUR);
-    let mut content = vec![y; luma_size + chroma_size];
-    for pair in content[luma_size..].chunks_exact_mut(2) {
-        pair[0] = cb;
-        pair[1] = cr;
-    }
-    let Some((_producer, fd)) = produce_dmabuf(&content) else {
+    let mut content = vec![0u8; required as usize];
+    fill_plane(&mut content, luma, WIDTH as usize, HEIGHT as usize, &[y]);
+    fill_plane(
+        &mut content,
+        chroma,
+        WIDTH as usize,
+        (HEIGHT / 2) as usize,
+        &[cb, cr],
+    );
+    let Some(fd) = producer.export(&content) else {
         eprintln!("skipping: could not allocate a dma-buf");
         return;
     };
@@ -471,8 +718,8 @@ fn an_nv12_surface_converts_through_the_shader() {
         SurfaceFormatKind::nv12(),
         DmaBufHandle::LINEAR,
         [
-            DmaBufPlane::new(fd, 0, WIDTH),
-            DmaBufPlane::new(chroma_fd, luma_size as u64, WIDTH),
+            DmaBufPlane::new(fd, luma.0, luma.1),
+            DmaBufPlane::new(chroma_fd, chroma.0, chroma.1),
         ],
         None,
     );
@@ -490,6 +737,105 @@ fn an_nv12_surface_converts_through_the_shader() {
         );
     }
     assert_eq!(pixel[3], 255, "the surface should be opaque");
+}
+
+/// A handle that declares a layout the driver does not produce is refused, not sampled.
+///
+/// A producer's plane offsets are only readable where the driver would have put them itself: an image
+/// created with `ImageDrmFormatModifierExplicitCreateInfoEXT` declares the layout and the driver
+/// echoes it back, but a layout the driver did not choose is one it cannot sample — measured on an
+/// NVIDIA 930M, sampling such an image never completes and hangs the command processor. This buffer
+/// pads its luma plane, so its chroma is at 8192 where the driver's own linear layout puts it at 4096,
+/// and the importer drops the surface rather than bind it. The window stays empty, and the fixture
+/// colour would never match it.
+#[test]
+fn a_linear_nv12_surface_declaring_a_layout_the_driver_does_not_produce_is_refused() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+    let luma_size = (WIDTH * HEIGHT) as usize;
+    let chroma_size = (WIDTH / 2 * HEIGHT / 2 * 2) as usize;
+    // A whole page past the luma's end, which no driver's own linear layout would choose.
+    let chroma_offset = luma_size + 4096;
+    let (y, cb, cr) = nv12_from_rgb(COLOUR);
+
+    let mut content = vec![0u8; chroma_offset + chroma_size];
+    content[..luma_size].fill(y);
+    for pair in content[chroma_offset..].chunks_exact_mut(2) {
+        pair[0] = cb;
+        pair[1] = cr;
+    }
+
+    let Some((_producer, fd)) = produce_dmabuf(&content) else {
+        eprintln!("skipping: could not allocate a dma-buf");
+        return;
+    };
+    let chroma_fd = fd.try_clone().expect("duplicate the dma-buf");
+    let handle = DmaBufHandle::new(
+        WIDTH,
+        HEIGHT,
+        SurfaceFormatKind::nv12(),
+        DmaBufHandle::LINEAR,
+        [
+            DmaBufPlane::new(fd, 0, WIDTH),
+            DmaBufPlane::new(chroma_fd, chroma_offset as u64, WIDTH),
+        ],
+        None,
+    );
+
+    let background = empty_window_pixel().expect("capture an empty window");
+    let pixel = composite(handle).expect("composite the refused surface");
+    assert_eq!(
+        pixel, background,
+        "the surface was not refused: the handle declares chroma at {chroma_offset}, where this \
+         device does not lay its own linear NV12 out. Sampling a layout the driver did not produce \
+         reads the padding as chroma (which composites green), and on some devices never completes",
+    );
+}
+
+/// A buffer too small to hold the layout its handle declares is refused, not bound and sampled.
+///
+/// The fixture exports exactly the tight `NV12` span — luma then chroma, 6144 bytes of a 64×64 — and
+/// the handle then declares its chroma a page *past* the luma, so the image the importer would make
+/// spans 10240 bytes of a 6144-byte dma-buf. A renderer that bound it anyway would sample past the end
+/// of the buffer (which faults on the GPU rather than compositing wrongly); the importer must drop the
+/// surface instead. The window stays empty, and the fixture colour would never match it.
+#[test]
+fn a_buffer_too_small_for_its_declared_layout_is_refused() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+    let luma_size = (WIDTH * HEIGHT) as usize;
+    let chroma_size = (WIDTH / 2 * HEIGHT / 2 * 2) as usize;
+    // A mid-grey card, so a tile the renderer *did* composite could not be mistaken for the empty
+    // background the refusal leaves.
+    let content = vec![128u8; luma_size + chroma_size];
+    let Some((_producer, fd)) = produce_dmabuf(&content) else {
+        eprintln!("skipping: could not allocate a dma-buf");
+        return;
+    };
+    let chroma_fd = fd.try_clone().expect("duplicate the dma-buf");
+    let handle = DmaBufHandle::new(
+        WIDTH,
+        HEIGHT,
+        SurfaceFormatKind::nv12(),
+        DmaBufHandle::LINEAR,
+        [
+            DmaBufPlane::new(fd, 0, WIDTH),
+            DmaBufPlane::new(chroma_fd, (luma_size + 4096) as u64, WIDTH),
+        ],
+        None,
+    );
+
+    let background = empty_window_pixel().expect("capture an empty window");
+    let pixel = composite(handle).expect("composite the refused surface");
+    assert_eq!(
+        pixel, background,
+        "the surface was not refused: a 6144-byte buffer was bound to an image declaring 10240 bytes, \
+         which samples the buffer's end",
+    );
 }
 
 #[test]
