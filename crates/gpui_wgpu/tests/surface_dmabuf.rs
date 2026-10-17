@@ -21,8 +21,8 @@
 //! the Vulkan loader before the device it had made, and its crash produced `NVRM: Xid 13` followed by
 //! repeated `Xid 158` (`NV_UFLUSH_FB_FLUSH` timeout) on an NVIDIA 930M, hanging the machine until
 //! reboot. This test keeps the loader alive, and the producer opens its device on the same GPU the
-//! renderer chose (it honours `ZED_DEVICE_ID` too), so export and import stay on one device; you can
-//! pin the adapter explicitly:
+//! renderer chose (the test turns `ZED_DEVICE_ID` into a `GpuPreference` too), so export and import
+//! stay on one device; you can pin the adapter explicitly:
 //!
 //! ```text
 //! ZED_DEVICE_ID=1916 cargo test -p gpui_wgpu --features test-support --test surface_dmabuf
@@ -54,6 +54,20 @@ const HEIGHT: u32 = 64;
 const COLOUR: [u8; 4] = [128, 128, 0, 255];
 /// `COLOUR` in the byte order a `Bgra8` buffer stores: blue, green, red, alpha.
 const BGRA_COLOUR: [u8; 4] = [COLOUR[2], COLOUR[1], COLOUR[0], COLOUR[3]];
+
+/// The headless renderer, pinned to `ZED_DEVICE_ID` when it is set.
+///
+/// The library deliberately reads no environment variable: it sees only a `GpuPreference`. A test
+/// that must run on a named GPU translates the variable here, into the same preference an
+/// application would state.
+fn headless_renderer() -> anyhow::Result<Option<Box<dyn gpui::SceneRenderer>>> {
+    let preference = std::env::var("ZED_DEVICE_ID")
+        .ok()
+        .and_then(|value| gpui::GpuId::parse_pci_id(&value))
+        .map(|device_id| gpui::GpuPreference::Device(gpui::GpuId::by_device(device_id)))
+        .unwrap_or(gpui::GpuPreference::Auto);
+    gpui::current_headless_renderer_with(preference)
+}
 
 /// The first memory type carrying `flags`.
 fn memory_type(
@@ -360,7 +374,7 @@ impl Render for SurfaceView {
 fn composite(handle: DmaBufHandle) -> anyhow::Result<[u8; 4]> {
     let text_system = std::sync::Arc::new(CosmicTextSystem::new("fallback"));
     let mut cx = HeadlessAppContext::with_platform(text_system, std::sync::Arc::new(()), || {
-        gpui::current_headless_renderer()
+        headless_renderer()
     });
 
     let window = cx.open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |_window, cx| {
@@ -404,7 +418,7 @@ impl Render for EmptyView {
 fn empty_window_pixel() -> anyhow::Result<[u8; 4]> {
     let text_system = std::sync::Arc::new(CosmicTextSystem::new("fallback"));
     let mut cx = HeadlessAppContext::with_platform(text_system, std::sync::Arc::new(()), || {
-        gpui::current_headless_renderer()
+        headless_renderer()
     });
 
     let window = cx.open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |_window, cx| {
@@ -505,7 +519,7 @@ fn imported_texture(
 fn composite_canvas(colour: [u8; 4]) -> anyhow::Result<Option<[u8; 4]>> {
     let text_system = std::sync::Arc::new(CosmicTextSystem::new("fallback"));
     let mut cx = HeadlessAppContext::with_platform(text_system, std::sync::Arc::new(()), || {
-        gpui::current_headless_renderer()
+        headless_renderer()
     });
 
     let painted = Rc::new(Cell::new(false));
@@ -532,7 +546,7 @@ fn composite_canvas(colour: [u8; 4]) -> anyhow::Result<Option<[u8; 4]>> {
 /// The renderer the platform builds for a headless context; `None` where there is no adapter, which
 /// is a skip rather than a failure.
 fn gpu_available() -> bool {
-    gpui::current_headless_renderer().is_ok_and(|renderer| renderer.is_some())
+    headless_renderer().is_ok_and(|renderer| renderer.is_some())
 }
 
 #[test]

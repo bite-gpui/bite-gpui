@@ -2754,7 +2754,16 @@ pub struct WgpuHeadlessRenderer {
 ))]
 impl WgpuHeadlessRenderer {
     pub fn new() -> anyhow::Result<Self> {
-        let (context, target_format) = WgpuContext::new_headless()?;
+        Self::with_gpu_preference(GpuPreference::Auto)
+    }
+
+    /// Build a headless renderer on `gpu_preference`.
+    ///
+    /// The device behind it is cached process-wide, so only the first renderer's preference takes
+    /// effect; a later one joins the device that exists. A caller that must pin a GPU passes
+    /// [`GpuPreference::Device`] here, which is what the dma-buf tests do.
+    pub fn with_gpu_preference(gpu_preference: GpuPreference) -> anyhow::Result<Self> {
+        let (context, target_format) = WgpuContext::new_headless_with(gpu_preference)?;
         // The device may be shared with earlier renderers; observe only errors raised from
         // here on, including any while this renderer builds its pipelines.
         let observed_error_generation = context.errors().current_generation();
