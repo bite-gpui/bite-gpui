@@ -15,30 +15,72 @@ pub struct GpuSpecs {
 
 /// The identity of an adapter, for [`GpuPreference::Device`].
 ///
-/// This is the *selection* identity — PCI vendor and device. The producer-facing identity a
-/// non-Vulkan producer matches (a device name and its DRM render node) is `gpui_interop::GpuId`;
-/// mapping one to the other is the enumeration step of decision `0008`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// It is two facts, not one. `permanent` is what a config stores and what should still name the
+/// same hardware after a restart; `session` is what the backend can match in this process. A
+/// per-process handle (a LUID, a Metal registry id, a DRM node) does not survive a reboot, and a
+/// PCI pair does not distinguish two identical cards — so neither alone is a complete identity.
+///
+/// The permanent part is serialised; the session is not, because a config cannot know it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GpuId {
-    /// The PCI vendor id, when it is known. `ZED_DEVICE_ID` names only a device, so a preference
-    /// lowered from it leaves this `None`.
-    pub vendor_id: Option<u32>,
-    /// The PCI device id.
-    pub device_id: u32,
+    /// What survives a restart, where the platform has anything that does.
+    pub permanent: PermanentGpuId,
+    /// The backend's handle for this adapter in this process. `None` for a stored id.
+    #[serde(skip)]
+    pub session: Option<SessionGpuId>,
 }
 
 impl GpuId {
-    /// A `GpuId` matched on the device id alone.
+    /// A `GpuId` matched on the PCI device id alone, with no session.
+    ///
+    /// This is what `ZED_DEVICE_ID` lowers to: the variable names a device only, so the vendor is
+    /// left open and the permanent part is the whole preference.
     pub const fn by_device(device_id: u32) -> Self {
         Self {
-            vendor_id: None,
-            device_id,
+            permanent: PermanentGpuId::Pci {
+                vendor_id: None,
+                device_id,
+                subsys_id: None,
+                revision: None,
+            },
+            session: None,
         }
     }
 
-    /// Whether an adapter with this vendor/device pair is the one this id names.
-    pub fn matches(&self, vendor_id: u32, device_id: u32) -> bool {
-        self.device_id == device_id && self.vendor_id.is_none_or(|vendor| vendor == vendor_id)
+    /// The permanent and session identity of a PCI adapter.
+    pub const fn pci(vendor_id: u32, device_id: u32) -> Self {
+        Self {
+            permanent: PermanentGpuId::Pci {
+                vendor_id: Some(vendor_id),
+                device_id,
+                subsys_id: None,
+                revision: None,
+            },
+            session: Some(SessionGpuId::Pci {
+                vendor_id,
+                device_id,
+            }),
+        }
+    }
+
+    /// The identity of the one adapter on a single-GPU platform.
+    pub const fn single() -> Self {
+        Self {
+            permanent: PermanentGpuId::Single,
+            session: Some(SessionGpuId::Default),
+        }
+    }
+
+    /// Whether `adapter` is the one this id names.
+    ///
+    /// A session is the stronger claim: when it is present, only the adapter with that session
+    /// matches. Without one — a config, or a caller that knows only the model — the permanent part
+    /// decides, and two identical cards both match.
+    pub fn matches(&self, adapter: &GpuAdapterInfo) -> bool {
+        match &self.session {
+            Some(session) => adapter.id.session.as_ref() == Some(session),
+            None => self.permanent.matches(&adapter.id.permanent),
+        }
     }
 
     /// Parse a four-hex-digit PCI device id, such as a debug override carries.
@@ -59,6 +101,114 @@ impl GpuId {
     }
 }
 
+/// The stable part of a [`GpuId`]. Every adapter `enumerate_gpus` reports carries one.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub enum PermanentGpuId {
+    /// PCI vendor/device, plus the subsystem/revision that distinguishes board variants.
+    ///
+    /// Stable across restarts; two identical cards share it. `None` is a wildcard — `ZED_DEVICE_ID`
+    /// names a device only.
+    Pci {
+        /// The PCI vendor id, or `None` when the id names a device only.
+        vendor_id: Option<u32>,
+        /// The PCI device id.
+        device_id: u32,
+        /// The PCI subsystem id, when the backend reports one.
+        subsys_id: Option<u32>,
+        /// The PCI revision, when the backend reports one.
+        revision: Option<u32>,
+    },
+    /// The Windows PnP device instance id — the one documented persistent per-adapter identity.
+    /// DXGI does not expose it; a later `SetupAPI` read fills it in.
+    Pnp(String),
+    /// The adapter/driver name, where the platform has nothing better. Best-effort: two identical
+    /// cards share it.
+    Name(String),
+    /// A platform with one GPU, or a backend that cannot enumerate: there is only "the GPU".
+    Single,
+}
+
+impl PermanentGpuId {
+    /// Whether an adapter's permanent part is the one this id names.
+    ///
+    /// An `Option` field that is `None` in `self` is a wildcard; one that is `None` in `other` and
+    /// required by `self` does not match, because the backend cannot confirm it.
+    pub fn matches(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Pci {
+                    vendor_id,
+                    device_id,
+                    subsys_id,
+                    revision,
+                },
+                Self::Pci {
+                    vendor_id: other_vendor,
+                    device_id: other_device,
+                    subsys_id: other_subsys,
+                    revision: other_revision,
+                },
+            ) => {
+                wildcard(*vendor_id, *other_vendor)
+                    && device_id == other_device
+                    && wildcard(*subsys_id, *other_subsys)
+                    && wildcard(*revision, *other_revision)
+            }
+            (Self::Pnp(want), Self::Pnp(have)) => want == have,
+            (Self::Name(want), Self::Name(have)) => want == have,
+            (Self::Single, Self::Single) => true,
+            _ => false,
+        }
+    }
+
+    /// The PCI vendor id, when this id has one.
+    pub fn vendor_id(&self) -> Option<u32> {
+        match self {
+            Self::Pci { vendor_id, .. } => *vendor_id,
+            _ => None,
+        }
+    }
+
+    /// The PCI device id, when this id has one.
+    pub fn device_id(&self) -> Option<u32> {
+        match self {
+            Self::Pci { device_id, .. } => Some(*device_id),
+            _ => None,
+        }
+    }
+}
+
+fn wildcard(want: Option<u32>, have: Option<u32>) -> bool {
+    want.is_none_or(|want| have == Some(want))
+}
+
+/// The backend's handle for an adapter in this session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SessionGpuId {
+    /// A DRM render node (Linux). The node number is assigned per boot and is not a hardware id.
+    Drm {
+        /// The node's minor number: `renderD<minor>`.
+        render_minor: u32,
+    },
+    /// A DXGI adapter LUID (Windows), packed from `Luid.HighPart`/`LowPart`. It lasts for the
+    /// adapter's lifetime and changes on reboot, driver upgrade, or device disable/enable.
+    Luid(u64),
+    /// A Metal registry id (macOS) — an IOKit registry entry id, valid only until reboot.
+    Metal {
+        /// The IOKit registry id.
+        registry_id: u64,
+    },
+    /// The PCI pair, where the backend has no per-boot handle; identical cards share it.
+    Pci {
+        /// The PCI vendor id.
+        vendor_id: u32,
+        /// The PCI device id.
+        device_id: u32,
+    },
+    /// A platform with one GPU, or a backend whose enumeration cannot name one.
+    Default,
+}
+
 /// Which GPU an application prefers the renderer to run on.
 ///
 /// The device is process-wide and chosen once, before the first window (decision `0008`), so this is
@@ -75,7 +225,8 @@ pub enum GpuPreference {
     LowPower,
     /// Prefer the discrete adapter.
     HighPerformance,
-    /// A named adapter, matched by PCI identity. One that is not present falls back to [`Auto`].
+    /// A named adapter, matched by its permanent part and, when it carries one, its session handle.
+    /// One that is not present falls back to [`Auto`].
     Device(GpuId),
     /// A predicate that picks **one** adapter from the enumerated list.
     ///
@@ -90,7 +241,7 @@ pub enum GpuPreference {
     ///     // A producer that must share a dma-buf with the renderer names its GPU first, and
     ///     // otherwise takes the integrated one — where the panel is wired on a hybrid laptop.
     ///     gpus.iter()
-    ///         .position(|gpu| gpu.device_id == 0x1346)
+    ///         .position(|gpu| gpu.device_id() == Some(0x1346))
     ///         .or_else(|| {
     ///             gpus.iter()
     ///                 .position(|gpu| gpu.device_type == GpuDeviceType::Integrated)
@@ -161,23 +312,195 @@ pub enum GpuBackend {
 /// caller already has.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GpuAdapterInfo {
+    /// The permanent and session identity of the adapter.
+    pub id: GpuId,
     /// The adapter name the driver reports.
     pub name: String,
     /// The adapter's class.
     pub device_type: GpuDeviceType,
-    /// The PCI vendor id.
-    pub vendor_id: u32,
-    /// The PCI device id.
-    pub device_id: u32,
     /// The graphics API the adapter runs on.
     pub backend: GpuBackend,
     /// Whether the adapter is a software implementation.
     pub is_software: bool,
 }
 
+impl GpuAdapterInfo {
+    /// Describe one adapter the backend enumerated.
+    pub fn new(
+        id: GpuId,
+        name: impl Into<String>,
+        device_type: GpuDeviceType,
+        backend: GpuBackend,
+        is_software: bool,
+    ) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            device_type,
+            backend,
+            is_software,
+        }
+    }
+
+    /// The one adapter a platform without enumeration reports.
+    pub fn single() -> Self {
+        Self::new(
+            GpuId::single(),
+            "default",
+            GpuDeviceType::Other,
+            GpuBackend::Other,
+            false,
+        )
+    }
+
+    /// The PCI vendor id, when this adapter has one.
+    pub fn vendor_id(&self) -> Option<u32> {
+        self.id.permanent.vendor_id()
+    }
+
+    /// The PCI device id, when this adapter has one.
+    pub fn device_id(&self) -> Option<u32> {
+        self.id.permanent.device_id()
+    }
+}
+
+/// The sort key for one adapter under a [`GpuPreference`].
+///
+/// Slots are compared in order: the named match, the preference, the compositor match and the
+/// backend. The meanings are documented on [`rank`]. The fields are private so a backend cannot
+/// invent an order the shared ranking does not know.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GpuRank {
+    matched: u8,
+    preference: u8,
+    compositor: u8,
+    backend: u8,
+}
+
+impl GpuRank {
+    fn new(matched: u8, preference: u8, compositor: u8, backend: u8) -> Self {
+        Self {
+            matched,
+            preference,
+            compositor,
+            backend,
+        }
+    }
+}
+
+/// Rank one adapter under `preference`.
+///
+/// `LowPower`, `HighPerformance`, `Device` and `Custom` are portable; `Auto` leaves the ordering to
+/// the backend, so callers establish their own order first and a stable sort under this key
+/// preserves it. `compositor` is the Linux compositor hint, expressed in the same identity type; a
+/// backend with no equivalent passes `None`.
+pub fn rank(
+    adapter: &GpuAdapterInfo,
+    preference: &GpuPreference,
+    compositor: Option<&PermanentGpuId>,
+) -> GpuRank {
+    let compositor_match: u8 = match compositor {
+        Some(hint) if hint.matches(&adapter.id.permanent) => 0,
+        _ => 1,
+    };
+    let auto_type: u8 = match adapter.device_type {
+        GpuDeviceType::Discrete => 0,
+        GpuDeviceType::Integrated => 1,
+        GpuDeviceType::Other => 2,
+        GpuDeviceType::Virtual => 3,
+        GpuDeviceType::Cpu => 4,
+    };
+    let backend_priority: u8 = match adapter.backend {
+        GpuBackend::Vulkan | GpuBackend::Metal | GpuBackend::Dx12 => 0,
+        _ => 1,
+    };
+    match preference {
+        GpuPreference::Auto => GpuRank::new(0, compositor_match, auto_type, backend_priority),
+        GpuPreference::Device(gpu_id) => GpuRank::new(
+            if gpu_id.matches(adapter) { 0 } else { 1 },
+            compositor_match,
+            auto_type,
+            backend_priority,
+        ),
+        GpuPreference::LowPower => GpuRank::new(
+            0,
+            type_priority(adapter.device_type, true),
+            compositor_match,
+            backend_priority,
+        ),
+        GpuPreference::HighPerformance => GpuRank::new(
+            0,
+            type_priority(adapter.device_type, false),
+            compositor_match,
+            backend_priority,
+        ),
+        // Resolved by `custom_choice` before any sorting; equal keys keep the backend's order.
+        GpuPreference::Custom(_) => GpuRank::new(0, 0, 0, 0),
+    }
+}
+
+/// The device-type order under an explicit power preference. A CPU adapter ranks last in both: it is
+/// a fallback, not a low-power device.
+fn type_priority(device_type: GpuDeviceType, low_power: bool) -> u8 {
+    match (device_type, low_power) {
+        (GpuDeviceType::Integrated, true) => 0,
+        (GpuDeviceType::Discrete, false) => 0,
+        (GpuDeviceType::Other, _) => 1,
+        (GpuDeviceType::Integrated, false) => 2,
+        (GpuDeviceType::Discrete, true) => 2,
+        (GpuDeviceType::Virtual, _) => 3,
+        (GpuDeviceType::Cpu, _) => 4,
+    }
+}
+
+/// Resolve a [`GpuPreference::Custom`] selector against the adapters that were enumerated.
+///
+/// The selector chooses one adapter out of the whole list — it does not rank them. `None`, or an
+/// index outside the list, is an error rather than a fallback: the application and this code saw the
+/// same enumeration, so a disagreement is a bug worth naming instead of silently drawing on a GPU
+/// the application did not choose.
+pub fn custom_choice(
+    adapters: &[GpuAdapterInfo],
+    selector: &dyn Fn(&[GpuAdapterInfo]) -> Option<usize>,
+) -> anyhow::Result<usize> {
+    match selector(adapters) {
+        Some(index) if index < adapters.len() => Ok(index),
+        Some(index) => anyhow::bail!(
+            "The application's custom GPU preference chose adapter {index}, but only {} adapter(s) \
+             were enumerated",
+            adapters.len()
+        ),
+        None => anyhow::bail!("The application's custom GPU preference chose no adapter"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{GpuId, GpuPreference};
+    use std::sync::Arc;
+
+    use super::{
+        GpuAdapterInfo, GpuBackend, GpuDeviceType, GpuId, GpuPreference, PermanentGpuId,
+        SessionGpuId, custom_choice, rank,
+    };
+
+    fn adapter(name: &str, device_type: GpuDeviceType, vendor: u32, device: u32) -> GpuAdapterInfo {
+        GpuAdapterInfo::new(
+            GpuId::pci(vendor, device),
+            name,
+            device_type,
+            GpuBackend::Vulkan,
+            false,
+        )
+    }
+
+    fn hint(vendor: u32, device: u32) -> PermanentGpuId {
+        PermanentGpuId::Pci {
+            vendor_id: Some(vendor),
+            device_id: device,
+            subsys_id: None,
+            revision: None,
+        }
+    }
 
     #[test]
     fn the_pci_id_is_four_hex_digits_with_an_optional_prefix() {
@@ -193,17 +516,159 @@ mod tests {
 
     #[test]
     fn a_device_id_matches_by_device_and_leaves_the_vendor_open() {
+        let integrated = adapter("integrated", GpuDeviceType::Integrated, 0x8086, 0x1916);
+        let discrete = adapter("discrete", GpuDeviceType::Discrete, 0x10de, 0x1346);
+
         let by_device = GpuId::by_device(0x1346);
-        assert!(by_device.matches(0x10de, 0x1346));
-        assert!(by_device.matches(0x8086, 0x1346));
-        assert!(!by_device.matches(0x10de, 0x1916));
+        assert!(by_device.matches(&discrete));
+        assert!(!by_device.matches(&integrated));
 
         let exact = GpuId {
-            vendor_id: Some(0x10de),
-            device_id: 0x1346,
+            permanent: hint(0x10de, 0x1346),
+            session: None,
         };
-        assert!(exact.matches(0x10de, 0x1346));
-        assert!(!exact.matches(0x8086, 0x1346));
+        assert!(exact.matches(&discrete));
+        assert!(!exact.matches(&integrated));
+    }
+
+    #[test]
+    fn a_permanent_id_survives_a_restart_and_a_session_does_not() {
+        let mut enumerated = adapter("discrete", GpuDeviceType::Discrete, 0x10de, 0x1346);
+
+        let stored = GpuId {
+            permanent: enumerated.id.permanent.clone(),
+            session: None,
+        };
+        assert!(
+            stored.matches(&enumerated),
+            "the permanent part still names the card after the session is gone"
+        );
+
+        enumerated.id.session = Some(SessionGpuId::Luid(1));
+        let stale = GpuId {
+            permanent: enumerated.id.permanent.clone(),
+            session: Some(SessionGpuId::Luid(2)),
+        };
+        assert!(
+            !stale.matches(&enumerated),
+            "a session from another boot is not the same card"
+        );
+    }
+
+    #[test]
+    fn a_gpu_id_serialises_without_its_session() {
+        let enumerated = adapter("discrete", GpuDeviceType::Discrete, 0x10de, 0x1346);
+        let json = serde_json::to_value(&enumerated.id).expect("serialise a GpuId");
+        assert!(
+            json.get("session").is_none(),
+            "the session is per process and must not reach a config: {json}"
+        );
+
+        let restored: GpuId = serde_json::from_value(json).expect("deserialise a GpuId");
+        assert_eq!(restored.session, None);
+        assert!(restored.matches(&enumerated));
+    }
+
+    #[test]
+    fn a_single_gpu_platform_reports_one_identity() {
+        let only = GpuAdapterInfo::single();
+        assert_eq!(only.id.permanent, PermanentGpuId::Single);
+        assert_eq!(only.id.session, Some(SessionGpuId::Default));
+        assert!(GpuId::single().matches(&only));
+        assert!(
+            GpuId {
+                permanent: PermanentGpuId::Single,
+                session: None,
+            }
+            .matches(&only)
+        );
+    }
+
+    #[test]
+    fn the_preference_orders_the_adapters_it_names() {
+        use super::GpuPreference;
+
+        let integrated = adapter("integrated", GpuDeviceType::Integrated, 0x8086, 0x1916);
+        let discrete = adapter("discrete", GpuDeviceType::Discrete, 0x10de, 0x1346);
+        let on_the_discrete = hint(0x10de, 0x1346);
+
+        assert!(
+            rank(
+                &integrated,
+                &GpuPreference::LowPower,
+                Some(&on_the_discrete)
+            ) < rank(&discrete, &GpuPreference::LowPower, Some(&on_the_discrete)),
+            "LowPower takes the integrated adapter even when the compositor is on the discrete one",
+        );
+        assert!(
+            rank(
+                &discrete,
+                &GpuPreference::HighPerformance,
+                Some(&on_the_discrete)
+            ) < rank(
+                &integrated,
+                &GpuPreference::HighPerformance,
+                Some(&on_the_discrete)
+            ),
+            "HighPerformance takes the discrete adapter",
+        );
+        assert!(
+            rank(&discrete, &GpuPreference::Auto, None)
+                < rank(&integrated, &GpuPreference::Auto, None),
+            "Auto keeps the historical discrete-first order",
+        );
+        assert!(
+            rank(
+                &integrated,
+                &GpuPreference::Auto,
+                Some(&hint(0x8086, 0x1916))
+            ) < rank(&discrete, &GpuPreference::Auto, Some(&hint(0x8086, 0x1916))),
+            "Auto still follows the compositor's hint",
+        );
+    }
+
+    #[test]
+    fn a_named_device_ranks_first_and_an_absent_one_falls_back() {
+        let integrated = adapter("integrated", GpuDeviceType::Integrated, 0x8086, 0x1916);
+        let discrete = adapter("discrete", GpuDeviceType::Discrete, 0x10de, 0x1346);
+
+        let named = GpuPreference::Device(GpuId {
+            permanent: hint(0x8086, 0x1916),
+            session: None,
+        });
+        assert!(rank(&integrated, &named, None) < rank(&discrete, &named, None));
+
+        let absent = GpuPreference::Device(GpuId::by_device(0x9999));
+        assert!(
+            rank(&discrete, &absent, None) < rank(&integrated, &absent, None),
+            "an absent device falls back to Auto's discrete-first order",
+        );
+    }
+
+    #[test]
+    fn a_custom_preference_chooses_one_adapter() {
+        let adapters = [
+            adapter("integrated", GpuDeviceType::Integrated, 0x8086, 0x1916),
+            adapter("discrete", GpuDeviceType::Discrete, 0x10de, 0x1346),
+        ];
+
+        let choose_discrete =
+            |gpus: &[GpuAdapterInfo]| gpus.iter().position(|gpu| gpu.device_id() == Some(0x1346));
+        assert_eq!(custom_choice(&adapters, &choose_discrete).unwrap(), 1);
+
+        let chose_nothing = |_: &[GpuAdapterInfo]| None;
+        assert!(
+            custom_choice(&adapters, &chose_nothing).is_err(),
+            "choosing no adapter is an error, not a silent fallback",
+        );
+
+        let out_of_range = |_: &[GpuAdapterInfo]| Some(2);
+        let error =
+            custom_choice(&adapters, &out_of_range).expect_err("an index past the list is refused");
+        assert!(
+            error.to_string().contains("only 2 adapter(s)"),
+            "the refusal names the shortfall: {error}",
+        );
     }
 
     #[test]
@@ -213,8 +678,6 @@ mod tests {
 
     #[test]
     fn a_custom_preference_is_named_in_debug() {
-        use std::sync::Arc;
-
         let preference = GpuPreference::Custom(Arc::new(|_| Some(0)));
         assert_eq!(format!("{preference:?}"), "Custom(..)");
     }
