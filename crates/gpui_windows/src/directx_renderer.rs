@@ -191,6 +191,7 @@ impl DirectXRendererDevices {
             dxgi_factory,
             device,
             device_context,
+            ..
         } = directx_devices;
         let dxgi_device = if disable_direct_composition {
             None
@@ -2719,7 +2720,7 @@ mod tests {
     /// Direct3D 11 device at all. A bare Windows runner has WARP, so the guard is a formality
     /// rather than the expected path, and it logs why it skipped.
     fn test_renderer(viewport: Size<DevicePixels>) -> Option<DirectXRenderer> {
-        let devices = match DirectXDevices::new() {
+        let devices = match DirectXDevices::new(&gpui_platform::GpuPreference::Auto) {
             Ok(devices) => devices,
             Err(error) => {
                 log::warn!("no Direct3D 11 device to render offscreen with; skipping: {error:#}");
@@ -3049,7 +3050,7 @@ mod tests {
             return Ok(());
         };
 
-        let other_devices = DirectXDevices::new()?;
+        let other_devices = DirectXDevices::new(&gpui_platform::GpuPreference::Auto)?;
         let texture = imported_texture(
             &other_devices.device,
             1,
@@ -3070,7 +3071,7 @@ mod tests {
     /// where that is caught, with a message that names the producer's mistake.
     #[test]
     fn an_imported_texture_in_the_wrong_format_is_refused() -> Result<()> {
-        let devices = match DirectXDevices::new() {
+        let devices = match DirectXDevices::new(&gpui_platform::GpuPreference::Auto) {
             Ok(devices) => devices,
             Err(error) => {
                 log::warn!("no Direct3D 11 device to build a texture on; skipping: {error:#}");

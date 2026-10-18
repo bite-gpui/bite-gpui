@@ -296,6 +296,8 @@ pub enum GpuBackend {
     Metal,
     /// Direct3D 12.
     Dx12,
+    /// Direct3D 11, the API `gpui_windows`' own renderer is built on.
+    Dx11,
     /// OpenGL or OpenGL ES.
     Gl,
     /// WebGPU in a browser.
@@ -411,7 +413,7 @@ pub fn rank(
         GpuDeviceType::Cpu => 4,
     };
     let backend_priority: u8 = match adapter.backend {
-        GpuBackend::Vulkan | GpuBackend::Metal | GpuBackend::Dx12 => 0,
+        GpuBackend::Vulkan | GpuBackend::Metal | GpuBackend::Dx12 | GpuBackend::Dx11 => 0,
         _ => 1,
     };
     match preference {
