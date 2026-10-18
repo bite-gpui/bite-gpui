@@ -207,6 +207,18 @@ fn dxcore_factory() -> Option<IDXCoreAdapterFactory> {
 /// rest keep `Auto`'s order as fallbacks. Everything else goes through the shared rank.
 fn order_adapters(adapters: &mut Vec<EnumeratedAdapter>, preference: &GpuPreference) -> Result<()> {
     match preference {
+        // A named adapter goes first and the rest keep the enumeration's own order, which is
+        // `Auto`'s. An absent one leaves that order untouched rather than imposing the shared
+        // rank's type order, which is the Linux order and not DXGI's.
+        GpuPreference::Device(gpu_id) => {
+            if let Some(chosen) = adapters
+                .iter()
+                .position(|adapter| gpu_id.matches(&adapter.info))
+            {
+                let adapter = adapters.remove(chosen);
+                adapters.insert(0, adapter);
+            }
+        }
         GpuPreference::Custom(selector) => {
             let info: Vec<GpuAdapterInfo> = adapters
                 .iter()
