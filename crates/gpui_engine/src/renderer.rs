@@ -149,6 +149,18 @@ pub trait SceneRenderer: Any {
         anyhow::bail!("pixel readback is not supported by this renderer")
     }
 
+    /// The offscreen target of the last [`render_scene`](Self::render_scene), as a handle that may
+    /// cross a thread boundary.
+    ///
+    /// This is the zero-copy half of the offscreen contract: a CPU consumer calls
+    /// [`read_pixels`](Self::read_pixels), while a GPU consumer — a guest runner's host loop —
+    /// receives this and samples the target on the device it was rendered with. The handle is
+    /// `Send + Sync` and opaque; the engine names no graphics API, so a backend downcasts it to its
+    /// own type. `None` when the renderer has no shareable target or has not rendered one yet.
+    fn offscreen_surface_handle(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        None
+    }
+
     /// Renders `scene` offscreen and reads the result back.
     fn render_scene_to_image(
         &mut self,
@@ -227,6 +239,10 @@ where
 
     fn read_pixels(&mut self) -> anyhow::Result<PixelBuffer> {
         self.inner.read_pixels()
+    }
+
+    fn offscreen_surface_handle(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.inner.offscreen_surface_handle()
     }
 }
 
