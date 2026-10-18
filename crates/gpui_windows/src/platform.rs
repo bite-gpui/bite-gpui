@@ -98,6 +98,12 @@ pub(crate) struct WindowsPlatformState {
     /// thread; see [`DrawCoordinator`].
     pub(crate) draw_coordinator: Rc<DrawCoordinator>,
     directx_devices: RefCell<Option<DirectXDevices>>,
+    /// What `set_gpu_preference` recorded. `Auto` until an application states otherwise.
+    gpu_preference: RefCell<GpuPreference>,
+    /// Set by `set_gpu_preference`, cleared by the first window that applies it.
+    preference_pending: Cell<bool>,
+    /// Set once the first window has picked a device; a later preference is refused.
+    gpu_chosen: Cell<bool>,
 }
 
 #[derive(Default)]
@@ -126,6 +132,9 @@ impl WindowsPlatformState {
             cursor_visible: Arc::new(AtomicBool::new(true)),
             draw_coordinator: Rc::new(DrawCoordinator::new()),
             directx_devices: RefCell::new(directx_devices),
+            gpu_preference: RefCell::new(GpuPreference::Auto),
+            preference_pending: Cell::new(false),
+            gpu_chosen: Cell::new(false),
         }
     }
 }
@@ -300,6 +309,41 @@ impl WindowsPlatform {
             });
     }
 
+    /// Apply a stated GPU preference, before the first window exists.
+    ///
+    /// The platform builds its devices eagerly for the text system in `new`, before `App` knows the
+    /// preference, so the preference is applied here instead. The text system's GPU state is
+    /// rebuilt in place: replacing the `Arc` would not reach the `App`, which already holds it.
+    fn apply_gpu_preference(&self) -> Result<()> {
+        if self.inner.state.gpu_chosen.get() {
+            return Ok(());
+        }
+        if self.inner.state.preference_pending.take() && !self.headless {
+            let preference = self.inner.state.gpu_preference.borrow().clone();
+            let devices = DirectXDevices::new(&preference).with_context(|| {
+                format!(
+                    "Selecting a Direct3D 11 device for the application's GPU preference \
+                     {preference:?}"
+                )
+            })?;
+            self.inner.state.directx_devices.replace(Some(devices));
+
+            if let Some(text_system) = &self.direct_write_text_system {
+                let devices = self
+                    .inner
+                    .state
+                    .directx_devices
+                    .borrow()
+                    .clone()
+                    .expect("the chosen devices were just installed");
+                // No glyph has been rasterized yet: this runs before the first window.
+                text_system.handle_gpu_lost(&devices)?;
+            }
+        }
+        self.inner.state.gpu_chosen.set(true);
+        Ok(())
+    }
+
     fn generate_creation_info(&self) -> WindowCreationInfo {
         WindowCreationInfo {
             icon: self.icon,
@@ -407,7 +451,8 @@ impl WindowsPlatform {
 
     /// Creates the DirectX devices that windows draw with, and starts vsync.
     fn attach_gpu(&self) -> Result<()> {
-        let devices = DirectXDevices::new().context("Creating DirectX devices")?;
+        let devices = DirectXDevices::new(&GpuPreference::Auto)
+            .context("Creating DirectX devices")?;
         if let Some(text_system) = &self.direct_write_text_system {
             text_system.handle_gpu_lost(&devices)?;
         }
@@ -438,6 +483,7 @@ impl WindowsPlatform {
         };
         let stop = Arc::new(AtomicBool::new(false));
         *self.vsync_stop.borrow_mut() = Some(stop.clone());
+        let gpu_preference = self.inner.state.gpu_preference.borrow().clone();
         let mut directx_device = directx_devices;
         let platform_window: SafeHwnd = self.handle.into();
         let validation_number = self.inner.validation_number;
@@ -460,6 +506,7 @@ impl WindowsPlatform {
                     {
                         if let Err(err) = handle_gpu_device_lost(
                             &mut directx_device,
+                            &gpu_preference,
                             platform_window.as_raw(),
                             validation_number,
                             &all_windows,
@@ -748,6 +795,39 @@ impl Platform for WindowsPlatform {
             .map(|inner| inner.handle)
     }
 
+    fn set_gpu_preference(&self, preference: GpuPreference) {
+        if self.inner.state.gpu_chosen.get() {
+            log::warn!(
+                "The GPU cannot change after the first window; keeping the device already in use"
+            );
+            return;
+        }
+        self.inner.state.gpu_preference.replace(preference);
+        self.inner.state.preference_pending.set(true);
+    }
+
+    fn enumerate_gpus(&self) -> Vec<GpuAdapterInfo> {
+        match crate::directx_devices::enumerate_adapters() {
+            Ok(adapters) => adapters,
+            Err(error) => {
+                log::warn!("Could not enumerate Direct3D adapters: {error:#}");
+                vec![GpuAdapterInfo::single()]
+            }
+        }
+    }
+
+    fn active_gpu(&self) -> Option<GpuAdapterInfo> {
+        if !self.inner.state.gpu_chosen.get() {
+            return None;
+        }
+        self.inner
+            .state
+            .directx_devices
+            .borrow()
+            .as_ref()
+            .map(|devices| devices.gpu.clone())
+    }
+
     fn open_window(
         &self,
         handle: WindowId,
@@ -756,6 +836,7 @@ impl Platform for WindowsPlatform {
         if !self.is_windowed() {
             return Err(anyhow!("cannot open windows while headless"));
         }
+        self.apply_gpu_preference()?;
         let window = WindowsWindow::new(handle, options, self.generate_creation_info())?;
         let handle = window.get_raw_handle();
         self.raw_window_handles.write().push(TrackedWindow {
@@ -1665,6 +1746,7 @@ fn is_window_station_visible() -> bool {
 
 fn handle_gpu_device_lost(
     directx_devices: &mut DirectXDevices,
+    gpu_preference: &GpuPreference,
     platform_window: HWND,
     validation_number: usize,
     all_windows: &std::sync::Weak<RwLock<SmallVec<[TrackedWindow; 4]>>>,
@@ -1675,7 +1757,8 @@ fn handle_gpu_device_lost(
     std::thread::sleep(std::time::Duration::from_millis(350));
 
     *directx_devices = try_to_recover_from_device_lost(|| {
-        DirectXDevices::new().context("Failed to recreate new DirectX devices after device lost")
+        DirectXDevices::new(gpu_preference)
+            .context("Failed to recreate new DirectX devices after device lost")
     })?;
     log::info!("DirectX devices successfully recreated.");
 
