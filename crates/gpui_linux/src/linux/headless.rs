@@ -45,6 +45,6 @@ impl HeadlessConnection {
             params,
             self.display.clone(),
             self.window_lease.clone(),
-        )))
+        )?))
     }
 }

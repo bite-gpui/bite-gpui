@@ -3904,8 +3904,16 @@ impl Window<'_> {
         self.core.invalidator.replace_views(views);
     }
 
+    /// Presents the most recently drawn frame to the window's renderer.
+    ///
+    /// Runtime API: this is the second half of the offscreen/embedded path, where
+    /// [`Self::draw`] builds a frame and the caller decides when it is shown. An
+    /// ordinary window never calls it directly — the platform's frame callback
+    /// draws and presents in one turn — but a host loop that owns its own cadence
+    /// does, exactly as the visual harnesses do.
+    #[doc(hidden)]
     #[profiling::function]
-    fn present(&mut self) {
+    pub fn present(&mut self) {
         #[cfg(feature = "profiler")]
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
