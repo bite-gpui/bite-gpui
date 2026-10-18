@@ -32,7 +32,7 @@ use gpui_util::{ResultExt as _, new_std_command};
 use xkbcommon::xkb::{self, Keycode, Keysym, State};
 
 use crate::{linux::{Backend, DisplayConnection, HeadlessConnection, LinuxDispatcher, PriorityQueueCalloopReceiver, select_backend}};
-use gpui_engine::PlatformTextSystem;
+use gpui_engine::{DmaBufCapabilities, PlatformTextSystem};
 use gpui_platform::{
     ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, DisplayId, ForegroundExecutor,
     GpuAdapterInfo, GpuId, GpuPreference, GraphicalEnvironment, MenuCommandId, PathPromptOptions,
@@ -585,6 +585,17 @@ pub(crate) fn active_gpu(gpu_context: &gpui_wgpu::WgpuContextSlot) -> Option<Gpu
     context.as_ref().map(|context| context.adapter_info())
 }
 
+/// What the renderer's device can import as a dma-buf surface.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(crate) fn dmabuf_capabilities(
+    gpu_context: &gpui_wgpu::WgpuContextSlot,
+) -> Option<DmaBufCapabilities> {
+    let context = gpu_context.try_borrow().ok()?;
+    context
+        .as_ref()
+        .and_then(|context| context.dmabuf_capabilities())
+}
+
 impl Platform for LinuxPlatform {
     fn background_executor(&self) -> BackgroundExecutor {
         self.with_common(|common| common.background_executor.clone())
@@ -608,6 +619,10 @@ impl Platform for LinuxPlatform {
 
     fn active_gpu(&self) -> Option<GpuAdapterInfo> {
         self.connection.borrow().active_gpu()
+    }
+
+    fn dmabuf_capabilities(&self) -> Option<DmaBufCapabilities> {
+        self.connection.borrow().dmabuf_capabilities()
     }
 
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout> {

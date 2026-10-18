@@ -660,6 +660,76 @@ impl std::fmt::Display for SurfaceFormatKind {
     }
 }
 
+/// One surface format, and every layout a renderer can import for it.
+///
+/// `modifiers` holds each DRM format modifier the importer will bind for this format, with
+/// `DmaBufHandle::LINEAR` present when a linear buffer is accepted. It is what a producer
+/// negotiates with: pass these to the allocator (VA-API's `VASurfaceAttribDRMFormatModifiers`, a
+/// GBM allocator's modifier list) so the buffer it makes is one the renderer can sample.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DmaBufFormatCapability {
+    /// The format.
+    pub format: SurfaceFormatKind,
+    /// The modifiers accepted for it. Empty means the renderer cannot import the format at all.
+    pub modifiers: Vec<u64>,
+}
+
+impl DmaBufFormatCapability {
+    /// Whether `modifier` is one of the accepted layouts.
+    pub fn supports(&self, modifier: u64) -> bool {
+        self.modifiers.contains(&modifier)
+    }
+}
+
+/// What a renderer can import as a dma-buf surface.
+///
+/// Enumerated on the consumer's device — the renderer's — and handed to producers so they allocate
+/// a layout the renderer accepts rather than discovering a refusal at import time. A format absent
+/// from this report cannot be imported at all; a modifier absent from its entry cannot be bound for
+/// it.
+///
+/// A linear buffer is still checked against the device's own plane layout when it is imported (a
+/// driver samples only the layout it makes), so `DmaBufHandle::LINEAR` means "linear is accepted,
+/// with the device's own offsets and pitches"; a producer gets those from
+/// `gpui_interop::GpuDevice::linear_layout`.
+///
+/// A driver may list a modifier that implies implicit compression the dma-buf does not carry
+/// (Intel's `Y_TILED_CCS`). The report is what the importer will bind, not a promise that the bytes
+/// are uncompressed: a producer allocating under such a modifier must keep the compressed state
+/// valid in the buffer, per `DmaBufHandle`'s contract.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DmaBufCapabilities {
+    formats: Vec<DmaBufFormatCapability>,
+}
+
+impl DmaBufCapabilities {
+    /// Build the report from the formats the renderer accepts.
+    pub fn new(formats: Vec<DmaBufFormatCapability>) -> Self {
+        Self { formats }
+    }
+
+    /// Every format the renderer can import, with its accepted layouts.
+    pub fn formats(&self) -> &[DmaBufFormatCapability] {
+        &self.formats
+    }
+
+    /// The entry for `format`, if the renderer can import it.
+    pub fn format(&self, format: &SurfaceFormatKind) -> Option<&DmaBufFormatCapability> {
+        self.formats.iter().find(|entry| entry.format == *format)
+    }
+
+    /// The modifiers accepted for `format`, if it can be imported.
+    pub fn modifiers(&self, format: &SurfaceFormatKind) -> Option<&[u64]> {
+        self.format(format).map(|entry| entry.modifiers.as_slice())
+    }
+
+    /// Whether the renderer will bind `format` under `modifier`.
+    pub fn supports(&self, format: &SurfaceFormatKind, modifier: u64) -> bool {
+        self.format(format)
+            .is_some_and(|entry| entry.supports(modifier))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

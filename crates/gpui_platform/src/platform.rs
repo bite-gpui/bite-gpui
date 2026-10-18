@@ -14,7 +14,7 @@ use crate::{
 };
 use anyhow::Result;
 use futures::channel::oneshot;
-use gpui_engine::PlatformTextSystem;
+use gpui_engine::{DmaBufCapabilities, PlatformTextSystem};
 use smallvec::SmallVec;
 use std::{
     ffi::OsString,
@@ -283,6 +283,15 @@ pub trait Platform: 'static {
     /// a single-GPU platform should still answer "which GPU" with "the GPU".
     fn enumerate_gpus(&self) -> Vec<GpuAdapterInfo> {
         vec![GpuAdapterInfo::single()]
+    }
+
+    /// What the renderer can import as a dma-buf surface, once it has a device.
+    ///
+    /// Answered on the device the renderer already made — no device is created — and `None` before
+    /// the first window or on a platform whose surfaces are not dma-bufs. A producer uses it to
+    /// choose a layout rather than discover a refusal at import time.
+    fn dmabuf_capabilities(&self) -> Option<DmaBufCapabilities> {
+        None
     }
 
     /// The adapter the renderer actually chose, once it has chosen one.

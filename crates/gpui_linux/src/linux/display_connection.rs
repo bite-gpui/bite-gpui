@@ -126,6 +126,10 @@ impl DisplayConnection {
         dispatch!(self, connection => connection.displays(), headless(connection) => connection.displays())
     }
 
+    pub(crate) fn dmabuf_capabilities(&self) -> Option<gpui_engine::DmaBufCapabilities> {
+        dispatch!(self, connection => connection.dmabuf_capabilities(), headless => None)
+    }
+
     pub(crate) fn enumerate_gpus(&self) -> Vec<gpui_platform::GpuAdapterInfo> {
         dispatch!(self, connection => connection.enumerate_gpus(), headless => Vec::new())
     }

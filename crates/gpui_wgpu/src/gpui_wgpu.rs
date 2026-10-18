@@ -10,6 +10,8 @@ mod wgpu_renderer;
 
 pub use cosmic_text_system::*;
 #[cfg(target_os = "linux")]
+pub use dmabuf::dmabuf_capabilities;
+#[cfg(target_os = "linux")]
 pub(crate) use dmabuf::*;
 pub use imported_texture::*;
 pub use wgpu;
