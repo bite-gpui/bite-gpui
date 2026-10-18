@@ -5,8 +5,9 @@ use cocoa::{base::{NO, YES}, foundation::{NSSize, NSUInteger}, quartzcore::Autor
 use core_graphics::{geometry::CGSize};
 use gpui_engine::{AtlasTextureId, CustomRenderPrimitive, GpuRenderer, MetalTexture, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer, SurfaceSource};
 use gpui_platform::{
-    Background, Bounds, ContentMask, DevicePixels, GpuSpecs, MacSceneRenderer, PlatformRenderer,
-    Point, ScaledPixels, Size, point, size,
+    Background, Bounds, ContentMask, DevicePixels, GpuAdapterInfo, GpuBackend, GpuDeviceType,
+    GpuId, GpuPreference, GpuSpecs, MacSceneRenderer, PermanentGpuId, PlatformRenderer, Point,
+    ScaledPixels, SessionGpuId, Size, point, size,
 };
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use image::RgbaImage;
@@ -49,17 +50,77 @@ pub type Renderer = MetalRenderer;
 
 pub unsafe fn new_renderer(
     context: self::Context,
+    gpu_preference: &GpuPreference,
     _native_window: *mut c_void,
     _native_view: *mut c_void,
     _bounds: gpui_platform::Size<f32>,
     transparent: bool,
-) -> Renderer {
-    MetalRenderer::new(context, transparent)
+) -> Result<Renderer> {
+    MetalRenderer::new(context, transparent, gpu_preference)
+}
+
+/// The adapters an application could render on, in `Auto`'s order.
+///
+/// Enumerating creates no device: `MTLCopyAllDevices` returns the devices the system already has.
+/// Where it reports none (upstream has seen that, see zed#37689) the system default is the one
+/// adapter, and a machine with neither reports the synthesized single adapter.
+pub fn enumerate_gpus() -> Vec<GpuAdapterInfo> {
+    let mut devices = metal::Device::all();
+    if devices.is_empty()
+        && let Some(device) = metal::Device::system_default()
+    {
+        devices.push(device);
+    }
+    if devices.is_empty() {
+        return vec![GpuAdapterInfo::single()];
+    }
+
+    devices.sort_by_key(|device| (device.is_removable(), !device.is_low_power()));
+    devices.iter().map(device_info).collect()
+}
+
+/// The identity and class of one Metal device.
+fn device_info(device: &metal::Device) -> GpuAdapterInfo {
+    let name = device.name().to_string();
+    let device_type = classify(
+        device.has_unified_memory(),
+        device.is_low_power(),
+        device.is_removable(),
+    );
+    GpuAdapterInfo::new(
+        GpuId {
+            permanent: PermanentGpuId::Name(name.clone()),
+            session: Some(SessionGpuId::Metal {
+                registry_id: device.registry_id(),
+            }),
+        },
+        name,
+        device_type,
+        GpuBackend::Metal,
+        // Metal exposes no software device on macOS.
+        false,
+    )
+}
+
+/// The class of a Metal device from its own properties.
+///
+/// Unified memory or a low-power part is the integrated GPU; a non-removable, non-low-power part is
+/// the discrete GPU. A removable one (an eGPU) is neither, whatever its memory: it can disappear.
+fn classify(unified_memory: bool, low_power: bool, removable: bool) -> GpuDeviceType {
+    if unified_memory || low_power {
+        GpuDeviceType::Integrated
+    } else if !removable {
+        GpuDeviceType::Discrete
+    } else {
+        GpuDeviceType::Other
+    }
 }
 
 pub struct InstanceBufferPool {
     buffer_size: usize,
     buffers: Vec<metal::Buffer>,
+    /// The adapter the renderer bound to this pool chose. `None` until a renderer exists.
+    selected_gpu: Option<GpuAdapterInfo>,
 }
 
 impl Default for InstanceBufferPool {
@@ -67,6 +128,7 @@ impl Default for InstanceBufferPool {
         Self {
             buffer_size: 2 * 1024 * 1024,
             buffers: Vec::new(),
+            selected_gpu: None,
         }
     }
 }
@@ -77,6 +139,11 @@ pub(crate) struct InstanceBuffer {
 }
 
 impl InstanceBufferPool {
+    /// The adapter a renderer on this pool selected, once one exists.
+    pub fn selected_gpu(&self) -> Option<GpuAdapterInfo> {
+        self.selected_gpu.clone()
+    }
+
     pub(crate) fn reset(&mut self, buffer_size: usize) {
         self.buffer_size = buffer_size;
         self.buffers.clear();
@@ -154,11 +221,21 @@ pub struct PathRasterizationVertex {
 
 impl MetalRenderer {
     /// Creates a new MetalRenderer with a CAMetalLayer for window-based rendering.
-    pub fn new(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>, transparent: bool) -> Self {
-        let device = Self::create_device();
+    pub fn new(
+        instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+        transparent: bool,
+        gpu_preference: &GpuPreference,
+    ) -> Result<Self> {
+        let device = Self::select_device(gpu_preference)?;
+
         let layer = metal::MetalLayer::new();
         Self::configure_layer(&layer, &device, transparent);
-        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
+        Ok(Self::new_internal(
+            device,
+            Some(layer),
+            !transparent,
+            instance_buffer_pool,
+        ))
     }
 
     /// Creates a renderer for a CAMetalLayer owned by a platform view, such as
@@ -169,7 +246,7 @@ impl MetalRenderer {
         layer: &objc2_quartz_core::CAMetalLayer,
         transparent: bool,
     ) -> Self {
-        let device = Self::create_device();
+        let device = Self::system_default_device();
         // Both types bind the same Objective-C class, so this only changes which
         // Rust wrapper views the live layer. `to_owned` retains it.
         let layer = unsafe {
@@ -211,34 +288,82 @@ impl MetalRenderer {
     /// This renderer can render scenes to images without requiring a CAMetalLayer,
     /// window, or AppKit. Use `render_scene_to_image()` to render scenes.
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
-    pub fn new_headless(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>) -> Self {
-        let device = Self::create_device();
-        Self::new_internal(device, None, true, instance_buffer_pool)
+    pub fn new_headless(
+        instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+        gpu_preference: &GpuPreference,
+    ) -> Result<Self> {
+        let device = Self::select_device(gpu_preference)?;
+        Ok(Self::new_internal(device, None, true, instance_buffer_pool))
     }
 
-    #[cfg(target_os = "macos")]
-    fn create_device() -> metal::Device {
-        // Prefer low‐power integrated GPUs on Intel Mac. On Apple
-        // Silicon, there is only ever one GPU, so this is equivalent to
-        // `metal::Device::system_default()`.
-        if let Some(d) = metal::Device::all()
-            .into_iter()
-            .min_by_key(|d| (d.is_removable(), !d.is_low_power()))
-        {
-            d
-        } else {
-            // For some reason `all()` can return an empty list, see https://github.com/zed-industries/zed/issues/37689
-            // In that case, we fall back to the system default device.
+    /// The device the preference asks for, falling back through `Auto`'s order.
+    ///
+    /// `Auto` keeps the historical key — non-removable, low-power — which on Intel Macs picks the
+    /// integrated GPU and on Apple Silicon is the only GPU. An explicit preference uses the shared
+    /// rank; a named or custom adapter that is absent falls back to `Auto`'s order rather than
+    /// failing, and a custom selector that names no adapter is an error.
+    fn select_device(gpu_preference: &GpuPreference) -> Result<metal::Device> {
+        let mut devices = metal::Device::all();
+        if devices.is_empty() {
+            // For some reason `all()` can return an empty list, see
+            // https://github.com/zed-industries/zed/issues/37689
             log::error!(
                 "Unable to enumerate Metal devices; attempting to use system default device"
             );
-            Self::system_default_device()
+            if let Some(device) = metal::Device::system_default() {
+                devices.push(device);
+            }
         }
-    }
+        if devices.is_empty() {
+            return Err(anyhow::anyhow!("No Metal device is available"));
+        }
 
-    #[cfg(target_os = "ios")]
-    fn create_device() -> metal::Device {
-        Self::system_default_device()
+        let infos: Vec<GpuAdapterInfo> = devices.iter().map(device_info).collect();
+        let auto_order = |indices: &mut Vec<usize>| {
+            indices.sort_by_key(|&index| {
+                let device = &devices[index];
+                (device.is_removable(), !device.is_low_power())
+            });
+        };
+
+        let order = match gpu_preference {
+            // A named adapter goes first and the rest keep `Auto`'s order. An absent one leaves
+            // that order untouched: the shared rank's unmatched order is discrete-first, which is
+            // the Linux default, not this backend's low-power one.
+            GpuPreference::Device(gpu_id) => {
+                let mut order: Vec<usize> = (0..devices.len()).collect();
+                match infos.iter().position(|info| gpu_id.matches(info)) {
+                    Some(chosen) => {
+                        order.remove(chosen);
+                        auto_order(&mut order);
+                        order.insert(0, chosen);
+                    }
+                    None => auto_order(&mut order),
+                }
+                order
+            }
+            GpuPreference::Custom(selector) => {
+                let chosen = gpui_platform::custom_choice(&infos, selector.as_ref())?;
+                let mut tail: Vec<usize> = (0..devices.len())
+                    .filter(|&index| index != chosen)
+                    .collect();
+                auto_order(&mut tail);
+                std::iter::once(chosen).chain(tail).collect::<Vec<_>>()
+            }
+            GpuPreference::Auto => {
+                let mut order: Vec<usize> = (0..devices.len()).collect();
+                auto_order(&mut order);
+                order
+            }
+            _ => {
+                let mut order: Vec<usize> = (0..devices.len()).collect();
+                order
+                    .sort_by_key(|&index| gpui_platform::rank(&infos[index], gpu_preference, None));
+                order
+            }
+        };
+
+        Ok(devices.swap_remove(order[0]))
     }
 
     fn system_default_device() -> metal::Device {
@@ -254,6 +379,7 @@ impl MetalRenderer {
         opaque: bool,
         instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
     ) -> Self {
+        instance_buffer_pool.lock().selected_gpu = Some(device_info(&device));
         #[cfg(feature = "runtime_shaders")]
         let library = device
             .new_library_with_source(&SHADERS_SOURCE_FILE, &metal::CompileOptions::new())
@@ -1889,7 +2015,8 @@ pub struct MetalHeadlessRenderer {
 impl MetalHeadlessRenderer {
     pub fn new() -> Self {
         let instance_buffer_pool = Arc::new(Mutex::new(InstanceBufferPool::default()));
-        let renderer = MetalRenderer::new_headless(instance_buffer_pool);
+        let renderer = MetalRenderer::new_headless(instance_buffer_pool, &GpuPreference::Auto)
+            .expect("the test helper only runs where a Metal device exists");
         Self {
             renderer,
             viewport_size: Size::default(),
@@ -2010,5 +2137,28 @@ impl GpuRenderer for MetalHeadlessRenderer {
     type Device = metal::Device;
     fn device(&self) -> Option<metal::Device> {
         Some(self.renderer.device.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify;
+    use gpui_platform::GpuDeviceType;
+
+    #[test]
+    fn unified_or_low_power_hardware_is_integrated() {
+        assert_eq!(classify(true, false, false), GpuDeviceType::Integrated);
+        assert_eq!(classify(false, true, false), GpuDeviceType::Integrated);
+    }
+
+    #[test]
+    fn a_non_removable_discrete_device_is_discrete() {
+        assert_eq!(classify(false, false, false), GpuDeviceType::Discrete);
+    }
+
+    #[test]
+    fn a_removable_device_is_other_whatever_its_memory() {
+        assert_eq!(classify(false, false, true), GpuDeviceType::Other);
+        assert_eq!(classify(false, true, true), GpuDeviceType::Integrated);
     }
 }

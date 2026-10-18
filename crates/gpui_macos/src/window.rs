@@ -27,7 +27,7 @@ use dispatch2::DispatchQueue;
 use gpui_engine::SceneRenderer;
 use gpui_platform::{
     BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalDragPayload, ExternalPaths,
-    FileDropEvent, ForegroundExecutor, FrameRequestSource, KeyDownEvent, Keystroke,
+    FileDropEvent, ForegroundExecutor, FrameRequestSource, GpuPreference, KeyDownEvent, Keystroke,
     MacSceneRenderer, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, NavigationDirection, Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameSignal,
     PlatformInput, PlatformInputHandler, PlatformRenderer, PlatformWindow, Point, PromptButton,
@@ -980,6 +980,7 @@ impl MacWindow {
         foreground_executor: ForegroundExecutor,
         background_executor: BackgroundExecutor,
         renderer_context: renderer::Context,
+        gpu_preference: GpuPreference,
         marker: MainThreadMarker,
     ) -> anyhow::Result<Self> {
         unsafe {
@@ -1120,11 +1121,12 @@ impl MacWindow {
                     })?,
                     None => Box::new(renderer::new_renderer(
                         renderer_context,
+                        &gpu_preference,
                         native_window as *mut _,
                         native_view as *mut _,
                         bounds.size.map(|pixels| pixels.as_f32()),
                         false,
-                    )),
+                    )?),
                 },
                 request_frame_callback: None,
                 event_callback: None,
