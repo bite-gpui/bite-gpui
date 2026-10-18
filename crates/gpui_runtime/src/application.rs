@@ -100,8 +100,9 @@ impl Application {
     /// States which GPU the renderer should run on.
     ///
     /// The device is process-wide and chosen before the first window, so set this before
-    /// [`run`](Self::run). The default is [`GpuPreference::LowPower`]. See decision `0008` in the
-    /// project record, `decisions/0008-gpu-preference-and-enumeration.md`.
+    /// [`run`](Self::run). When it is not stated, each backend keeps its own default: `LowPower` on
+    /// Linux, and the adapter order the platform already used elsewhere. See decisions `0008` and
+    /// `0009` in the project record.
     pub fn with_gpu_preference(self, preference: GpuPreference) -> Self {
         self.0.borrow().platform().set_gpu_preference(preference);
         self
