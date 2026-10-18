@@ -977,6 +977,7 @@ features = [
     "Win32_Graphics_DirectWrite",
     "Win32_Graphics_DirectManipulation",
     "Win32_Graphics_Dwm",
+    "Win32_Graphics_DXCore",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",

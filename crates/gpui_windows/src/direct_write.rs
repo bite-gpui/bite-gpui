@@ -2007,7 +2007,7 @@ mod tests {
 
     #[test]
     fn color_emoji_rasterization_is_stable_across_batches() -> Result<()> {
-        let devices = DirectXDevices::new()?;
+        let devices = DirectXDevices::new(&gpui_platform::GpuPreference::Auto)?;
         let text_system = DirectWriteTextSystem::new(&devices)?;
 
         let font = Font {
@@ -2070,7 +2070,7 @@ mod tests {
 
     #[test]
     fn color_emoji_composites_over_cleared_texture() -> Result<()> {
-        let devices = DirectXDevices::new()?;
+        let devices = DirectXDevices::new(&gpui_platform::GpuPreference::Auto)?;
         let gpu_state = GPUState::new(&devices)?;
 
         const SIZE: u32 = 32;
