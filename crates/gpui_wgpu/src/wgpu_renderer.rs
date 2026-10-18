@@ -12,6 +12,17 @@ use gpui_engine::{
 ))]
 use gpui_engine::GpuRenderer;
 use gpui_platform::{Background, Bounds, DevicePixels, GpuPreference, GpuSpecs, Point, ScaledPixels, Size};
+#[cfg(all(
+    not(target_family = "wasm"),
+    not(target_os = "macos"),
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+))]
+use gpui_platform::{PlatformRenderer, RendererTarget};
+#[cfg(all(
+    target_os = "windows",
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+))]
+use gpui_platform::{WinSceneRenderer, WindowBackgroundAppearance};
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -3043,6 +3054,73 @@ impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
             texture: target.texture.clone(),
             size: target.size(),
         }))
+    }
+}
+
+#[cfg(all(
+    target_os = "windows",
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+))]
+impl WinSceneRenderer for WgpuHeadlessRenderer {
+    fn set_background_appearance(&mut self, _appearance: WindowBackgroundAppearance) {
+        // An offscreen target has no window behind it.
+    }
+
+    fn resize(&mut self, size: Size<DevicePixels>) -> anyhow::Result<()> {
+        self.viewport_size = Some(size);
+        Ok(())
+    }
+
+    fn mark_drawable(&mut self) {}
+}
+
+/// `WgpuHeadlessRenderer` as a window's renderer.
+///
+/// A headless window has no surface to bind, but it still holds its renderer behind
+/// `PlatformRenderer`, so a window that installs one through `WindowOptions::with_renderer_factory`
+/// gets a real offscreen target instead of a discard. The three methods with no default answer from
+/// the device this renderer already owns rather than inventing values: the size it draws into, the
+/// device's texture limit, and the adapter's own description.
+///
+/// macOS is excluded because a window's renderer there must answer `MacSceneRenderer` (a
+/// `CAMetalLayer`), which an offscreen renderer has no layer for. The headless renderer is still
+/// usable on macOS as a `SceneRenderer`; it just cannot be a window's renderer.
+#[cfg(all(
+    not(target_family = "wasm"),
+    not(target_os = "macos"),
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+))]
+impl PlatformRenderer for WgpuHeadlessRenderer {
+    fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
+        self.viewport_size = Some(size);
+    }
+
+    fn max_texture_size(&self) -> u32 {
+        self.core.max_texture_size
+    }
+
+    fn gpu_specs(&self) -> Option<GpuSpecs> {
+        let info = self.context.adapter.get_info();
+        Some(GpuSpecs {
+            is_software_emulated: info.device_type == wgpu::DeviceType::Cpu,
+            device_name: info.name,
+            driver_name: info.driver,
+            driver_info: info.driver_info,
+        })
+    }
+
+    fn device_lost(&self) -> bool {
+        self.context.device_lost()
+    }
+
+    fn recover(&mut self, _target: RendererTarget<'_>) -> anyhow::Result<()> {
+        // The headless renderer owns no window surface to rebuild from; its device is the
+        // process-wide context, which either still exists or has failed globally.
+        anyhow::ensure!(
+            !self.context.device_lost(),
+            "the headless renderer's device was lost and has no surface to recover from"
+        );
+        Ok(())
     }
 }
 

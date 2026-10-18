@@ -13,10 +13,10 @@ use std::sync::Arc;
 use gpui_engine::{AtlasKey, AtlasTextureId, AtlasTile, HeadlessAtlas, PlatformAtlas, Scene, SceneRenderer, TileId};
 use uuid::Uuid;
 use gpui_platform::{
-    Bounds, Capslock, DispatchEventResult, GpuSpecs, Modifiers, Pixels, PlatformDisplay,
+    Bounds, Capslock, DispatchEventResult, DisplayId, GpuSpecs, Modifiers, Pixels, PlatformDisplay,
     PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel,
-    RequestFrameOptions, Size, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowParams, WindowVisibility, px,
+    RendererTarget, RequestFrameOptions, Size, WindowAppearance, WindowBackgroundAppearance,
+    WindowBounds, WindowControlArea, WindowParams, WindowVisibility, px,
 };
 
 struct HeadlessWindowState {
@@ -26,7 +26,10 @@ struct HeadlessWindowState {
     input_handler: Option<PlatformInputHandler>,
     title: Option<String>,
     is_fullscreen: bool,
-    renderer: HeadlessRenderer,
+    /// The window's renderer. The discard renderer unless the window installed one through
+    /// `WindowParams::renderer_factory` — the same option a real window honours, so a headless
+    /// guest can render into an offscreen target instead of throwing its scene away.
+    renderer: Box<dyn SceneRenderer>,
 }
 
 pub(crate) struct HeadlessWindow(Rc<RefCell<HeadlessWindowState>>);
@@ -49,15 +52,33 @@ impl raw_window_handle::HasDisplayHandle for HeadlessWindow {
 }
 
 impl HeadlessWindow {
-    pub(crate) fn new(params: WindowParams, lease: Rc<()>) -> Self {
-        Self(Rc::new(RefCell::new(HeadlessWindowState {
+    pub(crate) fn new(
+        params: WindowParams,
+        lease: Rc<()>,
+    ) -> anyhow::Result<Self> {
+        // A headless window has no native surface, so a factory that needs raw handles cannot
+        // build here — an offscreen renderer is the one that can, and it gets the size it will
+        // draw at. Without a factory the window keeps the discard renderer it has always had.
+        let renderer: Box<dyn SceneRenderer> = match params.renderer_factory.as_ref() {
+            Some(factory) => factory.0.create(RendererTarget {
+                window_handle: None,
+                display_handle: None,
+                size: params.bounds.size,
+                scale_factor: 1.0,
+                transparent: false,
+                backend: None,
+            })?,
+            None => Box::new(HeadlessRenderer::default()),
+        };
+
+        Ok(Self(Rc::new(RefCell::new(HeadlessWindowState {
             bounds: params.bounds,
             _lease: lease,
             input_handler: None,
             title: None,
             is_fullscreen: false,
-            renderer: HeadlessRenderer::default(),
-        })))
+            renderer,
+        }))))
     }
 }
 
@@ -196,12 +217,16 @@ impl PlatformWindow for HeadlessWindow {
 
     fn with_renderer(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer)) {
         let mut state = self.0.borrow_mut();
-        f(&mut state.renderer);
+        f(state.renderer.as_mut());
     }
 
     fn present(&mut self, f: &mut dyn FnMut(&mut dyn SceneRenderer) -> bool) {
         let mut state = self.0.borrow_mut();
-        f(&mut state.renderer);
+        // There is no compositor to size the target, so the window tells the renderer what it
+        // is about to draw into. A discard renderer ignores it.
+        let size = state.bounds.size.to_device_pixels(1.0);
+        state.renderer.set_viewport_size(size);
+        f(state.renderer.as_mut());
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {

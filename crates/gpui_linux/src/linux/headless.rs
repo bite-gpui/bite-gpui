@@ -42,6 +42,6 @@ impl HeadlessConnection {
         Ok(Box::new(HeadlessWindow::new(
             params,
             self.window_lease.clone(),
-        )))
+        )?))
     }
 }
