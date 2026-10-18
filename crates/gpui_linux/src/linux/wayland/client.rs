@@ -1304,6 +1304,10 @@ impl WaylandConnection {
         crate::linux::platform::active_gpu(&self.0.borrow().gpu_context)
     }
 
+    pub(crate) fn dmabuf_capabilities(&self) -> Option<gpui_engine::DmaBufCapabilities> {
+        crate::linux::platform::dmabuf_capabilities(&self.0.borrow().gpu_context)
+    }
+
     #[cfg(feature = "screen-capture")]
     pub(crate) fn screen_capture_sources(
         &self,

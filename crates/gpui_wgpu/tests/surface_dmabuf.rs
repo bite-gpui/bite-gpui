@@ -110,9 +110,8 @@ fn open_producer() -> Option<Producer> {
         let wanted = std::env::var("ZED_DEVICE_ID")
             .ok()
             .and_then(|value| u32::from_str_radix(value.trim_start_matches("0x"), 16).ok());
-        let properties = |device: vk::PhysicalDevice| unsafe {
-            instance.get_physical_device_properties(device)
-        };
+        let properties =
+            |device: vk::PhysicalDevice| unsafe { instance.get_physical_device_properties(device) };
         let physical = devices
             .iter()
             .copied()
@@ -314,10 +313,13 @@ impl Producer {
                 .device
                 .create_fence(&vk::FenceCreateInfo::default(), None)
                 .ok()?;
-            self.device.queue_submit(self.queue, &[submit], fence).ok()?;
+            self.device
+                .queue_submit(self.queue, &[submit], fence)
+                .ok()?;
             self.device.wait_for_fences(&[fence], true, u64::MAX).ok()?;
             self.device.destroy_fence(fence, None);
-            self.device.free_command_buffers(self.command_pool, &commands);
+            self.device
+                .free_command_buffers(self.command_pool, &commands);
         }
 
         let external_memory_fd =
@@ -375,6 +377,79 @@ fn composite(handle: DmaBufHandle) -> anyhow::Result<[u8; 4]> {
 
     let image = cx.capture_screenshot(window)?;
     Ok(image.get_pixel(WIDTH / 2, HEIGHT / 2).0)
+}
+
+/// What a producer negotiates with: the device's own report of the formats and layouts it accepts.
+///
+/// The report is the importer's closed set, not everything Vulkan knows: a format outside it is
+/// absent and a layout outside an entry is refused. Every entry carries linear, because the linear
+/// import path predates the modifier extension; a driver modifier appears only where the device took
+/// `VK_EXT_image_drm_format_modifier`, which is also the condition the importer refuses tiled
+/// buffers without.
+#[test]
+fn the_device_reports_the_dmabuf_layouts_it_accepts() {
+    use gpui::GpuRenderer as _;
+
+    let renderer = match gpui::current_headless_renderer() {
+        Ok(Some(renderer)) => renderer,
+        Ok(None) | Err(_) => {
+            eprintln!("skipping: no headless renderer");
+            return;
+        }
+    };
+    let renderer: &dyn std::any::Any = &*renderer;
+    let Some(headless) = renderer.downcast_ref::<gpui_wgpu::WgpuHeadlessRenderer>() else {
+        eprintln!("skipping: the headless renderer is not wgpu");
+        return;
+    };
+    let (device, _queue) = headless
+        .device()
+        .expect("the headless renderer has a device");
+    let capabilities = gpui_wgpu::dmabuf_capabilities(&device).expect("the device is Vulkan");
+
+    let formats: Vec<_> = capabilities
+        .formats()
+        .iter()
+        .map(|entry| entry.format)
+        .collect();
+    assert_eq!(
+        formats,
+        vec![
+            SurfaceFormatKind::bgra8(),
+            SurfaceFormatKind::rgba8(),
+            SurfaceFormatKind::nv12(),
+            SurfaceFormatKind::nv21(),
+        ],
+        "the report is the importer's closed set, in its order",
+    );
+
+    for format in &formats {
+        assert!(
+            capabilities.supports(format, DmaBufHandle::LINEAR),
+            "{format} must be importable linearly: every GPU can sample its own linear memory",
+        );
+    }
+    assert!(
+        !capabilities.supports(&SurfaceFormatKind::i420(), DmaBufHandle::LINEAR),
+        "the importer has no I420 arm, so a report that offered one would invite a dropped frame",
+    );
+    assert_eq!(capabilities.modifiers(&SurfaceFormatKind::i420()), None);
+
+    // Which modifiers exist is the machine's, so this is a shape check, not a hardware assertion:
+    // no duplicate layouts, and the list is worth printing when a refusal is investigated.
+    for entry in capabilities.formats() {
+        let mut unique = entry.modifiers.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            entry.modifiers.len(),
+            "duplicate modifiers in the {} entry: {:#x?}",
+            entry.format,
+            entry.modifiers,
+        );
+        eprintln!("{} import modifiers: {:#x?}", entry.format, entry.modifiers);
+    }
 }
 
 /// Lay a row pattern into `content` at `plane` (`offset`, `stride`), honouring the stride — the
@@ -611,7 +686,10 @@ fn the_renderer_signals_a_surfaces_release_descriptor() {
         revents: 0,
     };
     let ready = unsafe { libc::poll(&mut descriptor, 1, 5000) };
-    assert_eq!(ready, 1, "the renderer should signal the release descriptor");
+    assert_eq!(
+        ready, 1,
+        "the renderer should signal the release descriptor"
+    );
 }
 
 #[test]
@@ -726,8 +804,11 @@ fn an_nv12_surface_converts_through_the_shader() {
 
     let pixel = composite(handle).expect("composite the surface");
     // The same BT.601 matrix the shader applies, on the CPU, to the bytes the planes carry.
-    let expected =
-        ycbcr_to_rgb(f32::from(y) / 255.0, f32::from(cb) / 255.0, f32::from(cr) / 255.0);
+    let expected = ycbcr_to_rgb(
+        f32::from(y) / 255.0,
+        f32::from(cb) / 255.0,
+        f32::from(cr) / 255.0,
+    );
     for channel in 0..3 {
         let want = (expected[channel] * 255.0).round() as i32;
         let got = i32::from(pixel[channel]);

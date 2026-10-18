@@ -291,6 +291,7 @@ impl DmaBufHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{DmaBufCapabilities, DmaBufFormatCapability};
 
     /// A real descriptor without a GPU: `/dev/null` is an open file, and any open file is a valid
     /// plane descriptor as far as the descriptor type is concerned.
@@ -441,5 +442,32 @@ mod tests {
         let released = handle.clone().with_release(descriptor());
         assert!(released.release.is_some());
         assert_ne!(handle, released);
+    }
+
+    /// The report answers by format and modifier, and absence is a refusal rather than a guess.
+    #[test]
+    fn a_capability_report_answers_by_format_and_modifier() {
+        let caps = DmaBufCapabilities::new(vec![
+            DmaBufFormatCapability {
+                format: SurfaceFormatKind::nv12(),
+                modifiers: vec![DmaBufHandle::LINEAR, 0x0100_0000_0000_0002],
+            },
+            DmaBufFormatCapability {
+                format: SurfaceFormatKind::bgra8(),
+                modifiers: vec![DmaBufHandle::LINEAR],
+            },
+        ]);
+
+        assert!(caps.supports(&SurfaceFormatKind::nv12(), DmaBufHandle::LINEAR));
+        assert!(caps.supports(&SurfaceFormatKind::nv12(), 0x0100_0000_0000_0002));
+        assert!(!caps.supports(&SurfaceFormatKind::nv12(), 0x10));
+        assert!(caps.supports(&SurfaceFormatKind::bgra8(), DmaBufHandle::LINEAR));
+        assert!(!caps.supports(&SurfaceFormatKind::i420(), DmaBufHandle::LINEAR));
+
+        assert_eq!(
+            caps.modifiers(&SurfaceFormatKind::bgra8()),
+            Some(&[DmaBufHandle::LINEAR][..])
+        );
+        assert_eq!(caps.modifiers(&SurfaceFormatKind::rgba8()), None);
     }
 }

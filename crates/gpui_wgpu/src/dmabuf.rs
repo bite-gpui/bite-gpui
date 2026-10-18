@@ -52,7 +52,10 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use ash::vk;
-use gpui_engine::{DmaBufHandle, DmaBufPlane, RgbOrder, SampleDepth, Subsampling};
+use gpui_engine::{
+    DmaBufCapabilities, DmaBufFormatCapability, DmaBufHandle, DmaBufPlane, RgbOrder, SampleDepth,
+    Subsampling, SurfaceFormatKind,
+};
 
 /// A plane's texture, adopted into `wgpu`, and the view the renderer samples.
 ///
@@ -126,6 +129,96 @@ pub(crate) fn import_dmabuf(
         "unsupported YCbCr surface format: {format}",
     );
     import_luma_chroma(device, &hal, instance, physical, handle)
+}
+
+/// What `device` can import as a dma-buf surface.
+///
+/// The renderer's own answer, asked of the device it already has: no device is created, no memory is
+/// allocated, and the format table comes from `vkGetPhysicalDeviceFormatProperties`. `None` when the
+/// device is not Vulkan — the importer has no other arm.
+///
+/// The reported formats are the importer's closed set (the packed 8-bit RGB pair and the 8-bit 4:2:0
+/// pair), not every format VideoCore or the driver knows. A modifier is reported only when the
+/// importer can bind it: `LINEAR` when the format's linear tiling carries `SAMPLED_IMAGE`, and a
+/// driver modifier only when the device took `VK_EXT_image_drm_format_modifier` (otherwise the
+/// importer refuses tiled buffers, so reporting one would invite a buffer it would drop).
+pub fn dmabuf_capabilities(device: &wgpu::Device) -> Option<DmaBufCapabilities> {
+    let hal = unsafe { device.as_hal::<wgpu::hal::vulkan::Api>() }?;
+    let instance = hal.shared_instance().raw_instance();
+    let physical = hal.raw_physical_device();
+    let tiled = honours_plane_layouts(&hal);
+
+    let formats = importable_formats()
+        .into_iter()
+        .map(|(format, vk_format)| {
+            let properties =
+                unsafe { instance.get_physical_device_format_properties(physical, vk_format) };
+            let mut modifiers = Vec::new();
+            if properties
+                .linear_tiling_features
+                .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE)
+            {
+                modifiers.push(DmaBufHandle::LINEAR);
+            }
+            if tiled {
+                for properties in drm_modifiers(instance, physical, vk_format) {
+                    if properties
+                        .drm_format_modifier_tiling_features
+                        .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE)
+                        && !modifiers.contains(&properties.drm_format_modifier)
+                    {
+                        modifiers.push(properties.drm_format_modifier);
+                    }
+                }
+            }
+            DmaBufFormatCapability { format, modifiers }
+        })
+        .collect();
+
+    Some(DmaBufCapabilities::new(formats))
+}
+
+/// The formats the importer handles, and the Vulkan format each is created as.
+fn importable_formats() -> [(SurfaceFormatKind, vk::Format); 4] {
+    [
+        (SurfaceFormatKind::bgra8(), vk::Format::B8G8R8A8_UNORM),
+        (SurfaceFormatKind::rgba8(), vk::Format::R8G8B8A8_UNORM),
+        (
+            SurfaceFormatKind::nv12(),
+            vk::Format::G8_B8R8_2PLANE_420_UNORM,
+        ),
+        // NV21 has no Vulkan format of its own: the plane layout is NV12's, and the chroma order is
+        // the sampler's swap. The importer creates the same image and lets the shader do it.
+        (
+            SurfaceFormatKind::nv21(),
+            vk::Format::G8_B8R8_2PLANE_420_UNORM,
+        ),
+    ]
+}
+
+/// Every DRM format modifier `format` supports, with the features each carries.
+fn drm_modifiers(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    format: vk::Format,
+) -> Vec<vk::DrmFormatModifierPropertiesEXT> {
+    // SAFETY: both calls read; the second fills a buffer sized from the first call's count.
+    unsafe {
+        let mut list = vk::DrmFormatModifierPropertiesListEXT::default();
+        let mut properties = vk::FormatProperties2::default().push_next(&mut list);
+        instance.get_physical_device_format_properties2(physical, format, &mut properties);
+
+        let count = list.drm_format_modifier_count as usize;
+        if count == 0 {
+            return Vec::new();
+        }
+        let mut modifiers = vec![vk::DrmFormatModifierPropertiesEXT::default(); count];
+        let mut list = vk::DrmFormatModifierPropertiesListEXT::default()
+            .drm_format_modifier_properties(&mut modifiers);
+        let mut properties = vk::FormatProperties2::default().push_next(&mut list);
+        instance.get_physical_device_format_properties2(physical, format, &mut properties);
+        modifiers
+    }
 }
 
 /// Whether `hal` carries `VK_EXT_image_drm_format_modifier`, which an explicit plane layout needs.

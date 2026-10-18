@@ -47,10 +47,10 @@ use crate::{
     Action, ActionBuildError, ActionRegistry, ActivationPolicy, ActivityGuard, Any, AnyView,
     AnyWindowHandle, AppContext, Arena, ArenaBox, Asset, AssetSource, BackgroundExecutor, Bounds,
     ClipboardItem, ClipboardReadError, CursorStyle, DefaultTextSystem, DispatchPhase,
-    DisplayChanges, DisplayEvent, DisplayId, EventEmitter, ExternalDragPayload, FocusHandle,
-    FocusMap, ForegroundExecutor, FramePipeline, Global, GpuAdapterInfo, KeyBinding, KeyContext,
-    Keymap, Keystroke, LayoutEngine, LayoutId, Menu, MenuCommandId, MenuItem, MissingGlyph,
-    OwnedMenu, OwnedMenuItem, PathPromptOptions, Pixels, Platform, PlatformDisplay,
+    DisplayChanges, DisplayEvent, DisplayId, DmaBufCapabilities, EventEmitter, ExternalDragPayload,
+    FocusHandle, FocusMap, ForegroundExecutor, FramePipeline, Global, GpuAdapterInfo, KeyBinding,
+    KeyContext, Keymap, Keystroke, LayoutEngine, LayoutId, Menu, MenuCommandId, MenuItem,
+    MissingGlyph, OwnedMenu, OwnedMenuItem, PathPromptOptions, Pixels, Platform, PlatformDisplay,
     PlatformKeyboardLayout, PlatformKeyboardMapper, Point, Priority, PromptBuilder, PromptButton,
     PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle, Reservation,
     ScreenCaptureSource, SharedString,
@@ -2298,8 +2298,8 @@ impl App {
     ///
     /// No device is created to answer this, so it is safe to call before the first window — but the
     /// renderer chooses its adapter when the first window is created, so this and
-    /// [`active_gpu`](Self::active_gpu) can disagree until then. A platform that cannot enumerate
-    /// returns an empty list.
+    /// [`active_gpu`](Self::active_gpu) can disagree until then. A backend that cannot enumerate
+    /// reports one synthesized adapter (decision `0009`), not an empty list.
     pub fn enumerate_gpus(&self) -> Vec<GpuAdapterInfo> {
         self.platform.enumerate_gpus()
     }
@@ -2310,6 +2310,18 @@ impl App {
     /// through. A platform that cannot report it returns `None`.
     pub fn active_gpu(&self) -> Option<GpuAdapterInfo> {
         self.platform.active_gpu()
+    }
+
+    /// What the renderer can import as a dma-buf surface, or `None` before the first window has made
+    /// a device.
+    ///
+    /// Asked on the device the renderer already has, so nothing is created to answer it. A producer
+    /// uses the per-format modifier list to choose a layout the renderer accepts rather than
+    /// discover a refusal at import time; a linear buffer still needs the device's own offsets and
+    /// pitches (`gpui_interop::GpuDevice::linear_layout`). A platform whose surfaces are not
+    /// dma-bufs returns `None`.
+    pub fn dmabuf_capabilities(&self) -> Option<DmaBufCapabilities> {
+        self.platform.dmabuf_capabilities()
     }
 
     /// Invokes a callback with grapheme clusters that exhausted font fallback.

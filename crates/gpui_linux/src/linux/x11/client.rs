@@ -369,6 +369,11 @@ impl X11Connection {
         self.0.active_gpu()
     }
 
+    /// What the renderer's device can import as a dma-buf surface.
+    pub(crate) fn dmabuf_capabilities(&self) -> Option<gpui_engine::DmaBufCapabilities> {
+        self.0.dmabuf_capabilities()
+    }
+
     /// Connects to the X server `environment` names and registers its event sources on
     /// `handle`.
     ///
@@ -1683,6 +1688,10 @@ impl X11Client {
 
     fn active_gpu(&self) -> Option<gpui_platform::GpuAdapterInfo> {
         crate::linux::platform::active_gpu(&self.0.borrow().gpu_context)
+    }
+
+    fn dmabuf_capabilities(&self) -> Option<gpui_engine::DmaBufCapabilities> {
+        crate::linux::platform::dmabuf_capabilities(&self.0.borrow().gpu_context)
     }
 
     #[cfg(feature = "screen-capture")]

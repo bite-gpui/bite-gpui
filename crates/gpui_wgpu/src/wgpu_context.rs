@@ -222,6 +222,15 @@ pub fn enumerate_adapters_from(instance: &wgpu::Instance) -> Vec<GpuAdapterInfo>
 }
 
 impl WgpuContext {
+    /// What this device can import as a dma-buf surface.
+    ///
+    /// The renderer's own report, asked on the device it already made: no device is created. `None`
+    /// where the importer has no arm for the backend (anything but Vulkan).
+    #[cfg(target_os = "linux")]
+    pub fn dmabuf_capabilities(&self) -> Option<gpui_engine::DmaBufCapabilities> {
+        crate::dmabuf::dmabuf_capabilities(&self.device)
+    }
+
     /// Describe the adapter this context renders on, in the terms `gpui_platform` publishes.
     #[cfg(not(target_family = "wasm"))]
     pub fn adapter_info(&self) -> GpuAdapterInfo {
