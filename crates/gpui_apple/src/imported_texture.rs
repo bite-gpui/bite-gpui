@@ -60,7 +60,7 @@ mod tests {
     use super::*;
     use crate::metal_renderer::{InstanceBufferPool, MetalRenderer};
     use gpui_engine::{CustomRenderPrimitive, GpuRenderer, Scene, SceneRenderer};
-    use gpui_platform::{Bounds, ContentMask, Corners, DevicePixels, Point, Size};
+    use gpui_platform::{Bounds, ContentMask, Corners, DevicePixels, GpuPreference, Point, Size};
     use metal::{MTLOrigin, MTLRegion, MTLSize, MTLStorageMode, MTLTextureUsage};
     use parking_lot::Mutex;
     use std::sync::Arc;
@@ -70,9 +70,13 @@ mod tests {
     /// that is not about the code.
     fn test_renderer() -> Option<MetalRenderer> {
         metal::Device::system_default()?;
-        Some(MetalRenderer::new_headless(Arc::new(Mutex::new(
-            InstanceBufferPool::default(),
-        ))))
+        Some(
+            MetalRenderer::new_headless(
+                Arc::new(Mutex::new(InstanceBufferPool::default())),
+                &GpuPreference::Auto,
+            )
+            .expect("a Metal device was just found"),
+        )
     }
 
     /// The renderer's own device, reached the way an application reaches it: through the seam,
