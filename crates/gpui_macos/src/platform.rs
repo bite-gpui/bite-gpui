@@ -31,10 +31,10 @@ use futures::channel::oneshot;
 use gpui_engine::PlatformTextSystem;
 use gpui_platform::{
     ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
-    MenuCommandId, OsAction, PathPromptOptions, Platform, PlatformDisplay, PlatformKeyboardLayout,
-    PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformOsMenu, PlatformWindow,
-    SystemMenuType, Task, ThermalState, WindowAppearance, WindowId, WindowKind, WindowParams,
-    popup::PopupNotSupportedError,
+    GpuAdapterInfo, GpuPreference, MenuCommandId, OsAction, PathPromptOptions, Platform,
+    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu,
+    PlatformMenuItem, PlatformOsMenu, PlatformWindow, SystemMenuType, Task, ThermalState,
+    WindowAppearance, WindowId, WindowKind, WindowParams, popup::PopupNotSupportedError,
 };
 use gpui_util::{ResultExt, new_std_command};
 use objc::{
@@ -181,6 +181,10 @@ pub(crate) struct MacPlatformState {
     foreground_executor: ForegroundExecutor,
     text_system: Arc<dyn PlatformTextSystem>,
     renderer_context: renderer::Context,
+    /// The application's GPU preference; `Auto` until it states otherwise.
+    gpu_preference: GpuPreference,
+    /// Set once the first window has built a renderer; a later preference is refused.
+    gpu_chosen: bool,
     headless: bool,
     general_pasteboard: Pasteboard,
     find_pasteboard: Pasteboard,
@@ -230,6 +234,8 @@ impl MacPlatform {
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
             renderer_context: renderer::Context::default(),
+            gpu_preference: GpuPreference::Auto,
+            gpu_chosen: false,
             general_pasteboard: Pasteboard::general(),
             find_pasteboard: Pasteboard::find(),
             reopen: None,
@@ -612,6 +618,26 @@ impl Platform for MacPlatform {
         Some(MacWindow::ordered_windows())
     }
 
+    fn set_gpu_preference(&self, preference: GpuPreference) {
+        let mut state = self.0.lock();
+        if state.gpu_chosen {
+            log::warn!(
+                "The GPU cannot change after the first window; keeping the device already in use"
+            );
+            return;
+        }
+        state.gpu_preference = preference;
+    }
+
+    fn enumerate_gpus(&self) -> Vec<GpuAdapterInfo> {
+        renderer::enumerate_gpus()
+    }
+
+    fn active_gpu(&self) -> Option<GpuAdapterInfo> {
+        let context = self.0.lock().renderer_context.clone();
+        context.lock().selected_gpu()
+    }
+
     fn open_window(
         &self,
         handle: WindowId,
@@ -623,25 +649,35 @@ impl Platform for MacPlatform {
             return Err(PopupNotSupportedError.into());
         }
 
-        let (cursor_visible, foreground_executor, background_executor, renderer_context) = {
+        let (
+            cursor_visible,
+            foreground_executor,
+            background_executor,
+            renderer_context,
+            gpu_preference,
+        ) = {
             let guard = self.0.lock();
             (
                 guard.cursor_visible.clone(),
                 guard.foreground_executor.clone(),
                 guard.background_executor.clone(),
                 guard.renderer_context.clone(),
+                guard.gpu_preference.clone(),
             )
         };
 
-        Ok(Box::new(MacWindow::open(
+        let window = MacWindow::open(
             handle,
             options,
             cursor_visible,
             foreground_executor,
             background_executor,
             renderer_context,
+            gpu_preference,
             self.1,
-        )?))
+        )?;
+        self.0.lock().gpu_chosen = true;
+        Ok(Box::new(window))
     }
 
     fn window_appearance(&self) -> WindowAppearance {
