@@ -16,6 +16,7 @@ use log::warn;
 #[cfg(not(target_family = "wasm"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use smallvec::SmallVec;
+use std::any::Any;
 use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::ops::Range;
@@ -2726,7 +2727,9 @@ impl WgpuRenderer {
     any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
 struct HeadlessRenderTarget {
-    texture: wgpu::Texture,
+    /// Shared so the same frame can be handed to a host loop as a surface
+    /// ([`WgpuOffscreenSurface`]) while the renderer keeps its own reference.
+    texture: Arc<wgpu::Texture>,
     view: wgpu::TextureView,
 }
 
@@ -2740,6 +2743,37 @@ impl HeadlessRenderTarget {
             width: DevicePixels(self.texture.width() as i32),
             height: DevicePixels(self.texture.height() as i32),
         }
+    }
+}
+
+/// A rendered offscreen frame a host loop can sample, without the renderer crossing threads.
+///
+/// The handle [`SceneRenderer::offscreen_surface_handle`] returns for this backend, downcastable
+/// from the opaque `Arc<dyn Any + Send + Sync>`. It names `wgpu` because the consumer does: the
+/// engine's contract stays graphics-API-free, and the host that samples the frame is already a wgpu
+/// client on the same device.
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+))]
+pub struct WgpuOffscreenSurface {
+    texture: Arc<wgpu::Texture>,
+    size: Size<DevicePixels>,
+}
+
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+))]
+impl WgpuOffscreenSurface {
+    /// The frame's texture, as it was rendered.
+    pub fn texture(&self) -> &wgpu::Texture {
+        &self.texture
+    }
+
+    /// The frame's size in device pixels.
+    pub fn size(&self) -> Size<DevicePixels> {
+        self.size
     }
 }
 
@@ -2829,7 +2863,10 @@ impl WgpuHeadlessRenderer {
                 view_formats: &[],
             });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.render_target = Some(HeadlessRenderTarget { texture, view });
+        self.render_target = Some(HeadlessRenderTarget {
+            texture: Arc::new(texture),
+            view,
+        });
         Ok(())
     }
 
@@ -3004,6 +3041,14 @@ impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
         let image = self.read_image()?;
         let (width, height) = image.dimensions();
         gpui_engine::PixelBuffer::new(width, height, image.into_raw())
+    }
+
+    fn offscreen_surface_handle(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        let target = self.render_target.as_ref()?;
+        Some(Arc::new(WgpuOffscreenSurface {
+            texture: target.texture.clone(),
+            size: target.size(),
+        }))
     }
 }
 
@@ -3216,6 +3261,123 @@ mod tests {
 
         renderer.render_scene(&Scene::default(), device_size(16, 17))?;
         assert_ne!(target_texture(&renderer), first);
+        Ok(())
+    }
+
+    /// P7: an offscreen frame crosses a thread boundary as a surface, while the `!Send` renderer
+    /// stays on its own thread, and the host samples it on the same device.
+    ///
+    /// The CPU half rides along so the row proves both halves of the contract: bytes, and the
+    /// zero-copy handle. The guest signals after its readback has waited for the submission, so the
+    /// host samples a completed frame; the renderer stays alive until the host is done.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_offscreen_frame_crosses_a_thread_as_a_surface() -> anyhow::Result<()> {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (frames, received) = mpsc::channel();
+        let (shown, sampled) = mpsc::channel();
+
+        let worker = std::thread::spawn(move || -> anyhow::Result<()> {
+            let mut renderer = WgpuHeadlessRenderer::new()?;
+            let mut scene = Scene::default();
+            scene.insert_primitive(solid_quad(0.0, 0.0, 32.0, 32.0, gpui::red()));
+            scene.finish();
+            renderer.render_scene(&scene, device_size(64, 32))?;
+
+            let surface = renderer
+                .offscreen_surface_handle()
+                .expect("a rendered target can cross a thread");
+            let pixels = renderer.read_pixels()?;
+            frames
+                .send((surface, pixels))
+                .map_err(|_| anyhow::anyhow!("the host dropped the frame channel"))?;
+            // Keep the renderer and the target it owns alive until the host has sampled.
+            let _ = sampled.recv();
+            Ok(())
+        });
+
+        let (surface, pixels) = received.recv()?;
+        assert_pixel(&pixels, 8, 16, RED);
+
+        let surface = surface
+            .downcast_ref::<WgpuOffscreenSurface>()
+            .expect("the handle is this backend's surface");
+        assert_eq!(surface.size(), device_size(64, 32));
+
+        // The host reaches the same device: the headless context is process-wide, so a second
+        // renderer is another handle on it rather than a second device.
+        let host = WgpuHeadlessRenderer::new()?;
+        let (device, queue) = host.device().expect("the host renderer has a device");
+        let texture = surface.texture();
+        let width = texture.width();
+        let height = texture.height();
+        let padded_bytes_per_row = (width * 4)
+            .checked_next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            .expect("the row size overflows");
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("guest_surface_readback"),
+            size: u64::from(padded_bytes_per_row) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("guest_surface_readback_encoder"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let submission = queue.submit(std::iter::once(encoder.finish()));
+        let (sender, receiver) = mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(Duration::from_secs(30)),
+        })?;
+        receiver.recv_timeout(Duration::from_secs(30))??;
+
+        let data = readback.slice(..).get_mapped_range();
+        let offset = 16 * padded_bytes_per_row as usize + 8 * 4;
+        let mut pixel = [
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ];
+        if host.core.target_format == wgpu::TextureFormat::Bgra8Unorm {
+            pixel.swap(0, 2);
+        }
+        assert_eq!(pixel, RED, "the host samples the guest's own frame");
+        drop(data);
+        readback.unmap();
+
+        shown
+            .send(())
+            .map_err(|_| anyhow::anyhow!("the guest stopped early"))?;
+        worker.join().expect("the guest thread panicked")?;
         Ok(())
     }
 
