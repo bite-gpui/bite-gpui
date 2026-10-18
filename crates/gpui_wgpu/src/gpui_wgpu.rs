@@ -21,5 +21,5 @@ pub use wgpu_context::*;
     not(target_family = "wasm"),
     any(test, feature = "bench-support", feature = "test-support", feature = "headless")
 ))]
-pub use wgpu_renderer::WgpuHeadlessRenderer;
+pub use wgpu_renderer::{WgpuHeadlessRenderer, WgpuOffscreenSurface};
 pub use wgpu_renderer::{WgpuContextSlot, WgpuRenderer, WgpuSurfaceConfig};
