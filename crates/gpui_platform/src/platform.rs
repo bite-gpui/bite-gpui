@@ -276,11 +276,13 @@ pub trait Platform: 'static {
     /// Enumeration happens without creating a device, so this is safe to call before
     /// [`run`](Self::run) and is what a preferences panel reads; it is also the list a
     /// [`GpuPreference::Custom`] selector chooses from. The order is the platform's; a caller that
-    /// wants a particular one states a preference rather than indexing into this list. A backend
-    /// that cannot enumerate — a headless platform, or one whose renderer is not wgpu — returns an
-    /// empty list.
+    /// wants a particular one states a preference rather than indexing into this list.
+    ///
+    /// A backend that cannot enumerate returns **one** synthesized entry rather than an empty list:
+    /// the identity contract is that every reported adapter has a permanent part and a session, and
+    /// a single-GPU platform should still answer "which GPU" with "the GPU".
     fn enumerate_gpus(&self) -> Vec<GpuAdapterInfo> {
-        Vec::new()
+        vec![GpuAdapterInfo::single()]
     }
 
     /// The adapter the renderer actually chose, once it has chosen one.
