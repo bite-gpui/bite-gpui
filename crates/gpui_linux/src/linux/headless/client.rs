@@ -106,7 +106,7 @@ impl LinuxClient for HeadlessClient {
         Ok(Box::new(HeadlessWindow::new(
             params,
             self.0.borrow().display.clone(),
-        )))
+        )?))
     }
 
     fn compositor_name(&self) -> &'static str {
