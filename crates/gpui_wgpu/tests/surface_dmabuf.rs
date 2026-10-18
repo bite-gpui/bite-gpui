@@ -42,8 +42,8 @@ use std::rc::Rc;
 use ash::vk;
 use gpui::{
     AnyWindowHandle, AppContext as _, Context, Corners, DmaBufHandle, DmaBufPlane,
-    HeadlessAppContext, ImportedTextureHandle, IntoElement, Render, SurfaceFormatKind, Window, div,
-    gpu_canvas, prelude::*, px, size, surface,
+    HeadlessAppContext, ImportedTextureHandle, IntoElement, Render, SurfaceFormatKind,
+    TransferFunction, Window, div, gpu_canvas, prelude::*, px, size, surface,
 };
 use gpui_wgpu::{CosmicTextSystem, ImportedTextureExt as _, WgpuRenderer};
 
@@ -719,6 +719,58 @@ fn a_single_bgra_plane_reads_back_as_the_source_colour() {
 
     let pixel = composite(handle).expect("composite the surface");
     assert_eq!(pixel, COLOUR);
+}
+
+/// Linear light is encoded for GPUI's non-sRGB target. The row above asserts the other half: the
+/// same bytes declared sRGB (the default) come back unchanged.
+#[test]
+fn a_linear_bgra_plane_is_encoded_to_srgb() {
+    if !gpu_available() {
+        eprintln!("skipping: no Vulkan adapter for the headless renderer");
+        return;
+    }
+
+    // A mid-linear value, where the curve is far from the identity: 64/255 linear is about
+    // 137/255 sRGB.
+    const LINEAR: u8 = 64;
+    let mut content = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
+    for _ in 0..(WIDTH * HEIGHT) {
+        // BGRA with all three channels equal, so the channel order does not matter here.
+        content.extend_from_slice(&[LINEAR, LINEAR, LINEAR, 255]);
+    }
+    let Some((_producer, fd)) = produce_dmabuf(&content) else {
+        eprintln!("skipping: could not allocate a dma-buf");
+        return;
+    };
+    let handle = DmaBufHandle::new(
+        WIDTH,
+        HEIGHT,
+        SurfaceFormatKind::bgra8(),
+        DmaBufHandle::LINEAR,
+        [DmaBufPlane::new(fd, 0, WIDTH * 4)],
+        None,
+    )
+    .with_transfer(TransferFunction::Linear);
+
+    let pixel = composite(handle).expect("composite the surface");
+    let expected = srgb_encode(LINEAR);
+    assert!(
+        pixel[0].abs_diff(expected) <= 1,
+        "linear {LINEAR} should composite as sRGB {expected}, got {pixel:?}",
+    );
+    assert_eq!(pixel[3], 255);
+}
+
+/// sRGB-encode one 8-bit linear sample: the shader's `linear_to_srgb` in Rust, so the expected value
+/// is computed the same way the GPU computes it.
+fn srgb_encode(linear: u8) -> u8 {
+    let linear = linear as f32 / 255.0;
+    let encoded = if linear < 0.003_130_8 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded * 255.0).round() as u8
 }
 
 #[test]

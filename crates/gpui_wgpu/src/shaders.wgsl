@@ -1356,12 +1356,14 @@ struct SurfaceParams {
     bounds: Bounds,
     content_mask: Bounds,
     // 0 = NV12 (sample luma and chroma, convert), 1 = a single RGBA/BGRA plane (sample
-    // straight through). `chroma_reconstruction` is 0 for bilinear, 1 for luma-guided. The padding
-    // keeps the two words before `ycbcr_to_rgb` a multiple of 16 apart.
+    // straight through). `chroma_reconstruction` is 0 for bilinear, 1 for luma-guided. The pad
+    // keeps the four words before `ycbcr_to_rgb` a multiple of 16 apart.
     surface_format: u32,
     chroma_reconstruction: u32,
+    // 0 = the samples are display-encoded already (sRGB bytes, or the R'G'B' the YCbCr matrix
+    // produces); 1 = linear light, which is encoded for GPUI's non-sRGB target before the write.
+    transfer_function: u32,
     _pad0: u32,
-    _pad1: u32,
     // The YUV -> RGB matrix for the colour space the producer declared, column-major. Unused for a
     // single-plane buffer, which is already RGB.
     ycbcr_to_rgb: mat4x4<f32>,
@@ -1426,18 +1428,26 @@ fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
 
+    var colour: vec4<f32>;
     if (surface_locals.surface_format == 1u) {
         // A single RGBA/BGRA plane: sample it straight through, no colour conversion.
-        return textureSampleLevel(t_y, s_surface, input.texture_position, 0.0);
-    }
-
-    let luma = textureSampleLevel(t_y, s_surface, input.texture_position, 0.0).r;
-    var chroma: vec2<f32>;
-    if (surface_locals.chroma_reconstruction == 1u) {
-        chroma = sample_chroma_luma_guided(input.texture_position);
+        colour = textureSampleLevel(t_y, s_surface, input.texture_position, 0.0);
     } else {
-        chroma = textureSampleLevel(t_cb_cr, s_surface, input.texture_position, 0.0).rg;
+        let luma = textureSampleLevel(t_y, s_surface, input.texture_position, 0.0).r;
+        var chroma: vec2<f32>;
+        if (surface_locals.chroma_reconstruction == 1u) {
+            chroma = sample_chroma_luma_guided(input.texture_position);
+        } else {
+            chroma = textureSampleLevel(t_cb_cr, s_surface, input.texture_position, 0.0).rg;
+        }
+        colour = surface_locals.ycbcr_to_rgb * vec4<f32>(luma, chroma, 1.0);
     }
 
-    return surface_locals.ycbcr_to_rgb * vec4<f32>(luma, chroma, 1.0);
+    if (surface_locals.transfer_function == 1u) {
+        // The target is a non-sRGB `_UNORM` and GPUI writes display-encoded values into it, so
+        // linear light is encoded here. An sRGB-encoded source, and the R'G'B' a YCbCr matrix
+        // produces, pass through; encoding them again would wash them out.
+        colour = linear_to_srgba(colour);
+    }
+    return colour;
 }

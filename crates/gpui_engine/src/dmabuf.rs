@@ -117,6 +117,27 @@ pub enum YuvRange {
     Limited,
 }
 
+/// How a buffer's stored values relate to light intensity.
+///
+/// Independent of [`YuvRange`] (where structural black and white sit in the integers) and of the
+/// layout dimensions [`SurfaceFormatKind`] carries: the same bytes can be sRGB-encoded or linear, and
+/// the range is a separate axis again.
+///
+/// The default for an RGB buffer is [`Srgb`](Self::Srgb) — desktop buffers, screen capture and UI
+/// assets are sRGB-encoded — and for a YCbCr one [`Bt709`](Self::Bt709), whose matrix already
+/// produces non-linear `R'G'B'`. [`Linear`](Self::Linear) is what a 3D engine's linear render target
+/// carries; the renderer encodes it before compositing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransferFunction {
+    /// sRGB-encoded (`IEC 61966-2-1`): the default for 8-bit RGB.
+    #[default]
+    Srgb,
+    /// Linear light: what an engine's render target holds before any display encoding.
+    Linear,
+    /// The BT.709 curve (BT.601 shares it): YCbCr video's non-linear `R'G'B'`.
+    Bt709,
+}
+
 /// The YCbCr a YCbCr ([`is_yuv`](SurfaceFormatKind::is_yuv)) buffer's bytes are in: the matrix and the
 /// range.
 ///
@@ -179,6 +200,9 @@ pub struct DmaBufHandle {
     /// The colour space this buffer's YCbCr bytes are in; ignored for an RGB one, whose bytes are
     /// already RGB.
     pub color_space: YuvColorSpace,
+    /// How this buffer's values relate to light. An RGB producer declares whether its bytes are
+    /// sRGB-encoded or linear; for YCbCr it follows the matrix, and the default is the video curve.
+    pub transfer: TransferFunction,
 }
 
 impl PartialEq for DmaBufHandle {
@@ -192,6 +216,7 @@ impl PartialEq for DmaBufHandle {
             && same_descriptor(&self.release, &other.release)
             && self.chroma == other.chroma
             && self.color_space == other.color_space
+            && self.transfer == other.transfer
     }
 }
 
@@ -236,6 +261,13 @@ impl DmaBufHandle {
             release: None,
             chroma: ChromaReconstruction::default(),
             color_space: YuvColorSpace::default(),
+            // A YCbCr matrix already produces non-linear `R'G'B'`; an RGB buffer's bytes default to
+            // the sRGB encoding every desktop producer emits.
+            transfer: if format.is_yuv() {
+                TransferFunction::Bt709
+            } else {
+                TransferFunction::Srgb
+            },
         }
     }
 
@@ -250,6 +282,15 @@ impl DmaBufHandle {
     /// understand the matrix or range falls back to its default (BT.601 full range).
     pub fn with_color_space(mut self, color_space: YuvColorSpace) -> Self {
         self.color_space = color_space;
+        self
+    }
+
+    /// Declare how this buffer's values relate to light. A hint, like the colour space: an RGB
+    /// producer whose bytes are linear says so here, and the renderer encodes them for its
+    /// sRGB-encoded targets. The default follows the format (sRGB for RGB, the video curve for
+    /// YCbCr), so a producer with sRGB-encoded bytes need not call this.
+    pub fn with_transfer(mut self, transfer: TransferFunction) -> Self {
+        self.transfer = transfer;
         self
     }
 
@@ -422,6 +463,51 @@ mod tests {
         let declared = handle.clone().with_color_space(YuvColorSpace::BT709_LIMITED);
         assert_eq!(declared.color_space, YuvColorSpace::BT709_LIMITED);
         assert_ne!(handle, declared);
+    }
+
+    /// An RGB buffer's bytes default to sRGB-encoded; a YCbCr one's matrix already produces
+    /// non-linear `R'G'B'`, so its curve is the video one.
+    #[test]
+    fn the_transfer_defaults_to_the_formats_curve() {
+        let rgb = DmaBufHandle::new(
+            1,
+            1,
+            SurfaceFormatKind::bgra8(),
+            DmaBufHandle::LINEAR,
+            [DmaBufPlane::new(descriptor(), 0, 4)],
+            None,
+        );
+        assert_eq!(rgb.transfer, TransferFunction::Srgb);
+
+        let yuv = DmaBufHandle::new(
+            2,
+            2,
+            SurfaceFormatKind::nv12(),
+            DmaBufHandle::LINEAR,
+            [
+                DmaBufPlane::new(descriptor(), 0, 2),
+                DmaBufPlane::new(descriptor(), 4, 2),
+            ],
+            None,
+        );
+        assert_eq!(yuv.transfer, TransferFunction::Bt709);
+    }
+
+    /// The declared transfer is semantic, like the colour space: two buffers differing only in it
+    /// must not be mistaken for one.
+    #[test]
+    fn the_transfer_is_part_of_identity() {
+        let handle = DmaBufHandle::new(
+            1,
+            1,
+            SurfaceFormatKind::bgra8(),
+            DmaBufHandle::LINEAR,
+            [DmaBufPlane::new(descriptor(), 0, 4)],
+            None,
+        );
+        let linear = handle.clone().with_transfer(TransferFunction::Linear);
+        assert_eq!(linear.transfer, TransferFunction::Linear);
+        assert_ne!(handle, linear);
     }
 
     /// A producer may hand the renderer a descriptor to signal once it is done with the buffer, so a
