@@ -320,42 +320,29 @@ impl MetalRenderer {
             return Err(anyhow::anyhow!("No Metal device is available"));
         }
 
+        // `Auto`'s order, and the order `enumerate_gpus` reports: a `Custom` index is an index into
+        // this list, so the two must enumerate the same way.
+        devices.sort_by_key(|device| (device.is_removable(), !device.is_low_power()));
         let infos: Vec<GpuAdapterInfo> = devices.iter().map(device_info).collect();
-        let auto_order = |indices: &mut Vec<usize>| {
-            indices.sort_by_key(|&index| {
-                let device = &devices[index];
-                (device.is_removable(), !device.is_low_power())
-            });
-        };
 
-        let order = match gpu_preference {
+        let order: Vec<usize> = match gpu_preference {
+            GpuPreference::Auto => (0..devices.len()).collect(),
             // A named adapter goes first and the rest keep `Auto`'s order. An absent one leaves
             // that order untouched: the shared rank's unmatched order is discrete-first, which is
             // the Linux default, not this backend's low-power one.
             GpuPreference::Device(gpu_id) => {
-                let mut order: Vec<usize> = (0..devices.len()).collect();
                 match infos.iter().position(|info| gpu_id.matches(info)) {
-                    Some(chosen) => {
-                        order.remove(chosen);
-                        auto_order(&mut order);
-                        order.insert(0, chosen);
-                    }
-                    None => auto_order(&mut order),
+                    Some(chosen) => std::iter::once(chosen)
+                        .chain((0..devices.len()).filter(|&index| index != chosen))
+                        .collect(),
+                    None => (0..devices.len()).collect(),
                 }
-                order
             }
             GpuPreference::Custom(selector) => {
                 let chosen = gpui_platform::custom_choice(&infos, selector.as_ref())?;
-                let mut tail: Vec<usize> = (0..devices.len())
-                    .filter(|&index| index != chosen)
-                    .collect();
-                auto_order(&mut tail);
-                std::iter::once(chosen).chain(tail).collect::<Vec<_>>()
-            }
-            GpuPreference::Auto => {
-                let mut order: Vec<usize> = (0..devices.len()).collect();
-                auto_order(&mut order);
-                order
+                std::iter::once(chosen)
+                    .chain((0..devices.len()).filter(|&index| index != chosen))
+                    .collect()
             }
             _ => {
                 let mut order: Vec<usize> = (0..devices.len()).collect();
