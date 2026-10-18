@@ -92,11 +92,13 @@ struct SurfaceParams {
     bounds: PodBounds,
     content_mask: PodBounds,
     /// `0` = `NV12` (sample and convert), `1` = a single RGBA/BGRA plane (sample straight through).
-    /// `chroma_reconstruction` is `0` for bilinear, `1` for luma-guided. The padding keeps the two
-    /// words before `ycbcr_to_rgb` 16-byte aligned, so the `mat4x4` lands where the shader expects.
+    /// `chroma_reconstruction` is `0` for bilinear, `1` for luma-guided. The pad keeps the four words
+    /// before `ycbcr_to_rgb` 16-byte aligned, so the `mat4x4` lands where the shader expects.
     surface_format: u32,
     chroma_reconstruction: u32,
-    _pad: [u32; 2],
+    /// `0` = display-encoded already (sRGB bytes, or BT.709 `R'G'B'`), `1` = linear light.
+    transfer_function: u32,
+    _pad: u32,
     /// The `YUV -> RGB` matrix for the colour space the producer declared, column-major as WGSL's
     /// `mat4x4<f32>` reads it; unused for a single-plane buffer.
     ycbcr_to_rgb: [[f32; 4]; 4],
@@ -2151,12 +2153,17 @@ impl WgpuRendererCore {
                 gpui_engine::ChromaReconstruction::LumaGuided => 1,
             };
 
+            let transfer_function = match handle.transfer {
+                gpui_engine::TransferFunction::Linear => 1,
+                gpui_engine::TransferFunction::Srgb | gpui_engine::TransferFunction::Bt709 => 0,
+            };
             let params = SurfaceParams {
                 bounds: surface.bounds.into(),
                 content_mask: surface.content_mask.bounds.into(),
                 surface_format,
                 chroma_reconstruction,
-                _pad: [0; 2],
+                transfer_function,
+                _pad: 0,
                 ycbcr_to_rgb: yuv_to_rgb(handle.color_space),
             };
             // Stage the bytes; one upload carries every surface's params, below the loop.
