@@ -1603,6 +1603,10 @@ impl LinuxClient for X11Client {
         crate::linux::platform::active_gpu(&self.0.borrow().gpu_context)
     }
 
+    fn dmabuf_capabilities(&self) -> Option<gpui_engine::DmaBufCapabilities> {
+        crate::linux::platform::dmabuf_capabilities(&self.0.borrow().gpu_context)
+    }
+
     fn display(&self, id: DisplayId) -> Option<Rc<dyn PlatformDisplay>> {
         let state = self.0.borrow();
 
