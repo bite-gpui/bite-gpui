@@ -27,6 +27,10 @@ use log::warn;
 #[cfg(not(target_family = "wasm"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use smallvec::SmallVec;
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+))]
 use std::any::Any;
 use std::cell::RefCell;
 use std::num::NonZeroU64;
