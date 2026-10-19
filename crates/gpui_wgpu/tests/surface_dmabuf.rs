@@ -405,7 +405,12 @@ fn the_device_reports_the_dmabuf_layouts_it_accepts() {
     let (device, _queue) = headless
         .device()
         .expect("the headless renderer has a device");
-    let capabilities = gpui_wgpu::dmabuf_capabilities(&device).expect("the device is Vulkan");
+    let Some(capabilities) = gpui_wgpu::dmabuf_capabilities(&device) else {
+        // A machine with no Vulkan driver renders through GL, and the importer has no arm for it;
+        // this is the same gap the other dma-buf tests skip on when there is no Vulkan producer.
+        eprintln!("skipping: the headless renderer is not Vulkan");
+        return;
+    };
 
     let formats: Vec<_> = capabilities
         .formats()
