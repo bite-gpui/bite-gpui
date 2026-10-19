@@ -547,6 +547,17 @@ impl WgpuContext {
         {
             required_features |= wgpu::Features::TEXTURE_FORMAT_NV12;
         }
+
+        // Storage textures follow the adapter's format capabilities, not the WebGPU-guaranteed
+        // subset. Bevy's post-processing pipelines write R16Float and Rgba16Float, which the
+        // guaranteed set disallows; the same feature is enabled by Bevy's own device. It is a
+        // no-op for the renderer itself, and skipped where the adapter lacks it.
+        if adapter
+            .features()
+            .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+        {
+            required_features |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        }
         #[cfg(target_family = "wasm")]
         let required_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
             wgpu::Limits::downlevel_webgl2_defaults()
@@ -558,9 +569,29 @@ impl WgpuContext {
                 .using_alignment(adapter.limits())
         };
         #[cfg(not(target_family = "wasm"))]
-        let required_limits = wgpu::Limits::downlevel_defaults()
-            .using_resolution(adapter.limits())
-            .using_alignment(adapter.limits());
+        let required_limits = {
+            let supported = adapter.limits();
+            let mut limits = wgpu::Limits::downlevel_defaults()
+                .using_resolution(supported.clone())
+                .using_alignment(supported.clone());
+            // `downlevel_defaults` is enough for the renderer, but it is not enough to *host* one.
+            // Bevy's clustered-forward PBR pass alone asks for 5–8 storage buffers per stage, a
+            // 64 KiB uniform binding and 16 inter-stage variables; the downlevel set stops at 4,
+            // 16 KiB and 15. Raise only the fields that differ, and only to what the adapter
+            // reports, so the request stays sound. GL keeps the downlevel set: its storage-buffer
+            // support is exactly what the downlevel set exists to describe.
+            if adapter.get_info().backend != wgpu::Backend::Gl {
+                limits.max_storage_buffers_per_shader_stage =
+                    supported.max_storage_buffers_per_shader_stage;
+                limits.max_storage_textures_per_shader_stage =
+                    supported.max_storage_textures_per_shader_stage;
+                limits.max_uniform_buffer_binding_size = supported.max_uniform_buffer_binding_size;
+                limits.max_inter_stage_shader_variables =
+                    supported.max_inter_stage_shader_variables;
+                limits.max_color_attachments = supported.max_color_attachments;
+            }
+            limits
+        };
 
         let descriptor = wgpu::DeviceDescriptor {
             label: Some("gpui_device"),
@@ -601,10 +632,12 @@ impl WgpuContext {
     ///
     /// wgpu's `Adapter::request_device` never enables it, and its absence is what makes the importer
     /// in `dmabuf.rs` refuse a tiled surface: a `DRM_FORMAT_MODIFIER_EXT` image cannot be created on a
-    /// device that does not have the extension. wgpu-hal exposes the two halves needed to create a
-    /// device that does — `Adapter::open_with_callback` mutates the extension list before
-    /// `vkCreateDevice`, and `wgpu::Adapter::create_device_from_hal` adopts the result back into a
-    /// `wgpu::Device` — so the extension is genuinely enabled, not assumed.
+    /// device that does not have the extension. The same call also enables
+    /// `VK_KHR_external_semaphore_fd` where the driver supports it, because the producer half of the
+    /// surface path exports its acquire fence from a semaphore signalled by the queue. wgpu-hal exposes
+    /// the two halves needed to create a device with both — `Adapter::open_with_callback` mutates the
+    /// extension list before `vkCreateDevice`, and `wgpu::Adapter::create_device_from_hal` adopts the
+    /// result back into a `wgpu::Device` — so the extensions are genuinely enabled, not assumed.
     ///
     /// `None` when the adapter is not Vulkan, when the driver does not support the extension, or when
     /// either call refuses; the caller then creates the device the ordinary way and the import keeps
@@ -628,14 +661,26 @@ impl WgpuContext {
             {
                 return None;
             }
+            // The export half of a shared surface needs a fence the producer can hand over as a
+            // `sync_file`. wgpu-hal's queue can signal a semaphore on the submission that rendered
+            // the frame, and `VK_KHR_external_semaphore_fd` is what turns that signal into one. It
+            // is added only where the driver supports it; a producer that asks for it checks the
+            // device's enabled list and refuses rather than exporting without a fence.
+            let with_semaphore_fd = hal
+                .physical_device_capabilities()
+                .supports_extension(ash::vk::KHR_EXTERNAL_SEMAPHORE_FD_NAME);
             let open = hal
                 .open_with_callback(
                     descriptor.required_features,
                     &descriptor.required_limits,
                     &descriptor.memory_hints,
-                    Some(Box::new(|args| {
+                    Some(Box::new(move |args| {
                         args.extensions
                             .push(ash::vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME);
+                        if with_semaphore_fd {
+                            args.extensions
+                                .push(ash::vk::KHR_EXTERNAL_SEMAPHORE_FD_NAME);
+                        }
                     })),
                 )
                 .ok()?;
@@ -977,6 +1022,12 @@ mod tests {
                     .supports_extension(ash::vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME)
             })
         };
+        let semaphore_supported = unsafe {
+            adapter.as_hal::<Api>().is_some_and(|hal| {
+                hal.physical_device_capabilities()
+                    .supports_extension(ash::vk::KHR_EXTERNAL_SEMAPHORE_FD_NAME)
+            })
+        };
         if !supported {
             eprintln!(
                 "skipping: {:?} does not support the extension",
@@ -999,13 +1050,14 @@ mod tests {
             super::WgpuContext::device_with_surface_import(&adapter, &descriptor)
                 .expect("the escape hatch creates the device");
         let enabled = unsafe { device.as_hal::<Api>() }.is_some_and(|device| {
-            device
-                .enabled_device_extensions()
-                .contains(&ash::vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME)
+            let extensions = device.enabled_device_extensions();
+            extensions.contains(&ash::vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_NAME)
+                && (!semaphore_supported
+                    || extensions.contains(&ash::vk::KHR_EXTERNAL_SEMAPHORE_FD_NAME))
         });
         assert!(
             enabled,
-            "the created device must have the extension enabled"
+            "the created device must have the surface extensions enabled"
         );
     }
 
