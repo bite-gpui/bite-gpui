@@ -77,6 +77,12 @@ impl GpuCanvasContext<'_, '_> {
         self.bounds
     }
 
+    /// The window's scale factor. A canvas that owns a backing surface sizes it in physical
+    /// pixels, so the source and the element have the same aspect at any display scale.
+    pub fn scale_factor(&self) -> f32 {
+        self.window.scale_factor()
+    }
+
     /// The window renderer's device, downcast to `R`.
     ///
     /// This is the same-device producer's door: it hands back an owned handle (`ID3D11Device`, a
