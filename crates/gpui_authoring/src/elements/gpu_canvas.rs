@@ -107,9 +107,12 @@ impl GpuCanvasContext<'_, '_> {
     /// backend it is running under.
     pub fn try_device<R: GpuRenderer>(&mut self) -> Option<R::Device> {
         let mut lent = None;
-        self.window.core.platform_window.with_renderer(&mut |renderer| {
-            lent = renderer.as_renderer::<R>().and_then(GpuRenderer::device);
-        });
+        self.window
+            .core
+            .platform_window
+            .with_renderer(&mut |renderer| {
+                lent = renderer.as_renderer::<R>().and_then(GpuRenderer::device);
+            });
         lent
     }
 
@@ -120,16 +123,8 @@ impl GpuCanvasContext<'_, '_> {
 }
 
 impl<'a, 'b> GpuCanvasContext<'a, 'b> {
-    pub(crate) fn new(
-        window: &'a mut Window<'b>,
-        cx: &'a mut App,
-        bounds: Bounds<Pixels>,
-    ) -> Self {
-        Self {
-            window,
-            cx,
-            bounds,
-        }
+    pub(crate) fn new(window: &'a mut Window<'b>, cx: &'a mut App, bounds: Bounds<Pixels>) -> Self {
+        Self { window, cx, bounds }
     }
 }
 

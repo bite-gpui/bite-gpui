@@ -56,7 +56,9 @@ pub struct DmaBufPlane {
 // them, so identity is what is meant.
 impl PartialEq for DmaBufPlane {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.fd, &other.fd) && self.offset == other.offset && self.stride == other.stride
+        Arc::ptr_eq(&self.fd, &other.fd)
+            && self.offset == other.offset
+            && self.stride == other.stride
     }
 }
 
@@ -460,7 +462,9 @@ mod tests {
             ],
             None,
         );
-        let declared = handle.clone().with_color_space(YuvColorSpace::BT709_LIMITED);
+        let declared = handle
+            .clone()
+            .with_color_space(YuvColorSpace::BT709_LIMITED);
         assert_eq!(declared.color_space, YuvColorSpace::BT709_LIMITED);
         assert_ne!(handle, declared);
     }

@@ -33,6 +33,7 @@ use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1;
 use crate::linux::wayland::{display::WaylandDisplay, serial::SerialKind};
 use crate::linux::{Globals, Output, WaylandClientStatePtr, get_window};
 use gpui_engine::SceneRenderer;
+use gpui_platform::GpuPreference;
 use gpui_platform::{
     Bounds, Capslock, Decorations, DevicePixels, ExternalDragPayload, FrameRequestSource, GpuSpecs,
     Modifiers, Pixels, PlatformDisplay, PlatformFrameSignal, PlatformInput, PlatformInputHandler,
@@ -44,13 +45,13 @@ use gpui_platform::{
     popup::PopupOptions,
     px, size,
 };
-use gpui_platform::GpuPreference;
 use gpui_wgpu::{CompositorGpuHint, WgpuRenderer, WgpuSurfaceConfig, wgpu};
 
 #[derive(Default)]
 pub(crate) struct Callbacks {
     request_frame: Option<Box<dyn FnMut(RequestFrameOptions)>>,
-    input: Option<Box<dyn FnMut(gpui_platform::PlatformInput) -> gpui_platform::DispatchEventResult>>,
+    input:
+        Option<Box<dyn FnMut(gpui_platform::PlatformInput) -> gpui_platform::DispatchEventResult>>,
     active_status_change: Option<Box<dyn FnMut(bool)>>,
     visibility_change: Option<Box<dyn FnMut(WindowVisibility)>>,
     hover_status_change: Option<Box<dyn FnMut(bool)>>,
@@ -589,8 +590,14 @@ impl WaylandWindowState {
             };
             match options.renderer_factory.as_ref() {
                 Some(factory) => factory.0.create(RendererTarget {
-                    window_handle: raw_window.window_handle().ok().map(|handle| handle.as_raw()),
-                    display_handle: raw_window.display_handle().ok().map(|handle| handle.as_raw()),
+                    window_handle: raw_window
+                        .window_handle()
+                        .ok()
+                        .map(|handle| handle.as_raw()),
+                    display_handle: raw_window
+                        .display_handle()
+                        .ok()
+                        .map(|handle| handle.as_raw()),
                     size: options.bounds.size,
                     // The surface exists before the compositor has told us its scale, so the
                     // window starts at 1.0 and the renderer is told the real one on the first
@@ -2125,7 +2132,10 @@ impl PlatformWindow for WaylandWindow {
         self.0.callbacks.borrow_mut().request_frame = Some(callback);
     }
 
-    fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> gpui_platform::DispatchEventResult>) {
+    fn on_input(
+        &self,
+        callback: Box<dyn FnMut(PlatformInput) -> gpui_platform::DispatchEventResult>,
+    ) {
         self.0.callbacks.borrow_mut().input = Some(callback);
     }
 
@@ -2201,8 +2211,14 @@ impl PlatformWindow for WaylandWindow {
                     .cast::<std::ffi::c_void>(),
             };
             let target = RendererTarget {
-                window_handle: raw_window.window_handle().ok().map(|handle| handle.as_raw()),
-                display_handle: raw_window.display_handle().ok().map(|handle| handle.as_raw()),
+                window_handle: raw_window
+                    .window_handle()
+                    .ok()
+                    .map(|handle| handle.as_raw()),
+                display_handle: raw_window
+                    .display_handle()
+                    .ok()
+                    .map(|handle| handle.as_raw()),
                 size,
                 scale_factor,
                 transparent,

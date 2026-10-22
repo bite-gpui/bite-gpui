@@ -68,7 +68,10 @@ use gpui_engine::{
 pub(crate) struct PlaneTexture {
     /// The wgpu texture `wgpu` owns, over the imported image. Held so the image — and the imported
     /// memory behind it — outlives the view taken from it.
-    #[allow(dead_code, reason = "the view samples the image, but this keeps it alive")]
+    #[allow(
+        dead_code,
+        reason = "the view samples the image, but this keeps it alive"
+    )]
     pub texture: wgpu::Texture,
     /// The view of that image this plane samples.
     pub view: wgpu::TextureView,
@@ -395,10 +398,7 @@ fn import_luma_chroma(
             vk::Format::G8_B8R8_2PLANE_420_UNORM,
             handle.width,
             handle.height,
-            &[
-                vk::ImageAspectFlags::PLANE_0,
-                vk::ImageAspectFlags::PLANE_1,
-            ],
+            &[vk::ImageAspectFlags::PLANE_0, vk::ImageAspectFlags::PLANE_1],
             &plane_layouts,
         )?;
     }

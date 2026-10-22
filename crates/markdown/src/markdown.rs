@@ -4388,8 +4388,7 @@ impl Element for RenderedLineElement {
         self.line
             .visible_bounds
             .set(Some(bounds.intersect(&window.content_mask().bounds)));
-        self.text
-            .prepaint(None, bounds, request_layout, window, cx);
+        self.text.prepaint(None, bounds, request_layout, window, cx);
     }
 
     fn paint(

@@ -417,7 +417,10 @@ impl<E: Element> Drawable<E> {
             } => {
                 if let Some(element_id) = self.element.id() {
                     window.frame_state.element_id_stack.push(element_id);
-                    debug_assert_eq!(&**global_id.as_ref().unwrap(), &*window.frame_state.element_id_stack);
+                    debug_assert_eq!(
+                        &**global_id.as_ref().unwrap(),
+                        &*window.frame_state.element_id_stack
+                    );
                 }
 
                 let bounds = window.layout_bounds(layout_id);
@@ -533,7 +536,10 @@ impl<E: Element> Drawable<E> {
             } => {
                 if let Some(element_id) = self.element.id() {
                     window.frame_state.element_id_stack.push(element_id);
-                    debug_assert_eq!(&**global_id.as_ref().unwrap(), &*window.frame_state.element_id_stack);
+                    debug_assert_eq!(
+                        &**global_id.as_ref().unwrap(),
+                        &*window.frame_state.element_id_stack
+                    );
                 }
 
                 window

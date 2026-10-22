@@ -99,13 +99,12 @@ use crate::linux::{
     xdg_desktop_portal::{Event as XDPEvent, XDPEventSource},
 };
 use gpui_platform::{
-    Bounds, Capslock, CursorStyle, DevicePixels, ExternalDragPayload, FileDragPaths,
-    FileDropEvent, ForegroundExecutor, GraphicalEnvironment, KeyDownEvent, KeyUpEvent, Keystroke,
-    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
+    Bounds, Capslock, CursorStyle, DevicePixels, ExternalDragPayload, FileDragPaths, FileDropEvent,
+    ForegroundExecutor, GraphicalEnvironment, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
     MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay, PlatformFrameSignal, PlatformInput,
     PlatformKeyboardLayout, PlatformWindow, Point, ScrollDelta, ScrollWheelEvent, SharedString,
-    Size, TouchPhase, WindowButtonLayout, WindowId, WindowKind, WindowParams, point, px,
-    size,
+    Size, TouchPhase, WindowButtonLayout, WindowId, WindowKind, WindowParams, point, px, size,
 };
 use gpui_wgpu::{CompositorGpuHint, WgpuContextSlot};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
@@ -1311,8 +1310,9 @@ impl WaylandConnection {
     #[cfg(feature = "screen-capture")]
     pub(crate) fn screen_capture_sources(
         &self,
-    ) -> futures::channel::oneshot::Receiver<anyhow::Result<Vec<Rc<dyn gpui_platform::ScreenCaptureSource>>>>
-    {
+    ) -> futures::channel::oneshot::Receiver<
+        anyhow::Result<Vec<Rc<dyn gpui_platform::ScreenCaptureSource>>>,
+    > {
         // TODO: Get screen capture working on wayland. Be sure to try window resizing as that may
         // be tricky.
         //

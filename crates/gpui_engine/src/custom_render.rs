@@ -189,7 +189,12 @@ mod tests {
         }
     }
 
-    fn texture(bounds: Bounds<ScaledPixels>, radii: Corners<ScaledPixels>, opacity: f32, flip_v: bool) -> CustomRenderPrimitive {
+    fn texture(
+        bounds: Bounds<ScaledPixels>,
+        radii: Corners<ScaledPixels>,
+        opacity: f32,
+        flip_v: bool,
+    ) -> CustomRenderPrimitive {
         CustomRenderPrimitive::Texture {
             order: 0,
             handle: ImportedTextureHandle::new(()),

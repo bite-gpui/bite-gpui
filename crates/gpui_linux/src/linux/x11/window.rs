@@ -3,6 +3,7 @@ use x11rb::connection::RequestConnection;
 
 use crate::linux::X11ClientStatePtr;
 use gpui_engine::SceneRenderer;
+use gpui_platform::GpuPreference;
 use gpui_platform::{
     Bounds, Decorations, DevicePixels, ForegroundExecutor, GpuSpecs, Modifiers, Pixels,
     PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformRenderer, PlatformWindow, Point,
@@ -11,7 +12,6 @@ use gpui_platform::{
     WindowDecorations, WindowId, WindowKind, WindowParams, WindowVisibility,
     popup::PopupNotSupportedError, px,
 };
-use gpui_platform::GpuPreference;
 use gpui_wgpu::{CompositorGpuHint, WgpuRenderer, WgpuSurfaceConfig};
 
 use collections::FxHashSet;
@@ -1801,8 +1801,14 @@ impl PlatformWindow for X11Window {
                 visual_id: inner.visual_id,
             };
             let target = RendererTarget {
-                window_handle: raw_window.window_handle().ok().map(|handle| handle.as_raw()),
-                display_handle: raw_window.display_handle().ok().map(|handle| handle.as_raw()),
+                window_handle: raw_window
+                    .window_handle()
+                    .ok()
+                    .map(|handle| handle.as_raw()),
+                display_handle: raw_window
+                    .display_handle()
+                    .ok()
+                    .map(|handle| handle.as_raw()),
                 size,
                 scale_factor,
                 transparent,
