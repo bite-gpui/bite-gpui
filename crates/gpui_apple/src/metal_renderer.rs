@@ -1,8 +1,12 @@
 use crate::metal_atlas::MetalAtlas;
 use anyhow::{Context as _, Result};
 use block2::RcBlock;
-use cocoa::{base::{NO, YES}, foundation::{NSSize, NSUInteger}, quartzcore::AutoresizingMask};
-use core_graphics::{geometry::CGSize};
+use cocoa::{
+    base::{NO, YES},
+    foundation::{NSSize, NSUInteger},
+    quartzcore::AutoresizingMask,
+};
+use core_graphics::geometry::CGSize;
 use gpui_engine::{
     AtlasTextureId, CustomRenderPrimitive, GpuRenderer, MetalTexture, PaintSurface, Path,
     PlatformAtlas, PrimitiveBatch, Scene, SceneRenderer, SurfaceSource,

@@ -248,9 +248,7 @@ mod tests {
 
     /// A descriptor without a GPU: any open file is a valid one as far as the element cares.
     fn descriptor() -> OwnedFd {
-        std::fs::File::open("/dev/null")
-            .expect("/dev/null")
-            .into()
+        std::fs::File::open("/dev/null").expect("/dev/null").into()
     }
 
     /// The element's whole job is to put the handle into the scene as a surface: it names no

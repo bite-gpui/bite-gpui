@@ -754,9 +754,9 @@ impl PlatformKeyboardLayout for TestKeyboardLayout {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, rc::Rc, sync::Arc};
     #[cfg(target_os = "macos")]
     use std::ffi::c_void;
+    use std::{cell::Cell, rc::Rc, sync::Arc};
 
     use crate::{
         Bounds, DevicePixels, Empty, FnRendererFactory, GpuSpecs, HeadlessAtlas, PlatformAtlas,

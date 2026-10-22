@@ -1119,7 +1119,8 @@ impl DirectXRenderer {
         let frame = self.frame_index;
         let fresh = |last_used: u64| frame.saturating_sub(last_used) <= SURFACE_VIEW_CACHE_PATIENCE;
         self.surface_views.retain(|_, entry| fresh(entry.last_used));
-        self.shared_surfaces.retain(|_, entry| fresh(entry.last_used));
+        self.shared_surfaces
+            .retain(|_, entry| fresh(entry.last_used));
         self.shared_fences.retain(|_, entry| fresh(entry.last_used));
     }
 

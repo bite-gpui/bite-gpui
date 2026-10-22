@@ -17,9 +17,14 @@ pub use imported_texture::*;
 pub use wgpu;
 pub use wgpu_atlas::*;
 pub use wgpu_context::*;
+pub use wgpu_renderer::{WgpuContextSlot, WgpuRenderer, WgpuSurfaceConfig};
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 pub use wgpu_renderer::{WgpuHeadlessRenderer, WgpuOffscreenSurface};
-pub use wgpu_renderer::{WgpuContextSlot, WgpuRenderer, WgpuSurfaceConfig};

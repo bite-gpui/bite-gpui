@@ -27,12 +27,12 @@ use gpui_engine::SceneRenderer;
 use gpui_platform::{
     BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalDragPayload, ExternalPaths,
     FileDropEvent, ForegroundExecutor, FrameRequestSource, GpuPreference, KeyDownEvent, Keystroke,
-    MacSceneRenderer, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, NavigationDirection, Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameSignal,
-    PlatformInput, PlatformInputHandler, PlatformRenderer, PlatformWindow, Point, PromptButton,
-    PromptLevel, RendererTarget, RequestFrameOptions, SharedString, Size, SystemWindowTab,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowId,
-    WindowKind, WindowParams, WindowVisibility, point, px, size,
+    MacSceneRenderer, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformAtlas, PlatformDisplay,
+    PlatformFrameSignal, PlatformInput, PlatformInputHandler, PlatformRenderer, PlatformWindow,
+    Point, PromptButton, PromptLevel, RendererTarget, RequestFrameOptions, SharedString, Size,
+    SystemWindowTab, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowId, WindowKind, WindowParams, WindowVisibility, point, px, size,
 };
 
 use core_foundation::base::{CFRelease, CFTypeRef};

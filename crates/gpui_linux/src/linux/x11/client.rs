@@ -59,8 +59,8 @@ use crate::linux::{
 use crate::linux::{LinuxCommon, LinuxKeyboardLayout, X11Window, modifiers_from_xinput_info};
 
 use gpui_platform::{
-    Bounds, ClipboardItem, CursorStyle, FileDropEvent, FrameRequestSource, Keystroke,
-    Modifiers, ModifiersChangedEvent, MouseButton, Pixels, PlatformDisplay, PlatformFrameSignal,
+    Bounds, ClipboardItem, CursorStyle, FileDropEvent, FrameRequestSource, Keystroke, Modifiers,
+    ModifiersChangedEvent, MouseButton, Pixels, PlatformDisplay, PlatformFrameSignal,
     PlatformInput, PlatformKeyboardLayout, PlatformWindow, Point, RequestFrameOptions, ScrollDelta,
     Size, TouchPhase, WindowButtonLayout, WindowId, WindowParams, WindowVisibility, point, px,
 };
@@ -1240,7 +1240,9 @@ impl X11Client {
                     keystroke
                 };
                 drop(state);
-                window.handle_input(PlatformInput::KeyUp(gpui_platform::KeyUpEvent { keystroke }));
+                window.handle_input(PlatformInput::KeyUp(gpui_platform::KeyUpEvent {
+                    keystroke,
+                }));
             }
             Event::XinputButtonPress(event) => {
                 let window = self.get_window(event.event)?;
@@ -1287,13 +1289,15 @@ impl X11Client {
                         let current_count = state.current_count;
 
                         drop(state);
-                        window.handle_input(PlatformInput::MouseDown(gpui_platform::MouseDownEvent {
-                            button,
-                            position,
-                            modifiers,
-                            click_count: current_count,
-                            first_mouse: false,
-                        }));
+                        window.handle_input(PlatformInput::MouseDown(
+                            gpui_platform::MouseDownEvent {
+                                button,
+                                position,
+                                modifiers,
+                                click_count: current_count,
+                                first_mouse: false,
+                            },
+                        ));
                     }
                     Some(ButtonOrScroll::Scroll(direction)) => {
                         drop(state);
@@ -1702,8 +1706,9 @@ impl X11Client {
     #[cfg(feature = "screen-capture")]
     pub(crate) fn screen_capture_sources(
         &self,
-    ) -> futures::channel::oneshot::Receiver<anyhow::Result<Vec<Rc<dyn gpui_platform::ScreenCaptureSource>>>>
-    {
+    ) -> futures::channel::oneshot::Receiver<
+        anyhow::Result<Vec<Rc<dyn gpui_platform::ScreenCaptureSource>>>,
+    > {
         let foreground_executor = self.0.borrow().common.borrow().foreground_executor.clone();
         gpui_platform::scap_screen_capture::scap_screen_sources(&foreground_executor)
     }

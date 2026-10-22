@@ -294,7 +294,12 @@ impl WgpuContext {
     /// pinning one card of a hybrid laptop — passes it here.
     #[cfg(all(
         not(target_family = "wasm"),
-        any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+        any(
+            test,
+            feature = "bench-support",
+            feature = "test-support",
+            feature = "headless"
+        )
     ))]
     pub(crate) fn new_headless_with(
         gpu_preference: GpuPreference,
@@ -318,7 +323,12 @@ impl WgpuContext {
 
     #[cfg(all(
         not(target_family = "wasm"),
-        any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+        any(
+            test,
+            feature = "bench-support",
+            feature = "test-support",
+            feature = "headless"
+        )
     ))]
     fn create_headless(
         gpu_preference: GpuPreference,
@@ -385,7 +395,12 @@ impl WgpuContext {
 
     #[cfg(all(
         not(target_family = "wasm"),
-        any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+        any(
+            test,
+            feature = "bench-support",
+            feature = "test-support",
+            feature = "headless"
+        )
     ))]
     /// Both candidates are 8-bit RGBA-ordered or BGRA-ordered formats: headless readback
     /// copies rows as 4 bytes per pixel and only swizzles, so no other formats may be added

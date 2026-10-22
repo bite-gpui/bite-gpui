@@ -2,25 +2,42 @@ use crate::{CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext, WgpuImp
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
+))]
+use gpui_engine::GpuRenderer;
 use gpui_engine::{
-    AtlasTextureId, CustomRenderPrimitive, PaintSurface, Path, PlatformAtlas, PrimitiveBatch, Scene,
-    SceneRenderer, get_gamma_correction_ratios,
+    AtlasTextureId, CustomRenderPrimitive, PaintSurface, Path, PlatformAtlas, PrimitiveBatch,
+    Scene, SceneRenderer, get_gamma_correction_ratios,
+};
+use gpui_platform::{
+    Background, Bounds, DevicePixels, GpuPreference, GpuSpecs, Point, ScaledPixels, Size,
 };
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
-))]
-use gpui_engine::GpuRenderer;
-use gpui_platform::{Background, Bounds, DevicePixels, GpuPreference, GpuSpecs, Point, ScaledPixels, Size};
-#[cfg(all(
-    not(target_family = "wasm"),
     not(target_os = "macos"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 use gpui_platform::{PlatformRenderer, RendererTarget};
 #[cfg(all(
     target_os = "windows",
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 use gpui_platform::{WinSceneRenderer, WindowBackgroundAppearance};
 use log::warn;
@@ -29,7 +46,12 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use smallvec::SmallVec;
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 use std::any::Any;
 use std::cell::RefCell;
@@ -1256,12 +1278,20 @@ impl WgpuRenderer {
     /// application that owns one reaches a device from. A window's is reached through
     /// `GpuRenderer::device`, which is the same device by another route.
     pub fn device(&self) -> &wgpu::Device {
-        self.core().expect("renderer has no core").resources.device.as_ref()
+        self.core()
+            .expect("renderer has no core")
+            .resources
+            .device
+            .as_ref()
     }
 
     /// The queue this renderer submits on.
     pub fn queue(&self) -> &wgpu::Queue {
-        self.core().expect("renderer has no core").resources.queue.as_ref()
+        self.core()
+            .expect("renderer has no core")
+            .resources
+            .queue
+            .as_ref()
     }
 
     /// The shared context slot this renderer draws through, if it has one.
@@ -1821,13 +1851,11 @@ impl WgpuRendererCore {
         // Tell each producer its surface is free once the GPU has finished the submission that
         // sampled it — the release signal's half of the dma-buf handshake.
         if !releases.is_empty() {
-            self.resources()
-                .queue
-                .on_submitted_work_done(move || {
-                    for release in &releases {
-                        crate::dmabuf::signal_release(release);
-                    }
-                });
+            self.resources().queue.on_submitted_work_done(move || {
+                for release in &releases {
+                    crate::dmabuf::signal_release(release);
+                }
+            });
         }
         Ok(submission)
     }
@@ -2081,13 +2109,11 @@ impl WgpuRendererCore {
     fn release_unpresented(&self, scene: &Scene) -> bool {
         let releases = Self::surface_releases(scene);
         if !releases.is_empty() {
-            self.resources()
-                .queue
-                .on_submitted_work_done(move || {
-                    for release in &releases {
-                        crate::dmabuf::signal_release(release);
-                    }
-                });
+            self.resources().queue.on_submitted_work_done(move || {
+                for release in &releases {
+                    crate::dmabuf::signal_release(release);
+                }
+            });
         }
         false
     }
@@ -2198,9 +2224,7 @@ impl WgpuRendererCore {
                             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                                 buffer: &resources.surface_params,
                                 offset: 0,
-                                size: NonZeroU64::new(
-                                    std::mem::size_of::<SurfaceParams>() as u64,
-                                ),
+                                size: NonZeroU64::new(std::mem::size_of::<SurfaceParams>() as u64),
                             }),
                         },
                         wgpu::BindGroupEntry {
@@ -2739,7 +2763,12 @@ impl WgpuRenderer {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 struct HeadlessRenderTarget {
     /// Shared so the same frame can be handed to a host loop as a surface
@@ -2750,7 +2779,12 @@ struct HeadlessRenderTarget {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 impl HeadlessRenderTarget {
     fn size(&self) -> Size<DevicePixels> {
@@ -2769,7 +2803,12 @@ impl HeadlessRenderTarget {
 /// client on the same device.
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 pub struct WgpuOffscreenSurface {
     texture: Arc<wgpu::Texture>,
@@ -2778,7 +2817,12 @@ pub struct WgpuOffscreenSurface {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 impl WgpuOffscreenSurface {
     /// The frame's texture, as it was rendered.
@@ -2794,7 +2838,12 @@ impl WgpuOffscreenSurface {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 pub struct WgpuHeadlessRenderer {
     context: WgpuContext,
@@ -2806,7 +2855,12 @@ pub struct WgpuHeadlessRenderer {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 impl WgpuHeadlessRenderer {
     pub fn new() -> anyhow::Result<Self> {
@@ -3028,7 +3082,12 @@ impl WgpuHeadlessRenderer {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
     fn draw(&mut self, scene: &Scene) -> bool {
@@ -3069,7 +3128,12 @@ impl gpui_engine::SceneRenderer for WgpuHeadlessRenderer {
 
 #[cfg(all(
     target_os = "windows",
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 impl WinSceneRenderer for WgpuHeadlessRenderer {
     fn set_background_appearance(&mut self, _appearance: WindowBackgroundAppearance) {
@@ -3098,7 +3162,12 @@ impl WinSceneRenderer for WgpuHeadlessRenderer {
 #[cfg(all(
     not(target_family = "wasm"),
     not(target_os = "macos"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 impl PlatformRenderer for WgpuHeadlessRenderer {
     fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
@@ -3136,7 +3205,12 @@ impl PlatformRenderer for WgpuHeadlessRenderer {
 
 #[cfg(all(
     not(target_family = "wasm"),
-    any(test, feature = "bench-support", feature = "test-support", feature = "headless")
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "headless"
+    )
 ))]
 impl GpuRenderer for WgpuHeadlessRenderer {
     type Device = (Arc<wgpu::Device>, Arc<wgpu::Queue>);
@@ -3215,6 +3289,8 @@ impl RenderingParameters {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use gpui::{DevicePixels, Scene};
     use gpui_engine::{
         BorderStyle, MonochromeSprite, PixelBuffer, PolychromeSprite, Quad, SubpixelSprite,
         Underline,
@@ -3222,8 +3298,6 @@ mod tests {
     use gpui_platform::{
         ColorSpace, ContentMask, Corners, Edges, Hsla, Shadow, linear_color_stop, linear_gradient,
     };
-    #[cfg(target_os = "linux")]
-    use gpui::{DevicePixels, Scene};
 
     #[cfg(target_os = "linux")]
     fn device_size(width: i32, height: i32) -> Size<DevicePixels> {

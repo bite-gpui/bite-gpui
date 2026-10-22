@@ -7,9 +7,9 @@
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
 use gpui_engine::{
-    Font, FontId, FontMetrics, FontRun, LineLayout, LineLayoutIndex, LineWrapper, LineWrapperHandle,
-    MissingGlyph, MissingGlyphReports, MissingGlyphSink, PlatformTextSystem, RenderGlyphParams,
-    TextRenderingMode, TextSystem, WrappedLineLayout, font,
+    Font, FontId, FontMetrics, FontRun, LineLayout, LineLayoutIndex, LineWrapper,
+    LineWrapperHandle, MissingGlyph, MissingGlyphReports, MissingGlyphSink, PlatformTextSystem,
+    RenderGlyphParams, TextRenderingMode, TextSystem, WrappedLineLayout, font,
 };
 use gpui_shared_string::SharedString;
 use gpui_types::{Bounds, DevicePixels, Hsla, Pixels, Size, px};

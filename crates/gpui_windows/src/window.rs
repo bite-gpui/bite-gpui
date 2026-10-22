@@ -146,9 +146,8 @@ impl WindowsWindowState {
         let restore_from_minimized = None;
         let renderer: Box<dyn PlatformRenderer> = match renderer_factory {
             Some(factory) => factory.0.create(RendererTarget {
-                window_handle: NonZeroIsize::new(hwnd.0 as isize).map(|hwnd| {
-                    rwh::RawWindowHandle::Win32(rwh::Win32WindowHandle::new(hwnd))
-                }),
+                window_handle: NonZeroIsize::new(hwnd.0 as isize)
+                    .map(|hwnd| rwh::RawWindowHandle::Win32(rwh::Win32WindowHandle::new(hwnd))),
                 display_handle: Some(rwh::RawDisplayHandle::Windows(
                     rwh::WindowsDisplayHandle::new(),
                 )),

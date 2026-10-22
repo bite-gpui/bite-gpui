@@ -31,7 +31,10 @@ use gpui_util::{ResultExt as _, new_std_command};
 #[cfg(any(feature = "wayland", feature = "x11"))]
 use xkbcommon::xkb::{self, Keycode, Keysym, State};
 
-use crate::{linux::{Backend, DisplayConnection, HeadlessConnection, LinuxDispatcher, PriorityQueueCalloopReceiver, select_backend}};
+use crate::linux::{
+    Backend, DisplayConnection, HeadlessConnection, LinuxDispatcher, PriorityQueueCalloopReceiver,
+    select_backend,
+};
 use gpui_engine::{DmaBufCapabilities, PlatformTextSystem};
 use gpui_platform::{
     ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, DisplayId, ForegroundExecutor,
@@ -848,7 +851,12 @@ impl Platform for LinuxPlatform {
                     .identifier(identifier.await)
                     .modal(true)
                     .title(title)
-                    .accept_label(options.prompt.as_ref().map(gpui_platform::SharedString::as_str))
+                    .accept_label(
+                        options
+                            .prompt
+                            .as_ref()
+                            .map(gpui_platform::SharedString::as_str),
+                    )
                     .multiple(options.multiple)
                     .directory(options.directories)
                     .send()

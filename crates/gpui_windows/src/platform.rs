@@ -451,8 +451,8 @@ impl WindowsPlatform {
 
     /// Creates the DirectX devices that windows draw with, and starts vsync.
     fn attach_gpu(&self) -> Result<()> {
-        let devices = DirectXDevices::new(&GpuPreference::Auto)
-            .context("Creating DirectX devices")?;
+        let devices =
+            DirectXDevices::new(&GpuPreference::Auto).context("Creating DirectX devices")?;
         if let Some(text_system) = &self.direct_write_text_system {
             text_system.handle_gpu_lost(&devices)?;
         }
@@ -1912,7 +1912,13 @@ mod tests {
 
     use crate::{read_from_clipboard, write_to_clipboard};
     use gpui_platform::ClipboardItem;
-    use windows::{Win32::{Security::{Credentials::{CREDENTIALW, CRED_PERSIST_SESSION, CRED_TYPE_GENERIC, CredDeleteW, CredFree, CredReadW, CredWriteW}}}, core::{PCWSTR, PWSTR}};
+    use windows::{
+        Win32::Security::Credentials::{
+            CRED_PERSIST_SESSION, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree, CredReadW,
+            CredWriteW,
+        },
+        core::{PCWSTR, PWSTR},
+    };
 
     use super::{encode_restart_arguments, username_and_password};
 

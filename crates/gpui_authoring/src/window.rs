@@ -8,24 +8,24 @@ use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
     Capslock, ContentMask, Context, Corners, CursorHideMode, CursorStyle, CustomRenderPrimitive,
-    DEFAULT_WINDOW_SIZE,
-    Decorations, DevicePixels, DispatchActionListener, DispatchEventResult, DispatchNodeId,
-    DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, FontId,
-    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, ImportedTextureHandle,
-    InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
-    KeystrokeEvent, LayoutId, LineLayoutIndex, MeasureContext, MeasureHandles, Modifiers,
-    ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
-    Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
-    PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
-    RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
-    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
-    SharedString, Size, StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription,
-    SystemWindowTab, SystemWindowTabController, TabStopMap, Task,
-    TextInputConfiguration, TextInputStateChange, TextRenderingMode, TextStyle, TextStyleRefinement,
-    ThermalState, TransformationMatrix, Underline, UnderlineStyle, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls, WindowDecorations,
-    WindowId, WindowMetrics, WindowOptions, WindowParams, WindowTextSystem, WindowVisibility,
-    new_platform_input_handler, point, prelude::*, px, rems, size, transparent_black,
+    DEFAULT_WINDOW_SIZE, Decorations, DevicePixels, DispatchActionListener, DispatchEventResult,
+    DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter,
+    FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, ImportedTextureHandle,
+    InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
+    Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, MeasureContext, MeasureHandles,
+    Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent,
+    MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
+    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority, PromptButton,
+    PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams,
+    Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y,
+    ScaledPixels, Scene, Shadow, SharedString, Size, StrikethroughStyle, Style, SubpixelSprite,
+    SubscriberSet, Subscription, SystemWindowTab, SystemWindowTabController, TabStopMap, Task,
+    TextInputConfiguration, TextInputStateChange, TextRenderingMode, TextStyle,
+    TextStyleRefinement, ThermalState, TransformationMatrix, Underline, UnderlineStyle,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls,
+    WindowDecorations, WindowId, WindowMetrics, WindowOptions, WindowParams, WindowTextSystem,
+    WindowVisibility, new_platform_input_handler, point, prelude::*, px, rems, size,
+    transparent_black,
 };
 
 use crate::TouchEvent;
@@ -3096,7 +3096,9 @@ impl Window<'_> {
             .unwrap_or_else(|| anyhow::bail!("platform window does not support image capture"))?;
         let (width, height) = (pixels.width(), pixels.height());
         image::RgbaImage::from_raw(width, height, pixels.into_data()).ok_or_else(|| {
-            anyhow::anyhow!("the renderer returned a {width}x{height} pixel buffer of the wrong length")
+            anyhow::anyhow!(
+                "the renderer returned a {width}x{height} pixel buffer of the wrong length"
+            )
         })
     }
 
@@ -8506,9 +8508,9 @@ mod tests {
         AnyWindowHandle, App, AppContext as _, ArenaClearNeeded, Bounds, ContentMask, Context,
         Corners, CustomRenderPrimitive, DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload,
         ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle, FocusId, FramePipeline,
-        ImportedTextureHandle, InputEvent as _, InteractiveElement as _, IntoElement,
-        KeyDownEvent, Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-        ParentElement, Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
+        ImportedTextureHandle, InputEvent as _, InteractiveElement as _, IntoElement, KeyDownEvent,
+        Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
+        Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
         StandardImmediatePipeline, StatefulInteractiveElement as _, Styled, TestAppContext,
         TouchDragEvent, TouchEvent, TouchId, TouchPhase, Underline, UnderlineStyle, Window,
         WindowAppearance, WindowMetrics, WindowOptions, canvas, div, gpu_canvas, hsla, point, px,
@@ -10308,7 +10310,11 @@ mod tests {
 
         cx.update_window(window.into(), |_, window, _| {
             let painted = window.painted_imported_textures();
-            assert_eq!(painted.len(), 1, "the window should have painted the texture");
+            assert_eq!(
+                painted.len(),
+                1,
+                "the window should have painted the texture"
+            );
 
             let CustomRenderPrimitive::Texture {
                 radii,
@@ -10325,7 +10331,10 @@ mod tests {
             assert_eq!(*opacity, 0.5);
             assert!(*flip_v);
             assert_eq!(bounds.size.width, ScaledPixels(30. * window.scale_factor()));
-            assert_eq!(bounds.size.height, ScaledPixels(40. * window.scale_factor()));
+            assert_eq!(
+                bounds.size.height,
+                ScaledPixels(40. * window.scale_factor())
+            );
         })
         .unwrap();
     }

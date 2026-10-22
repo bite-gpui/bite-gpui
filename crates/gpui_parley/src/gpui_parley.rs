@@ -42,8 +42,7 @@ use tiny_skia::{FillRule, Mask, PathBuilder, Transform};
 // path into `assets/` leaves the published tarball without the files it compiles
 // against. `../assets/fonts/license.txt` ships with them.
 /// The embedded regular font.
-const FONT_DATA: &[u8] =
-    include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
+const FONT_DATA: &[u8] = include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
 /// The embedded italic font.
 const FONT_DATA_ITALIC: &[u8] =
     include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf");

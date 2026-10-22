@@ -1310,9 +1310,8 @@ impl WindowsWindowInner {
         let transparent =
             self.state.background_appearance.get() != WindowBackgroundAppearance::Opaque;
         let target = RendererTarget {
-            window_handle: NonZeroIsize::new(handle.0 as isize).map(|hwnd| {
-                rwh::RawWindowHandle::Win32(rwh::Win32WindowHandle::new(hwnd))
-            }),
+            window_handle: NonZeroIsize::new(handle.0 as isize)
+                .map(|hwnd| rwh::RawWindowHandle::Win32(rwh::Win32WindowHandle::new(hwnd))),
             display_handle: Some(rwh::RawDisplayHandle::Windows(
                 rwh::WindowsDisplayHandle::new(),
             )),
