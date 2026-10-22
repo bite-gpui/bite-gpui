@@ -863,7 +863,9 @@ pub enum SurfaceSource {
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 impl From<objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>> for SurfaceSource {
-    fn from(image_buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>) -> Self {
+    fn from(
+        image_buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>,
+    ) -> Self {
         SurfaceSource::CoreVideo(image_buffer)
     }
 }

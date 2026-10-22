@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use cocoa::{appkit::CGFloat};
+use cocoa::appkit::CGFloat;
 use collections::{HashMap, HashSet};
 use core_foundation::{
     array::{CFArray, CFArrayRef},
@@ -40,9 +40,9 @@ use gpui_engine::{
 };
 use gpui_platform::{
     Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
-    FontStyle, FontWeight, GlyphId, Hsla, LineLayout, Pixels, PlatformTextSystem, RenderGlyphParams,
-    Result, Rgba, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString, Size,
-    TextRenderingMode, point, px, size, swap_rgba_pa_to_bgra,
+    FontStyle, FontWeight, GlyphId, Hsla, LineLayout, Pixels, PlatformTextSystem,
+    RenderGlyphParams, Result, Rgba, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString,
+    Size, TextRenderingMode, point, px, size, swap_rgba_pa_to_bgra,
 };
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use pathfinder_geometry::{

@@ -16,7 +16,9 @@ use windows::{
 };
 
 use crate::logical_point;
-use gpui_platform::{Bounds, DevicePixels, DisplayId, Pixels, PlatformDisplay, point, refresh_interval_from_hz, size};
+use gpui_platform::{
+    Bounds, DevicePixels, DisplayId, Pixels, PlatformDisplay, point, refresh_interval_from_hz, size,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WindowsDisplay {

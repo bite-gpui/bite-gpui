@@ -3509,7 +3509,7 @@ mod tests {
         })?;
         receiver.recv_timeout(Duration::from_secs(30))??;
 
-        let data = readback.slice(..).get_mapped_range();
+        let data = readback.slice(..).get_mapped_range().unwrap();
         let offset = 16 * padded_bytes_per_row as usize + 8 * 4;
         let mut pixel = [
             data[offset],

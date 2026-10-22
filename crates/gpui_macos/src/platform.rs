@@ -24,6 +24,10 @@ use core_foundation::{base::CFRelease, runloop::CFRunLoopRun, string::CFStringRe
 use ctor::ctor;
 use dispatch2::DispatchQueue;
 use futures::channel::oneshot;
+use gpui_apple::{
+    keychain,
+    thermal::{self, ThermalObserver},
+};
 use gpui_engine::PlatformTextSystem;
 use gpui_platform::{
     ActivationPolicy, ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle,
@@ -32,10 +36,6 @@ use gpui_platform::{
     PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformOsMenu, PlatformTextSystem,
     PlatformWindow, SystemMenuType, Task, ThermalState, WindowAppearance, WindowId, WindowKind,
     WindowParams, WindowingRequest, popup::PopupNotSupportedError,
-};
-use gpui_apple::{
-    keychain,
-    thermal::{self, ThermalObserver},
 };
 use gpui_util::{ResultExt, new_std_command};
 use objc::{

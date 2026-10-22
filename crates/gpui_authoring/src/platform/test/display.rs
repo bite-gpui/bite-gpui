@@ -12,7 +12,7 @@ pub(crate) struct TestDisplay {
 
 impl TestDisplay {
     pub fn new() -> Self {
-        Self::with_id(DisplayId(1))
+        Self::with_id(DisplayId::new(1))
     }
 
     pub fn with_id(id: DisplayId) -> Self {

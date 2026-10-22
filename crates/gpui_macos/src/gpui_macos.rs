@@ -27,12 +27,6 @@ pub mod metal_renderer {
 /// application already reaches the platform through, and the facade re-exports it from here.
 pub use gpui_apple::imported_texture::MetalTextureExt;
 
-#[cfg(feature = "font-kit")]
-mod open_type;
-
-#[cfg(feature = "font-kit")]
-mod text_system;
-
 mod platform;
 mod window;
 mod window_appearance;

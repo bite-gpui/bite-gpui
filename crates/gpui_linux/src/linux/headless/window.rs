@@ -10,13 +10,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_engine::{AtlasKey, AtlasTextureId, AtlasTile, HeadlessAtlas, PlatformAtlas, Scene, SceneRenderer, TileId};
-use uuid::Uuid;
+use gpui_engine::{HeadlessAtlas, PlatformAtlas, Scene, SceneRenderer};
 use gpui_platform::{
-    Bounds, Capslock, DispatchEventResult, DisplayId, GpuSpecs, Modifiers, Pixels, PlatformDisplay,
+    Bounds, Capslock, DispatchEventResult, GpuSpecs, Modifiers, Pixels, PlatformDisplay,
     PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel,
     RendererTarget, RequestFrameOptions, Size, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControlArea, WindowParams, WindowVisibility, px,
+    WindowBounds, WindowControlArea, WindowParams, WindowVisibility,
 };
 
 struct HeadlessWindowState {
@@ -52,10 +51,7 @@ impl raw_window_handle::HasDisplayHandle for HeadlessWindow {
 }
 
 impl HeadlessWindow {
-    pub(crate) fn new(
-        params: WindowParams,
-        lease: Rc<()>,
-    ) -> anyhow::Result<Self> {
+    pub(crate) fn new(params: WindowParams, lease: Rc<()>) -> anyhow::Result<Self> {
         // A headless window has no native surface, so a factory that needs raw handles cannot
         // build here — an offscreen renderer is the one that can, and it gets the size it will
         // draw at. Without a factory the window keeps the discard renderer it has always had.

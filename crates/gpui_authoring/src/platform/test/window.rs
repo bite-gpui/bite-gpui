@@ -1,9 +1,8 @@
 use crate::{
-    AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTile, Bounds, DevicePixels, DispatchEventResult,
-    DisplayId, GpuSpecs, HeadlessAtlas, PixelBuffer, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformHeadlessRenderer, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PromptButton, RequestFrameOptions, Scene, SceneRenderer, Size, TestDisplay, TestPlatform,
-    TextInputConfiguration, TextInputStateChange, TileId, WindowAppearance,
+    Bounds, DevicePixels, DispatchEventResult, DisplayId, GpuSpecs, HeadlessAtlas, Pixels,
+    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
+    Point, PromptButton, RequestFrameOptions, Scene, SceneRenderer, Size, TestDisplay,
+    TestPlatform, TextInputConfiguration, TextInputStateChange, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowId, WindowInsets,
     WindowParams, WindowVisibility,
 };

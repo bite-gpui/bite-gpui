@@ -1029,6 +1029,7 @@ mod tests {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }));
         let Ok(adapter) = adapter else {
             eprintln!("skipping: no adapter");
@@ -1063,6 +1064,7 @@ mod tests {
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            default_queue: wgpu::QueueDescriptor::default(),
         };
         let (device, _queue) =
             super::WgpuContext::device_with_surface_import(&adapter, &descriptor)

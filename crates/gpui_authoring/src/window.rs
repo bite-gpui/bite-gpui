@@ -3148,7 +3148,11 @@ impl Window<'_> {
     fn display_changed(handle: AnyWindowHandle, cx: &mut App) {
         let moved_to = handle
             .update(cx, |_, window, _| {
-                let display_id = window.core.platform_window.display().map(|display| display.id());
+                let display_id = window
+                    .core
+                    .platform_window
+                    .display()
+                    .map(|display| display.id());
                 let moved = display_id != window.core.display_id;
                 window.core.display_id = display_id;
                 moved.then_some(display_id)
@@ -3172,7 +3176,8 @@ impl Window<'_> {
     }
 
     pub(crate) fn notify_display_observers(&mut self, cx: &mut App) {
-        self.core.display_observers
+        self.core
+            .display_observers
             .clone()
             .retain(&(), |callback| callback(self, cx));
     }
@@ -8756,7 +8761,7 @@ mod tests {
                     window.observe_window_display(move |window, cx| {
                         window_notifications
                             .borrow_mut()
-                            .push((window.display_id, window.refresh_interval(cx)));
+                            .push((window.core.display_id, window.refresh_interval(cx)));
                     })
                 }
             })
@@ -8768,46 +8773,46 @@ mod tests {
         // observers run, and the platform's later notification changes
         // nothing.
         cx.test_platform()
-            .connect_display(DisplayId(2), Some(one_hundred_twenty_hertz));
-        test_window.simulate_move_to_display(DisplayId(2));
+            .connect_display(DisplayId::new(2), Some(one_hundred_twenty_hertz));
+        test_window.simulate_move_to_display(DisplayId::new(2));
         assert_eq!(
             window_notifications.take(),
-            [(Some(DisplayId(2)), Some(one_hundred_twenty_hertz))]
+            [(Some(DisplayId::new(2)), Some(one_hundred_twenty_hertz))]
         );
-        assert_eq!(display_events.take(), [DisplayEvent::Added(DisplayId(2))]);
-        cx.simulate_display_refresh_interval_change(DisplayId(2), Some(one_hundred_twenty_hertz));
+        assert_eq!(display_events.take(), [DisplayEvent::Added(DisplayId::new(2))]);
+        cx.simulate_display_refresh_interval_change(DisplayId::new(2), Some(one_hundred_twenty_hertz));
         assert!(window_notifications.borrow().is_empty());
 
         // Platforms may report a move that isn't one.
-        test_window.simulate_move_to_display(DisplayId(2));
+        test_window.simulate_move_to_display(DisplayId::new(2));
         assert!(window_notifications.borrow().is_empty());
 
         cx.simulate_display_refresh_interval_change(
-            DisplayId(2),
+            DisplayId::new(2),
             Some(one_hundred_forty_four_hertz),
         );
         assert_eq!(
             window_notifications.take(),
-            [(Some(DisplayId(2)), Some(one_hundred_forty_four_hertz))]
+            [(Some(DisplayId::new(2)), Some(one_hundred_forty_four_hertz))]
         );
 
         // Changes to a display the window isn't on don't notify it.
-        cx.simulate_display_refresh_interval_change(DisplayId(1), Some(one_hundred_twenty_hertz));
-        cx.simulate_display_removed(DisplayId(1));
+        cx.simulate_display_refresh_interval_change(DisplayId::new(1), Some(one_hundred_twenty_hertz));
+        cx.simulate_display_removed(DisplayId::new(1));
         assert!(window_notifications.borrow().is_empty());
 
         assert_eq!(
             display_events.take(),
             [
                 DisplayEvent::Changed {
-                    id: DisplayId(2),
+                    id: DisplayId::new(2),
                     changes: DisplayChanges::REFRESH_INTERVAL,
                 },
                 DisplayEvent::Changed {
-                    id: DisplayId(1),
+                    id: DisplayId::new(1),
                     changes: DisplayChanges::REFRESH_INTERVAL,
                 },
-                DisplayEvent::Removed(DisplayId(1)),
+                DisplayEvent::Removed(DisplayId::new(1)),
             ]
         );
         window
