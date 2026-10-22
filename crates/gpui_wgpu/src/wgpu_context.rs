@@ -616,7 +616,6 @@ impl WgpuContext {
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            default_queue: wgpu::QueueDescriptor::default(),
         };
 
         // A producer's surface can carry a DRM format modifier, and wgpu's own device never enables
@@ -1064,7 +1063,6 @@ mod tests {
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            default_queue: wgpu::QueueDescriptor::default(),
         };
         let (device, _queue) =
             super::WgpuContext::device_with_surface_import(&adapter, &descriptor)

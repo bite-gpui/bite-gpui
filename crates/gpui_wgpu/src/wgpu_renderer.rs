@@ -521,7 +521,9 @@ impl WgpuRenderer {
                 surface_caps
                     .formats
                     .iter()
-                    .find(|format| !format.has_srgb_suffix())
+                    // `has_srgb_suffix` is newer than the published wgpu-types; it is defined as
+                    // `self != self.remove_srgb_suffix()`.
+                    .find(|format| **format == format.remove_srgb_suffix())
                     .copied()
             })
             .or_else(|| surface_caps.formats.first().copied())
