@@ -8779,8 +8779,14 @@ mod tests {
             window_notifications.take(),
             [(Some(DisplayId::new(2)), Some(one_hundred_twenty_hertz))]
         );
-        assert_eq!(display_events.take(), [DisplayEvent::Added(DisplayId::new(2))]);
-        cx.simulate_display_refresh_interval_change(DisplayId::new(2), Some(one_hundred_twenty_hertz));
+        assert_eq!(
+            display_events.take(),
+            [DisplayEvent::Added(DisplayId::new(2))]
+        );
+        cx.simulate_display_refresh_interval_change(
+            DisplayId::new(2),
+            Some(one_hundred_twenty_hertz),
+        );
         assert!(window_notifications.borrow().is_empty());
 
         // Platforms may report a move that isn't one.
@@ -8797,7 +8803,10 @@ mod tests {
         );
 
         // Changes to a display the window isn't on don't notify it.
-        cx.simulate_display_refresh_interval_change(DisplayId::new(1), Some(one_hundred_twenty_hertz));
+        cx.simulate_display_refresh_interval_change(
+            DisplayId::new(1),
+            Some(one_hundred_twenty_hertz),
+        );
         cx.simulate_display_removed(DisplayId::new(1));
         assert!(window_notifications.borrow().is_empty());
 
