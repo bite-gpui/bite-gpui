@@ -10549,7 +10549,7 @@ mod tests {
                 _window: &mut Window,
                 _cx: &mut Context<Self>,
             ) -> impl IntoElement {
-                let handle = self.core.handle.clone();
+                let handle = self.handle.clone();
                 let bounds = self.bounds;
                 let corner_radii = self.corner_radii;
                 let opacity = self.opacity;

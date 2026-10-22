@@ -37,7 +37,7 @@ use crate::linux::{
 };
 use gpui_engine::{DmaBufCapabilities, PlatformTextSystem};
 use gpui_platform::{
-    ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, DisplayId, ForegroundExecutor,
+    ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
     GpuAdapterInfo, GpuId, GpuPreference, GraphicalEnvironment, MenuCommandId, PathPromptOptions,
     Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformMenu,
     PlatformMenuItem, PlatformWindow, RunnableVariant, Task, ThermalState, WindowAppearance,

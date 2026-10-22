@@ -248,9 +248,9 @@ async fn run_command(
 #[cfg(not(target_family = "wasm"))]
 fn main() {
     #[cfg(target_os = "linux")]
-    let application = gpui_platform::linux(gpui::WindowingModes::all());
+    let application = gpui::linux(gpui::WindowingModes::all());
     #[cfg(not(target_os = "linux"))]
-    let application = gpui_platform::application();
+    let application = gpui::application();
     application
         .with_windowing(WindowingRequest::Headless)
         .with_quit_mode(QuitMode::Explicit)
