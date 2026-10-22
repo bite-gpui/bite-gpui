@@ -186,6 +186,11 @@ impl Drop for PowerRequest {
 }
 
 impl WindowsPlatform {
+    /// Creates the platform.
+    ///
+    /// `headless` asks for a platform that never shows windows: it has no DirectX devices and
+    /// [`Platform::open_window`] refuses. Otherwise the devices are attached when the application
+    /// runs, and by `open_window` itself when a caller opens a window before that.
     pub fn new(headless: bool) -> Result<Self> {
         unsafe {
             OleInitialize(None).context("unable to initialize Windows OLE")?;
@@ -846,7 +851,13 @@ impl Platform for WindowsPlatform {
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
         if !self.is_windowed() {
-            return Err(anyhow!("cannot open windows while headless"));
+            if self.headless {
+                return Err(anyhow!("a platform created headless can't open windows"));
+            }
+            // `new(false)` asks for a platform that can show windows, and a direct caller — a
+            // test, or an embedder building a hidden window — need not go through `run`. Attach
+            // here, as 1.23 created the devices in `new`.
+            self.attach_gpu()?;
         }
         self.apply_gpu_preference()?;
         let window = WindowsWindow::new(handle, options, self.generate_creation_info())?;
