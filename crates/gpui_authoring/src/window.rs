@@ -2105,6 +2105,7 @@ impl WindowHost {
                 };
 
                 let now = Instant::now();
+                #[cfg_attr(not(feature = "profiler"), expect(unused_variables))]
                 if let Some((min_interval, limit)) = min_frame_interval {
                     if let Some(last_frame) = last_frame_time.get()
                         && now.duration_since(last_frame) < min_interval
