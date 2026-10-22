@@ -170,6 +170,15 @@ struct FrameDirtyAccumulator {
     invalidations: u64,
 }
 
+/// Why GPUI capped a window's frame rate.
+#[derive(Clone, Copy)]
+enum FrameRateLimit {
+    /// The window isn't focused.
+    Inactive,
+    /// The system is under thermal pressure.
+    Thermal,
+}
+
 #[derive(Clone)]
 pub(crate) struct WindowInvalidator {
     inner: Rc<RefCell<WindowInvalidatorInner>>,
@@ -2025,7 +2034,17 @@ impl WindowHost {
             let mut deferred_force_render = false;
             move |request_frame_options| {
                 #[cfg(feature = "profiler")]
-                let _foreground_turn = profiler::journal::foreground_turn();
+                let (_foreground_turn, window_id) = {
+                    let foreground_turn = profiler::journal::foreground_turn();
+                    let window_id = handle.window_id();
+                    profiler::journal::record_platform_signal(profiler::journal::PlatformSignal {
+                        window_id,
+                        signal_at: request_frame_options.signal_at,
+                        handled_at: Instant::now(),
+                        source: request_frame_options.signal_source,
+                    });
+                    (foreground_turn, window_id)
+                };
                 // This must be checked before anything else: if this request
                 // arrived re-entrantly while a draw is on this thread's stack
                 // (e.g. via a nested message pump in the Windows window
@@ -2044,6 +2063,8 @@ impl WindowHost {
                 if draw_in_progress() {
                     log::debug!("deferring re-entrant window draw request");
                     deferred_force_render |= request_frame_options.force_render;
+                    #[cfg(feature = "profiler")]
+                    profiler::journal::record_reentrant_frame_skipped(window_id, Instant::now());
                     return;
                 }
                 // Take the deferred flag first: `||` short-circuits, and leaving
@@ -2065,15 +2086,15 @@ impl WindowHost {
                 {
                     None
                 } else if !active.get() && !input_rate_tracker.borrow_mut().is_high_rate() {
-                    inactive_frame_interval
+                    inactive_frame_interval.map(|interval| (interval, FrameRateLimit::Inactive))
                 } else if let Some(ThermalState::Critical | ThermalState::Serious) = thermal_state {
-                    Some(Duration::from_micros(16667))
+                    Some((Duration::from_micros(16667), FrameRateLimit::Thermal))
                 } else {
                     None
                 };
 
                 let now = Instant::now();
-                if let Some(min_interval) = min_frame_interval {
+                if let Some((min_interval, limit)) = min_frame_interval {
                     if let Some(last_frame) = last_frame_time.get()
                         && now.duration_since(last_frame) < min_interval
                     {
@@ -2090,6 +2111,19 @@ impl WindowHost {
                         // unserved; platforms that stop requesting frames for
                         // idle windows need a wakeup to deliver the retry.
                         invalidator.wake_platform();
+                        #[cfg(feature = "profiler")]
+                        profiler::journal::record_frame_skipped(
+                            window_id,
+                            Instant::now(),
+                            match limit {
+                                FrameRateLimit::Inactive => {
+                                    profiler::journal::FrameSkipReason::InactiveFrameRateLimit
+                                }
+                                FrameRateLimit::Thermal => {
+                                    profiler::journal::FrameSkipReason::ThermalFrameRateLimit
+                                }
+                            },
+                        );
                         return;
                     }
                 }
@@ -2113,7 +2147,8 @@ impl WindowHost {
                     || needs_present.get()
                     || input_rate_tracker.borrow_mut().is_high_rate();
 
-                if invalidator.is_dirty() || force_render {
+                let should_draw = invalidator.is_dirty() || force_render;
+                if should_draw {
                     measure("frame duration", || {
                         handle
                             .update(&mut cx, |_, window, cx| {
@@ -2155,6 +2190,14 @@ impl WindowHost {
                 // source explicitly.
                 if invalidator.is_dirty() || !next_frame_callbacks.borrow().is_empty() {
                     invalidator.wake_platform();
+                }
+                #[cfg(feature = "profiler")]
+                if !should_draw {
+                    profiler::journal::record_frame_skipped(
+                        window_id,
+                        Instant::now(),
+                        profiler::journal::FrameSkipReason::NoRenderNeeded,
+                    );
                 }
             }
         }));
