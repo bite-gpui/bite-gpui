@@ -57,6 +57,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::ops::Range;
+#[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -148,6 +149,7 @@ struct SurfaceParams {
 /// Standard `YUV -> RGB`: the luma columns are the range's luma scale, the chroma columns carry the
 /// matrix's `Kr`/`Kb` terms times the range's chroma scale, and the constant column folds in both zero
 /// points. For BT.601 full range this reproduces the fixed matrix the shader used to carry.
+#[cfg(target_os = "linux")]
 fn yuv_to_rgb(color_space: gpui_engine::YuvColorSpace) -> [[f32; 4]; 4] {
     use gpui_engine::{YuvMatrix, YuvRange};
 
@@ -294,6 +296,7 @@ struct WgpuResources {
     globals_buffer: wgpu::Buffer,
     /// One uniform buffer for every surface's params in a frame, addressed by dynamic offset, held
     /// across frames so the surface bind groups that reference it stay valid.
+    #[cfg(target_os = "linux")]
     surface_params: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
     path_globals_bind_group: wgpu::BindGroup,
@@ -1542,6 +1545,7 @@ impl WgpuRendererCore {
             ],
         });
         let max_texture_size = device.limits().max_texture_dimension_2d;
+        #[cfg(target_os = "linux")]
         let surface_params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("surface_params"),
             size: 1 << 20,
@@ -1559,6 +1563,7 @@ impl WgpuRendererCore {
                 imported_texture_sampler,
                 atlas_texture_bind_groups: FxHashMap::default(),
                 globals_buffer,
+                #[cfg(target_os = "linux")]
                 surface_params,
                 globals_bind_group,
                 path_globals_bind_group,
@@ -1698,6 +1703,7 @@ impl WgpuRendererCore {
         clear_color: wgpu::Color,
     ) -> Result<wgpu::SubmissionIndex> {
         let mut instance_offset = 0;
+        #[cfg(target_os = "linux")]
         let releases = Self::surface_releases(scene);
         let instance_bindings = self
             .write_instances(scene, &mut instance_offset)
@@ -1850,6 +1856,7 @@ impl WgpuRendererCore {
             .submit(std::iter::once(encoder.finish()));
         // Tell each producer its surface is free once the GPU has finished the submission that
         // sampled it — the release signal's half of the dma-buf handshake.
+        #[cfg(target_os = "linux")]
         if !releases.is_empty() {
             self.resources().queue.on_submitted_work_done(move || {
                 for release in &releases {
@@ -2081,24 +2088,16 @@ impl WgpuRendererCore {
 
     /// The release descriptors of a scene's dma-buf surfaces: the signals a producer waits on to
     /// know the renderer is done with each buffer. Collected from the whole scene rather than only
-    /// the surfaces that are drawn, so a frame that culls a surface still releases it. Empty where
-    /// the platform has no dma-buf source.
+    /// the surfaces that are drawn, so a frame that culls a surface still releases it.
+    #[cfg(target_os = "linux")]
     fn surface_releases(scene: &Scene) -> Vec<Arc<OwnedFd>> {
-        #[cfg(target_os = "linux")]
-        {
-            scene
-                .surfaces
-                .iter()
-                .filter_map(|surface| match &surface.source {
-                    gpui_engine::SurfaceSource::DmaBuf(handle) => handle.release.clone(),
-                })
-                .collect()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = scene;
-            Vec::new()
-        }
+        scene
+            .surfaces
+            .iter()
+            .filter_map(|surface| match &surface.source {
+                gpui_engine::SurfaceSource::DmaBuf(handle) => handle.release.clone(),
+            })
+            .collect()
     }
 
     /// Register the releases of a scene the frame will not present, so a producer's surface is not
@@ -2107,14 +2106,19 @@ impl WgpuRendererCore {
     /// producer's bounded ring waits on one for good. The closures fire once the GPU has caught up
     /// with the queue's existing work, so nothing is sampling the buffer in the meantime.
     fn release_unpresented(&self, scene: &Scene) -> bool {
-        let releases = Self::surface_releases(scene);
-        if !releases.is_empty() {
-            self.resources().queue.on_submitted_work_done(move || {
-                for release in &releases {
-                    crate::dmabuf::signal_release(release);
-                }
-            });
+        #[cfg(target_os = "linux")]
+        {
+            let releases = Self::surface_releases(scene);
+            if !releases.is_empty() {
+                self.resources().queue.on_submitted_work_done(move || {
+                    for release in &releases {
+                        crate::dmabuf::signal_release(release);
+                    }
+                });
+            }
         }
+        #[cfg(not(target_os = "linux"))]
+        let _ = scene;
         false
     }
 
