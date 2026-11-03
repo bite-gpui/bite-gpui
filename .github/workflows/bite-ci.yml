@@ -11,7 +11,9 @@
 # `gpui_windows.rs`, `gpui_macos.rs` and `gpui_apple.rs` each open with
 # `#![cfg(target_os = "…")]`, so a Linux build compiles them to nothing — and the
 # release pipeline's `verify.yml`, whose legs are Linux and macOS, never compiles the
-# Windows backend at all.
+# Windows backend at all. The browser backend is the same argument on a target rather
+# than a runner: no native job compiles `gpui_web`, and upstream's `check_wasm` is
+# skipped here.
 #
 # Standard GitHub-hosted runners are free for a public repository, so checking on
 # the real platforms costs wall-clock and nothing else.
@@ -122,3 +124,19 @@ jobs:
       - uses: actions/checkout@v4
       - run: ./script/linux
       - run: cargo test -p gpui_authoring -p gpui_engine --lib
+
+  # The browser backend, on stable. `cargo check -p gpui` is what a consumer builds with
+  # default features, and catches the class of cfg/feature breakage 1.25.202 shipped (#15,
+  # #18, #21). The second line turns on the imported-texture path (#17), which is the one
+  # feature-gated impl a wasm build does not otherwise compile. `RUSTFLAGS` supplies the
+  # getrandom backend `gpui_authoring` enables; `tokio_unstable` is the repo config's flag.
+  wasm:
+    name: cargo check -p gpui (wasm32-unknown-unknown)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: --cfg getrandom_backend="wasm_js" --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo check -p gpui --target wasm32-unknown-unknown
+      - run: cargo check -p gpui --target wasm32-unknown-unknown --features wasm-interop

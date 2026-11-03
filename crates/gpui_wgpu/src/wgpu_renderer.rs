@@ -2,17 +2,18 @@ use crate::{CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext, WgpuImp
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
-#[cfg(all(
-    not(target_family = "wasm"),
-    any(
-        test,
-        feature = "bench-support",
-        feature = "test-support",
-        feature = "headless"
+#[cfg(any(
+    target_family = "wasm",
+    all(
+        not(target_family = "wasm"),
+        any(
+            test,
+            feature = "bench-support",
+            feature = "test-support",
+            feature = "headless"
+        )
     )
 ))]
-use gpui_engine::GpuRenderer;
-#[cfg(target_family = "wasm")]
 use gpui_engine::GpuRenderer;
 use gpui_engine::{
     AtlasTextureId, CustomRenderPrimitive, PaintSurface, Path, PlatformAtlas, PrimitiveBatch,
