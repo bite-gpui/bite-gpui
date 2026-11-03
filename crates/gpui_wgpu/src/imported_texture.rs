@@ -21,6 +21,12 @@ pub struct WgpuImportedTexture {
 }
 
 /// Builds an [`ImportedTextureHandle`] from a wgpu resource.
+///
+/// On wasm, the `wgpu::TextureView` impl is compiled only with the `wasm-interop` feature
+/// (forwarded as `gpui_web/wasm-interop` and `gpui/wasm-interop`), which enables wgpu's
+/// `fragile-send-sync-non-atomic-wasm`. That feature is a no-op under
+/// `-C target-feature=+atomics`: wgpu's `send_sync` cfg requires `not(target_feature = "atomics")`,
+/// so a threaded wasm build still cannot use the imported-texture path.
 pub trait ImportedTextureExt {
     /// Wrap this view as a handle.
     ///

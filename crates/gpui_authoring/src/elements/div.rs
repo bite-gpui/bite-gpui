@@ -5678,72 +5678,94 @@ mod tests {
         assert_eq!(bounds("cell-2").origin.x, px(300.));
     }
 
-    struct RightDragView {
+    struct DragButtonView {
+        right: bool,
         moves: Rc<Cell<usize>>,
     }
 
-    impl Render for RightDragView {
+    impl Render for DragButtonView {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             let moves = self.moves.clone();
+            let source = div().id("drag-source").w(px(20.)).h(px(20.));
+            let source = if self.right {
+                source.on_drag_with(MouseButton::Right, (), |_, _, _, cx| cx.new(|_| Empty))
+            } else {
+                source.on_drag((), |_, _, _, cx| cx.new(|_| Empty))
+            };
             div()
-                .id("right-drag")
                 .size_full()
-                .on_drag_with(MouseButton::Right, (), |_, _, _, cx| cx.new(|_| Empty))
-                .on_drag_move(move |_: &DragMoveEvent<()>, _, _| moves.set(moves.get() + 1))
+                .child(source.on_drag_move(move |_: &DragMoveEvent<()>, _, _| {
+                    moves.set(moves.get() + 1)
+                }))
         }
     }
 
+    /// Press `button` on the 20×20 source at `from` and drag to `to`, which is outside it.
+    fn press_and_drag_out(
+        window: &mut Window,
+        cx: &mut App,
+        button: MouseButton,
+        from: Point<Pixels>,
+        to: Point<Pixels>,
+    ) {
+        window.dispatch_event(
+            MouseMoveEvent {
+                position: from,
+                pressed_button: None,
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseDownEvent {
+                position: from,
+                button,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseMoveEvent {
+                position: to,
+                pressed_button: Some(button),
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+    }
+
     #[gpui::test]
-    fn a_drag_can_start_from_the_right_button(cx: &mut TestAppContext) {
+    fn a_right_button_drag_survives_leaving_the_element(cx: &mut TestAppContext) {
         let moves = Rc::new(Cell::new(0));
         let window: AnyWindowHandle = cx
             .add_window({
                 let moves = moves.clone();
-                move |_, _| RightDragView { moves }
+                move |_, _| DragButtonView { right: true, moves }
             })
             .into();
 
         cx.update_window(window, |_, window, cx| {
             window.draw(cx).clear(cx);
-            // Hit-test the pointer over the element before the press: hover is what the down
-            // listener keys off, and a window that has never seen a move has no hit test.
-            window.dispatch_event(
-                MouseMoveEvent {
-                    position: point(px(10.), px(10.)),
-                    pressed_button: None,
-                    modifiers: Default::default(),
-                }
-                .to_platform_input(),
+            press_and_drag_out(
+                window,
                 cx,
-            );
-            window.dispatch_event(
-                MouseDownEvent {
-                    position: point(px(10.), px(10.)),
-                    button: MouseButton::Right,
-                    modifiers: Default::default(),
-                    click_count: 1,
-                    first_mouse: false,
-                }
-                .to_platform_input(),
-                cx,
-            );
-            window.dispatch_event(
-                MouseMoveEvent {
-                    position: point(px(30.), px(30.)),
-                    pressed_button: Some(MouseButton::Right),
-                    modifiers: Default::default(),
-                }
-                .to_platform_input(),
-                cx,
+                MouseButton::Right,
+                point(px(10.), px(10.)),
+                point(px(50.), px(50.)),
             );
             assert!(
                 cx.active_drag.is_some(),
-                "the right-button drag was founded"
+                "the right-button drag was founded past the element's edge"
             );
             // The move that founds the drag is consumed by activation; the next one is delivered.
             window.dispatch_event(
                 MouseMoveEvent {
-                    position: point(px(50.), px(50.)),
+                    position: point(px(90.), px(90.)),
                     pressed_button: Some(MouseButton::Right),
                     modifiers: Default::default(),
                 }
@@ -5755,7 +5777,39 @@ mod tests {
 
         assert!(
             moves.get() > 0,
-            "the right-button drag was founded and delivered"
+            "the right-button drag keeps arriving outside the element"
         );
+    }
+
+    #[gpui::test]
+    fn a_right_press_does_not_found_a_left_drag(cx: &mut TestAppContext) {
+        let moves = Rc::new(Cell::new(0));
+        let window: AnyWindowHandle = cx
+            .add_window({
+                let moves = moves.clone();
+                move |_, _| DragButtonView {
+                    right: false,
+                    moves,
+                }
+            })
+            .into();
+
+        cx.update_window(window, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            press_and_drag_out(
+                window,
+                cx,
+                MouseButton::Right,
+                point(px(10.), px(10.)),
+                point(px(50.), px(50.)),
+            );
+            assert!(
+                cx.active_drag.is_none(),
+                "a right press does not found a left-button drag"
+            );
+        })
+        .unwrap();
+
+        assert_eq!(moves.get(), 0);
     }
 }

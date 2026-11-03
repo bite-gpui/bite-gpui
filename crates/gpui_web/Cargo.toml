@@ -15,6 +15,8 @@ workspace = true
 # it opts in.
 default = []
 multithreaded = ["dep:wasm_thread", "scheduler/wasm-threads"]
+# The imported-texture path on wasm; see `gpui_wgpu`'s `wasm-interop` feature.
+wasm-interop = ["gpui_wgpu/wasm-interop"]
 
 [lib]
 path = "src/gpui_web.rs"

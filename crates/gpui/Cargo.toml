@@ -37,6 +37,8 @@ platform = [
 # Threads in the browser: needs a nightly toolchain and a cross-origin-isolated
 # page. Opt-in; off, gpui_web builds on stable.
 multithreaded = ["gpui_web?/multithreaded"]
+# The imported-texture path in the browser. Off by default; see the `ImportedTextureExt` docs.
+wasm-interop = ["gpui_web?/wasm-interop"]
 test-support = [
     "gpui_authoring/test-support",
     "gpui_linux?/test-support",
