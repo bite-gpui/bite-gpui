@@ -23,7 +23,7 @@ workspace = true
 #
 # `default-features = false` drops it, leaving a headless gpui with no platform
 # dependencies compiled.
-default = ["platform", "multithreaded"]
+default = ["platform"]
 platform = [
     "dep:gpui_linux",
     "dep:gpui_macos",
@@ -35,7 +35,7 @@ platform = [
     "windows-manifest",
 ]
 # Threads in the browser: needs a nightly toolchain and a cross-origin-isolated
-# page. Off, gpui_web builds on stable.
+# page. Opt-in; off, gpui_web builds on stable.
 multithreaded = ["gpui_web?/multithreaded"]
 test-support = [
     "gpui_authoring/test-support",
