@@ -1,5 +1,4 @@
 use anyhow::{Result, anyhow};
-use cocoa::appkit::CGFloat;
 use collections::{HashMap, HashSet};
 use core_foundation::{
     array::{CFArray, CFArrayRef},
