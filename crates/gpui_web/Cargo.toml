@@ -10,7 +10,10 @@ autoexamples = false
 workspace = true
 
 [features]
-default = ["multithreaded"]
+# Off by default: the threaded scheduler needs `wasm_thread`, which is nightly-only, and a
+# cross-origin-isolated page. A browser build on stable uses the single-threaded dispatcher unless
+# it opts in.
+default = []
 multithreaded = ["dep:wasm_thread", "scheduler/wasm-threads"]
 
 [lib]
