@@ -4,7 +4,8 @@
 
 pub use crate::{
     AppContext as _, BorrowAppContext, BoundsExt, Context, Element, FluentBuilder, ImageExt,
-    InteractiveElement, IntoElement, LineLayoutExt, ParentElement, Path, PathBuilder,
+    InteractiveElement, InteractiveElementExt, IntoElement, LineLayoutExt, ParentElement, Path,
+    PathBuilder,
     PlatformInputHandlerExt, Refineable, Render, RenderOnce, StatefulInteractiveElement, Styled,
     StyledImage, TaskExt as _, VisualContext, WindowBoundsExt,
 };
