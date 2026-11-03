@@ -621,12 +621,31 @@ impl Interactivity {
         T: 'static,
         W: 'static + Render,
     {
+        self.on_drag_with(MouseButton::Left, value, constructor);
+    }
+
+    /// Like [`Self::on_drag`], but the gesture starts from `button` rather than the left button.
+    ///
+    /// The delivery was never button-specific — `DragMoveEvent` carries the pressed button — only
+    /// activation was. A viewport that orbits with the middle button or pans with the right can
+    /// now keep receiving moves after the pointer leaves its bounds.
+    pub fn on_drag_with<T, W>(
+        &mut self,
+        button: MouseButton,
+        value: T,
+        constructor: impl Fn(&T, Point<Pixels>, &mut Window, &mut App) -> Entity<W> + 'static,
+    ) where
+        Self: Sized,
+        T: 'static,
+        W: 'static + Render,
+    {
         debug_assert!(
             self.drag_listener.is_none(),
             "calling on_drag more than once on the same element is not supported"
         );
         self.drag_listener = Some(DragListener {
             value: Arc::new(value),
+            button,
             render: Box::new(move |value, offset, window, cx| {
                 constructor(value.downcast_ref().unwrap(), offset, window, cx).into()
             }),
@@ -1714,6 +1733,34 @@ pub trait StatefulInteractiveElement: InteractiveElement {
     }
 }
 
+/// Fork additions to [`InteractiveElement`].
+///
+/// The engine's own trait stays as the reference defines it; a method the fork adds lives here so
+/// that the upstream surface is unchanged. A caller imports this trait to use the additions.
+pub trait InteractiveElementExt: InteractiveElement + Sized {
+    /// Like [`InteractiveElement::on_drag`], but the gesture starts from `button` rather than the
+    /// left button.
+    ///
+    /// The delivery was never button-specific — `DragMoveEvent` carries the pressed button — only
+    /// activation was. A viewport that orbits with the middle button or pans with the right can
+    /// now keep receiving moves after the pointer leaves its bounds.
+    fn on_drag_with<T, W>(
+        mut self,
+        button: MouseButton,
+        value: T,
+        constructor: impl Fn(&T, Point<Pixels>, &mut Window, &mut App) -> Entity<W> + 'static,
+    ) -> Self
+    where
+        T: 'static,
+        W: 'static + Render,
+    {
+        self.interactivity().on_drag_with(button, value, constructor);
+        self
+    }
+}
+
+impl<E: InteractiveElement> InteractiveElementExt for E {}
+
 pub(crate) type MouseDownListener =
     Box<dyn Fn(&MouseDownEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
 pub(crate) type MouseUpListener =
@@ -1761,6 +1808,7 @@ impl HoverListenerMode {
 
 pub(crate) struct DragListener {
     value: Arc<dyn Any>,
+    button: MouseButton,
     render: Box<dyn Fn(&dyn Any, Point<Pixels>, &mut Window, &mut App) -> AnyView + 'static>,
     external_payload: Option<ExternalDragPayloadResolver>,
 }
@@ -2891,6 +2939,7 @@ impl Interactivity {
         let drag_cursor_style = self.base_style.as_ref().mouse_cursor;
 
         let mut drag_listener = mem::take(&mut self.drag_listener);
+        let drag_button = drag_listener.as_ref().map(|listener| listener.button);
         let drop_listeners = mem::take(&mut self.drop_listeners);
         let click_listeners = mem::take(&mut self.click_listeners);
         let aux_click_listeners = mem::take(&mut self.aux_click_listeners);
@@ -2955,7 +3004,9 @@ impl Interactivity {
                     let has_aux_click_listeners = !aux_click_listeners.is_empty();
                     move |event: &MouseDownEvent, phase, window, _cx| {
                         if phase == DispatchPhase::Bubble
-                            && (event.button == MouseButton::Left || has_aux_click_listeners)
+                            && (event.button == MouseButton::Left
+                                || has_aux_click_listeners
+                                || drag_button == Some(event.button))
                             && hitbox.is_hovered(window)
                         {
                             *pending_mouse_down.borrow_mut() = Some(event.clone());
@@ -2976,8 +3027,10 @@ impl Interactivity {
                         if let Some(mouse_down) = pending_mouse_down.clone()
                             && !cx.has_active_drag()
                             && (event.position - mouse_down.position).magnitude() > DRAG_THRESHOLD
+                            && drag_listener
+                                .as_ref()
+                                .is_some_and(|listener| listener.button == mouse_down.button)
                             && let Some(listener) = drag_listener.take()
-                            && mouse_down.button == MouseButton::Left
                         {
                             *clicked_state.borrow_mut() = ElementClickedState::default();
                             let cursor_offset = event.position - hitbox.origin;
@@ -4427,7 +4480,7 @@ impl ScrollHandle {
 mod tests {
     use super::*;
     use crate::{
-        AnyWindowHandle, AppContext as _, Context, GestureTuning, InputEvent, Keystroke,
+        AnyWindowHandle, AppContext as _, Context, Empty, GestureTuning, InputEvent, Keystroke,
         MouseMoveEvent, TestAppContext, TouchEvent, TouchId, canvas, util::FluentBuilder as _,
     };
     use std::{cell::Cell, rc::Weak};
@@ -5623,5 +5676,86 @@ mod tests {
         assert_eq!(bounds("cell-0").origin.x, px(0.));
         assert_eq!(bounds("cell-1").origin.x, px(100.));
         assert_eq!(bounds("cell-2").origin.x, px(300.));
+    }
+
+    struct RightDragView {
+        moves: Rc<Cell<usize>>,
+    }
+
+    impl Render for RightDragView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let moves = self.moves.clone();
+            div()
+                .id("right-drag")
+                .size_full()
+                .on_drag_with(MouseButton::Right, (), |_, _, _, cx| cx.new(|_| Empty))
+                .on_drag_move(move |_: &DragMoveEvent<()>, _, _| moves.set(moves.get() + 1))
+        }
+    }
+
+    #[gpui::test]
+    fn a_drag_can_start_from_the_right_button(cx: &mut TestAppContext) {
+        let moves = Rc::new(Cell::new(0));
+        let window: AnyWindowHandle = cx
+            .add_window({
+                let moves = moves.clone();
+                move |_, _| RightDragView { moves }
+            })
+            .into();
+
+        cx.update_window(window, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            // Hit-test the pointer over the element before the press: hover is what the down
+            // listener keys off, and a window that has never seen a move has no hit test.
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: point(px(10.), px(10.)),
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(
+                MouseDownEvent {
+                    position: point(px(10.), px(10.)),
+                    button: MouseButton::Right,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: point(px(30.), px(30.)),
+                    pressed_button: Some(MouseButton::Right),
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+            assert!(
+                cx.active_drag.is_some(),
+                "the right-button drag was founded"
+            );
+            // The move that founds the drag is consumed by activation; the next one is delivered.
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: point(px(50.), px(50.)),
+                    pressed_button: Some(MouseButton::Right),
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+
+        assert!(
+            moves.get() > 0,
+            "the right-button drag was founded and delivered"
+        );
     }
 }
