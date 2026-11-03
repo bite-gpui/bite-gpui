@@ -33,8 +33,8 @@ use gpui_platform::{
     ActivationPolicy, ActivityGuard, BackgroundExecutor, ClipboardItem, CursorStyle,
     ForegroundExecutor, GpuAdapterInfo, GpuPreference, GraphicalEnvironment, MenuCommandId,
     OsAction, PathPromptOptions, Platform, PlatformDisplay, PlatformKeyboardLayout,
-    PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformOsMenu, PlatformTextSystem,
-    PlatformWindow, SystemMenuType, Task, ThermalState, WindowAppearance, WindowId, WindowKind,
+    PlatformKeyboardMapper, PlatformMenu, PlatformMenuItem, PlatformOsMenu, PlatformWindow,
+    SystemMenuType, Task, ThermalState, WindowAppearance, WindowId, WindowKind,
     WindowParams, WindowingRequest, popup::PopupNotSupportedError,
 };
 use gpui_util::{ResultExt, new_std_command};

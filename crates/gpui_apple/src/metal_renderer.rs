@@ -2082,7 +2082,11 @@ mod tests {
         drop(image_buffer);
         scene.finish();
 
-        let mut renderer = MetalRenderer::new_headless(Arc::new(Mutex::new(Default::default())));
+        let mut renderer = MetalRenderer::new_headless(
+            Arc::new(Mutex::new(Default::default())),
+            &GpuPreference::Auto,
+        )
+        .unwrap();
         let image = renderer
             .render_scene_to_image(&scene, size(DevicePixels(16), DevicePixels(16)))
             .unwrap();
@@ -2104,7 +2108,7 @@ impl GpuRenderer for MetalHeadlessRenderer {
 }
 
 #[cfg(test)]
-mod tests {
+mod classification_tests {
     use super::classify;
     use gpui_platform::GpuDeviceType;
 
