@@ -10,9 +10,9 @@ use std::{cell::Cell, cell::RefCell, rc::Rc};
 use gpui_engine::SceneRenderer;
 use gpui_platform::{
     Bounds, Capslock, Decorations, DevicePixels, DispatchEventResult, FrameRequestSource, GpuSpecs,
-    Modifiers, MouseButton, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions,
-    ResizeEdge, Scene, Size, TextInputConfiguration, TextInputStateChange, WindowAppearance,
+    Modifiers, MouseButton, Pixels, PlatformDisplay, PlatformInput, PlatformInputHandler,
+    PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, Size,
+    TextInputConfiguration, TextInputStateChange, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls, WindowDecorations,
     WindowId, WindowInsets, WindowParams, WindowVisibility, px,
 };
