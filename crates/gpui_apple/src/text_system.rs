@@ -38,10 +38,8 @@ use gpui_engine::{
     ShapedRun, TextRenderingMode,
 };
 use gpui_platform::{
-    Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
-    FontStyle, FontWeight, GlyphId, Hsla, LineLayout, Pixels, PlatformTextSystem,
-    RenderGlyphParams, Result, Rgba, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString,
-    Size, TextRenderingMode, point, px, size, swap_rgba_pa_to_bgra,
+    Bounds, DevicePixels, Hsla, Pixels, Rgba, SharedString, Size, point, px, size,
+    swap_rgba_pa_to_bgra,
 };
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use pathfinder_geometry::{
@@ -55,7 +53,6 @@ use std::{borrow::Cow, char, convert::TryFrom, sync::Arc};
 #[cfg(target_os = "macos")]
 use {
     core_foundation::base::CFType,
-    gpui::{Hsla, Rgba},
     std::sync::OnceLock,
 };
 
