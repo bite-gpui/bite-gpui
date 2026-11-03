@@ -32,6 +32,11 @@ pub trait ImportedTextureExt {
     fn to_imported_handle(&self) -> anyhow::Result<ImportedTextureHandle>;
 }
 
+// On wasm, wgpu's handles are `Rc`-backed unless its `fragile-send-sync-non-atomic-wasm` feature is
+// on, and `ImportedTextureHandle::new` requires `Send + Sync`. A browser build that does not import
+// textures therefore should not carry this impl at all; one that does opts into `wasm-interop`,
+// which turns that wgpu feature on.
+#[cfg(any(not(target_family = "wasm"), feature = "wasm-interop"))]
 impl ImportedTextureExt for wgpu::TextureView {
     fn to_imported_handle(&self) -> anyhow::Result<ImportedTextureHandle> {
         let texture = self.texture();

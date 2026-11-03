@@ -21,6 +21,10 @@ bench-support = ["gpui/bench-support", "dep:image"]
 headless = ["dep:image"]
 font-kit = ["dep:font-kit"]
 test-support = ["gpui/test-support", "dep:image"]
+# On wasm, wgpu's handles are `Rc`-backed unless this wgpu feature is on, and the imported-texture
+# payload requires `Send + Sync`. Opt in only for a browser producer that uses the interop path;
+# a plain `gpui_web` build does not.
+wasm-interop = ["wgpu/fragile-send-sync-non-atomic-wasm"]
 
 [dependencies]
 gpui_platform.workspace = true
