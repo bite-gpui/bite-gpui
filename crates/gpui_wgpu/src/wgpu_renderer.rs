@@ -12,6 +12,8 @@ use collections::FxHashMap;
     )
 ))]
 use gpui_engine::GpuRenderer;
+#[cfg(target_family = "wasm")]
+use gpui_engine::GpuRenderer;
 use gpui_engine::{
     AtlasTextureId, CustomRenderPrimitive, PaintSurface, Path, PlatformAtlas, PrimitiveBatch,
     Scene, SceneRenderer, get_gamma_correction_ratios,
@@ -3731,5 +3733,21 @@ impl SceneRenderer for WgpuRenderer {
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.sprite_atlas().clone()
+    }
+}
+
+// The browser renderer is built from a surface and has no shared context slot, so the native impl in
+// `platform_renderer.rs` (which is compiled everywhere but wasm and macOS) cannot reach its device.
+// The device and queue live in the core on every target, which is all a `gpu_canvas` producer needs.
+#[cfg(target_family = "wasm")]
+impl GpuRenderer for WgpuRenderer {
+    type Device = (Arc<wgpu::Device>, Arc<wgpu::Queue>);
+
+    fn device(&self) -> Option<Self::Device> {
+        let core = self.core()?;
+        Some((
+            core.resources.device.clone(),
+            core.resources.queue.clone(),
+        ))
     }
 }
