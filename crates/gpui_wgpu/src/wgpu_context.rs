@@ -193,7 +193,7 @@ fn session_for(info: &wgpu::AdapterInfo) -> SessionGpuId {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(target_family = "wasm")))]
 fn session_for(info: &wgpu::AdapterInfo) -> SessionGpuId {
     SessionGpuId::Pci {
         vendor_id: info.vendor,
